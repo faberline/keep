@@ -1,5 +1,5 @@
-//! Cross-cutting routes: TTL / expiry on any key (`/v1/kv/{key}/...`) and list
-//! read ops (`/v1/lists/{key}`).
+//! Cross-cutting routes: TTL / expiry on any key (`/kv/{key}/...`) and list
+//! read ops (`/lists/{key}`).
 
 use std::time::Duration;
 
@@ -11,9 +11,10 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::http::error::ApiErr;
-use crate::http::handlers::{ack_durable, key_of};
+use crate::http::handlers::{ack_durable, key_of, propose_write};
 use crate::http::models::kv_to_json;
 use crate::http::AppState;
+use crate::persistence::format::WalOp;
 
 // ---------------------------------------------------------------------------
 // expiry
@@ -44,7 +45,7 @@ pub struct TtlResponse {
 }
 
 /// Set a key's TTL (EXPIRE / PEXPIRE).
-#[utoipa::path(post, path = "/v1/kv/{key}/expire", tag = "Expiry",
+#[utoipa::path(post, path = "/kv/{key}/expire", tag = "Expiry",
     params(("key" = String, Path, description = "Key")), request_body = ExpireRequest,
     responses((status = 200, description = "Whether applied", body = AppliedResponse)))]
 pub async fn expire(
@@ -53,18 +54,45 @@ pub async fn expire(
     Json(req): Json<ExpireRequest>,
 ) -> Result<Json<AppliedResponse>, ApiErr> {
     let k = key_of(&key)?;
-    let result = match req.ms {
-        Some(ms) => st.engine.pexpire(&k, ms),
-        None => st.engine.expire(&k, req.seconds.unwrap_or(0)),
+    let applied = st.engine.exists(&k);
+    let proposed = match req.ms {
+        Some(ms) => {
+            propose_write(
+                &st,
+                &k,
+                WalOp::PExpire {
+                    key: k.as_str().to_string(),
+                    milliseconds: ms,
+                },
+            )
+            .await?
+        }
+        None => {
+            propose_write(
+                &st,
+                &k,
+                WalOp::Expire {
+                    key: k.as_str().to_string(),
+                    seconds: req.seconds.unwrap_or(0),
+                },
+            )
+            .await?
+        }
+    };
+    let applied = if proposed {
+        applied
+    } else {
+        match req.ms {
+            Some(ms) => st.engine.pexpire(&k, ms) == 1,
+            None => st.engine.expire(&k, req.seconds.unwrap_or(0)) == 1,
+        }
     };
     ack_durable(&st).await;
-    Ok(Json(AppliedResponse {
-        applied: result == 1,
-    }))
+    Ok(Json(AppliedResponse { applied }))
 }
 
 /// Remaining time-to-live (TTL / PTTL).
-#[utoipa::path(get, path = "/v1/kv/{key}/ttl", tag = "Expiry",
+#[utoipa::path(get, path = "/kv/{key}/ttl", tag = "Expiry",
     params(("key" = String, Path, description = "Key")),
     responses((status = 200, description = "TTL", body = TtlResponse)))]
 pub async fn ttl(
@@ -79,7 +107,7 @@ pub async fn ttl(
 }
 
 /// Remove a key's expiry, making it persistent (PERSIST).
-#[utoipa::path(post, path = "/v1/kv/{key}/persist", tag = "Expiry",
+#[utoipa::path(post, path = "/kv/{key}/persist", tag = "Expiry",
     params(("key" = String, Path, description = "Key")),
     responses((status = 200, description = "Whether an expiry was removed", body = AppliedResponse)))]
 pub async fn persist(
@@ -87,7 +115,20 @@ pub async fn persist(
     Path(key): Path<String>,
 ) -> Result<Json<AppliedResponse>, ApiErr> {
     let k = key_of(&key)?;
-    let applied = st.engine.persist(&k) == 1;
+    let applied = st.engine.pttl(&k) >= 0;
+    let proposed = propose_write(
+        &st,
+        &k,
+        WalOp::Persist {
+            key: k.as_str().to_string(),
+        },
+    )
+    .await?;
+    let applied = if proposed {
+        applied
+    } else {
+        st.engine.persist(&k) == 1
+    };
     ack_durable(&st).await;
     Ok(Json(AppliedResponse { applied }))
 }
@@ -110,7 +151,7 @@ pub struct GetExResponse {
 
 /// Get a value and atomically adjust its TTL (GETEX). With neither `ttl_ms` nor
 /// `persist` it is a plain read; otherwise the TTL change is durable-before-ack.
-#[utoipa::path(post, path = "/v1/kv/{key}/getex", tag = "Expiry",
+#[utoipa::path(post, path = "/kv/{key}/getex", tag = "Expiry",
     params(("key" = String, Path, description = "Key")), request_body = GetExRequest,
     responses((status = 200, description = "Value", body = GetExResponse)))]
 pub async fn getex(
@@ -121,9 +162,26 @@ pub async fn getex(
     let k = key_of(&key)?;
     let ttl = req.ttl_ms.map(Duration::from_millis);
     let mutates = ttl.is_some() || req.persist;
-    let value = st.engine.getex(&k, ttl, req.persist).map(kv_to_json);
+    let value = st.engine.get(&k).map(kv_to_json);
     if mutates {
+        if !propose_write(
+            &st,
+            &k,
+            WalOp::GetEx {
+                key: k.as_str().to_string(),
+                ttl_ms: req.ttl_ms,
+                persist: req.persist,
+            },
+        )
+        .await?
+        {
+            let value = st.engine.getex(&k, ttl, req.persist).map(kv_to_json);
+            ack_durable(&st).await;
+            return Ok(Json(GetExResponse { value }));
+        }
         ack_durable(&st).await;
+    } else {
+        return Ok(Json(GetExResponse { value }));
     }
     Ok(Json(GetExResponse { value }))
 }
@@ -154,7 +212,7 @@ pub struct LenResponse {
 }
 
 /// Elements in a list range (LRANGE). Negative indices count from the end.
-#[utoipa::path(get, path = "/v1/lists/{key}", tag = "Lists",
+#[utoipa::path(get, path = "/lists/{key}", tag = "Lists",
     params(("key" = String, Path, description = "List key"),
         ("start" = Option<i64>, Query, description = "Start index (default 0)"),
         ("stop" = Option<i64>, Query, description = "Stop index (default -1)")),
@@ -176,7 +234,7 @@ pub async fn lrange(
 }
 
 /// List length (LLEN).
-#[utoipa::path(get, path = "/v1/lists/{key}/length", tag = "Lists",
+#[utoipa::path(get, path = "/lists/{key}/length", tag = "Lists",
     params(("key" = String, Path, description = "List key")),
     responses((status = 200, description = "Length", body = LenResponse)))]
 pub async fn llen(

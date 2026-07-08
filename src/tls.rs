@@ -12,7 +12,7 @@
 //! Builds that link no rustls path (the default `keep` build) compile this as a
 //! no-op, so the fast dev/test cycle pays nothing.
 //!
-//! @spec projects/keep/tech-design/interfaces/cli/adopt-libs-operator-keep-k8s-crd-operator-instance-cli.md
+//! @spec .aw/tech-design/projects/keep/interfaces/cli/adopt-libs-operator-keep-k8s-crd-operator-instance-cli.md
 
 /// Install the aws-lc-rs rustls crypto provider as the process default, once.
 ///

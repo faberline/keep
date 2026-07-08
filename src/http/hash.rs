@@ -1,4 +1,4 @@
-//! Hash (field-map) routes under `/v1/hashes/{key}`. WAL-backed and
+//! Hash (field-map) routes under `/hashes/{key}`. WAL-backed and
 //! durable-before-ack, like the scalar path.
 
 use std::collections::HashMap;
@@ -12,9 +12,10 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::http::error::ApiErr;
-use crate::http::handlers::{ack_durable, key_of};
+use crate::http::handlers::{ack_durable, key_of, propose_write};
 use crate::http::models::{json_to_kv, kv_to_json, CountResponse};
 use crate::http::AppState;
+use crate::persistence::format::WalOp;
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct HSetRequest {
@@ -61,7 +62,7 @@ pub struct IntValueResponse {
 }
 
 /// Set hash fields (HSET). Returns the number of newly-added fields.
-#[utoipa::path(post, path = "/v1/hashes/{key}", tag = "Hashes",
+#[utoipa::path(post, path = "/hashes/{key}", tag = "Hashes",
     params(("key" = String, Path, description = "Hash key")), request_body = HSetRequest,
     responses((status = 200, description = "Fields added", body = CountResponse)))]
 pub async fn hset(
@@ -75,13 +76,30 @@ pub async fn hset(
         .into_iter()
         .map(|(f, v)| (f, json_to_kv(v)))
         .collect();
-    let count = st.engine.hset(&k, fields).map_err(ApiErr::from)?;
+    let existing = st.engine.hlen(&k).unwrap_or(0);
+    let count = if propose_write(
+        &st,
+        &k,
+        WalOp::HSet {
+            key: k.as_str().to_string(),
+            fields: fields.clone(),
+        },
+    )
+    .await?
+    {
+        st.engine
+            .hlen(&k)
+            .map_err(ApiErr::from)?
+            .saturating_sub(existing)
+    } else {
+        st.engine.hset(&k, fields).map_err(ApiErr::from)?
+    };
     ack_durable(&st).await;
     Ok(Json(CountResponse { count }))
 }
 
 /// All fields of a hash (HGETALL).
-#[utoipa::path(get, path = "/v1/hashes/{key}", tag = "Hashes",
+#[utoipa::path(get, path = "/hashes/{key}", tag = "Hashes",
     params(("key" = String, Path, description = "Hash key")),
     responses((status = 200, description = "Field map", body = HGetAllResponse)))]
 pub async fn hgetall(
@@ -100,7 +118,7 @@ pub async fn hgetall(
 }
 
 /// Delete hash fields (HDEL). Returns the number removed.
-#[utoipa::path(delete, path = "/v1/hashes/{key}", tag = "Hashes",
+#[utoipa::path(delete, path = "/hashes/{key}", tag = "Hashes",
     params(("key" = String, Path, description = "Hash key")), request_body = FieldsRequest,
     responses((status = 200, description = "Fields removed", body = CountResponse)))]
 pub async fn hdel(
@@ -110,13 +128,30 @@ pub async fn hdel(
 ) -> Result<Json<CountResponse>, ApiErr> {
     let k = key_of(&key)?;
     let refs: Vec<&str> = req.fields.iter().map(String::as_str).collect();
-    let count = st.engine.hdel(&k, &refs).map_err(ApiErr::from)?;
+    let existing = refs
+        .iter()
+        .filter(|field| st.engine.hexists(&k, field).unwrap_or(false))
+        .count();
+    let count = if propose_write(
+        &st,
+        &k,
+        WalOp::HDel {
+            key: k.as_str().to_string(),
+            fields: req.fields.clone(),
+        },
+    )
+    .await?
+    {
+        existing
+    } else {
+        st.engine.hdel(&k, &refs).map_err(ApiErr::from)?
+    };
     ack_durable(&st).await;
     Ok(Json(CountResponse { count }))
 }
 
 /// Number of fields in a hash (HLEN).
-#[utoipa::path(get, path = "/v1/hashes/{key}/length", tag = "Hashes",
+#[utoipa::path(get, path = "/hashes/{key}/length", tag = "Hashes",
     params(("key" = String, Path, description = "Hash key")),
     responses((status = 200, description = "Field count", body = CountResponse)))]
 pub async fn hlen(
@@ -130,7 +165,7 @@ pub async fn hlen(
 }
 
 /// Fetch several hash fields at once (HMGET).
-#[utoipa::path(post, path = "/v1/hashes/{key}/mget", tag = "Hashes",
+#[utoipa::path(post, path = "/hashes/{key}/mget", tag = "Hashes",
     params(("key" = String, Path, description = "Hash key")), request_body = FieldsRequest,
     responses((status = 200, description = "Values parallel to fields", body = HMGetResponse)))]
 pub async fn hmget(
@@ -151,7 +186,7 @@ pub async fn hmget(
 }
 
 /// Increment an integer hash field (HINCRBY).
-#[utoipa::path(post, path = "/v1/hashes/{key}/incr", tag = "Hashes",
+#[utoipa::path(post, path = "/hashes/{key}/incr", tag = "Hashes",
     params(("key" = String, Path, description = "Hash key")), request_body = HIncrRequest,
     responses((status = 200, description = "New value", body = IntValueResponse)))]
 pub async fn hincr(
@@ -160,16 +195,38 @@ pub async fn hincr(
     Json(req): Json<HIncrRequest>,
 ) -> Result<Json<IntValueResponse>, ApiErr> {
     let k = key_of(&key)?;
-    let value = st
-        .engine
-        .hincrby(&k, &req.field, req.delta)
-        .map_err(ApiErr::from)?;
+    let value = if propose_write(
+        &st,
+        &k,
+        WalOp::HIncrBy {
+            key: k.as_str().to_string(),
+            field: req.field.clone(),
+            delta: req.delta,
+        },
+    )
+    .await?
+    {
+        match st.engine.hget(&k, &req.field).map_err(ApiErr::from)? {
+            Some(crate::types::KvValue::Int(value)) => value,
+            Some(other) => {
+                return Err(ApiErr::from(crate::error::KvError::TypeMismatch {
+                    expected: "Int".to_string(),
+                    actual: format!("{:?}", std::mem::discriminant(&other)),
+                }))
+            }
+            None => req.delta,
+        }
+    } else {
+        st.engine
+            .hincrby(&k, &req.field, req.delta)
+            .map_err(ApiErr::from)?
+    };
     ack_durable(&st).await;
     Ok(Json(IntValueResponse { value }))
 }
 
 /// Single hash field (HGET).
-#[utoipa::path(get, path = "/v1/hashes/{key}/fields/{field}", tag = "Hashes",
+#[utoipa::path(get, path = "/hashes/{key}/fields/{field}", tag = "Hashes",
     params(("key" = String, Path, description = "Hash key"), ("field" = String, Path, description = "Field")),
     responses((status = 200, description = "Field value or null", body = HGetResponse)))]
 pub async fn hget(
@@ -186,7 +243,7 @@ pub async fn hget(
 }
 
 /// Field existence (HEXISTS), no body.
-#[utoipa::path(head, path = "/v1/hashes/{key}/fields/{field}", tag = "Hashes",
+#[utoipa::path(head, path = "/hashes/{key}/fields/{field}", tag = "Hashes",
     params(("key" = String, Path, description = "Hash key"), ("field" = String, Path, description = "Field")),
     responses((status = 200, description = "Field exists"), (status = 404, description = "Field absent")))]
 pub async fn hexists(

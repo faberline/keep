@@ -4,7 +4,7 @@
 //! `/openapi.json`, `keep spec gen` writes a typed client, and `keep dockerfile
 //! render` reproduces the committed Dockerfiles. Offline: no server, no network.
 //!
-//! @spec projects/keep/tech-design/interfaces/cli/deploy-cli-keep-spec-spec-gen-dockerfile-render.md
+//! @spec .aw/tech-design/projects/keep/interfaces/cli/deploy-cli-keep-spec-spec-gen-dockerfile-render.md
 
 use std::process::Command;
 
@@ -39,7 +39,7 @@ fn spec_matches_the_served_openapi_document() {
 
     let paths = cli["paths"].as_object().expect("paths");
     assert!(
-        paths.keys().any(|p| p.contains("/v1/kv")),
+        paths.keys().any(|p| p.contains("/kv")),
         "KV data plane present"
     );
     assert!(

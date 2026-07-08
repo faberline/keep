@@ -10,7 +10,7 @@
 //!                                           Service, PodDisruptionBudget
 //! ```
 //!
-//! @spec projects/keep/tech-design/interfaces/cli/adopt-libs-operator-keep-k8s-crd-operator-instance-cli.md
+//! @spec .aw/tech-design/projects/keep/interfaces/cli/adopt-libs-operator-keep-k8s-crd-operator-instance-cli.md
 
 pub mod crd;
 pub mod reconcile;

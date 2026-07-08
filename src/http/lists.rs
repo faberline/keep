@@ -1,4 +1,4 @@
-//! Blocking list pops (BLPOP / BRPOP) under `/v1/lists/{key}/{blpop,brpop}`.
+//! Blocking list pops (BLPOP / BRPOP) under `/lists/{key}/{blpop,brpop}`.
 //!
 //! HTTP long-poll: block up to `timeout_ms` for an element, then return it (or
 //! null on timeout). The pop itself is durable-before-ack like any list pop.
@@ -13,9 +13,10 @@ use serde::Deserialize;
 use utoipa::ToSchema;
 
 use crate::http::error::ApiErr;
-use crate::http::handlers::{ack_durable, key_of};
+use crate::http::handlers::{ack_durable, key_of, propose_write};
 use crate::http::models::{kv_to_json, PopResponse};
 use crate::http::AppState;
+use crate::persistence::format::WalOp;
 
 /// Upper bound on a single blocking wait, so a long-poll can't pin a connection
 /// indefinitely (Redis BLPOP's 0 = block-forever is intentionally not offered).
@@ -43,13 +44,39 @@ async fn blocking_pop(
     let timeout = Duration::from_millis(req.timeout_ms.clamp(1, MAX_TIMEOUT_MS));
     let deadline = Instant::now() + timeout;
 
-    let pop = |st: &AppState| match side {
-        Side::Left => st.engine.lpop(&k),
-        Side::Right => st.engine.rpop(&k),
+    let peek = |st: &AppState| match side {
+        Side::Left => st
+            .engine
+            .lrange(&k, 0, 0)
+            .ok()
+            .and_then(|values| values.into_iter().next()),
+        Side::Right => st
+            .engine
+            .lrange(&k, -1, -1)
+            .ok()
+            .and_then(|values| values.into_iter().next()),
     };
 
     loop {
-        if let Some(v) = pop(&st) {
+        if let Some(v) = peek(&st) {
+            let op = match side {
+                Side::Left => WalOp::LPop {
+                    key: k.as_str().to_string(),
+                },
+                Side::Right => WalOp::RPop {
+                    key: k.as_str().to_string(),
+                },
+            };
+            if !propose_write(&st, &k, op).await? {
+                let v = match side {
+                    Side::Left => st.engine.lpop(&k),
+                    Side::Right => st.engine.rpop(&k),
+                };
+                ack_durable(&st).await;
+                return Ok(Json(PopResponse {
+                    value: v.map(kv_to_json),
+                }));
+            }
             ack_durable(&st).await;
             return Ok(Json(PopResponse {
                 value: Some(kv_to_json(v)),
@@ -67,7 +94,25 @@ async fn blocking_pop(
         tokio::pin!(notified);
         notified.as_mut().enable();
 
-        if let Some(v) = pop(&st) {
+        if let Some(v) = peek(&st) {
+            let op = match side {
+                Side::Left => WalOp::LPop {
+                    key: k.as_str().to_string(),
+                },
+                Side::Right => WalOp::RPop {
+                    key: k.as_str().to_string(),
+                },
+            };
+            if !propose_write(&st, &k, op).await? {
+                let v = match side {
+                    Side::Left => st.engine.lpop(&k),
+                    Side::Right => st.engine.rpop(&k),
+                };
+                ack_durable(&st).await;
+                return Ok(Json(PopResponse {
+                    value: v.map(kv_to_json),
+                }));
+            }
             ack_durable(&st).await;
             return Ok(Json(PopResponse {
                 value: Some(kv_to_json(v)),
@@ -83,7 +128,7 @@ async fn blocking_pop(
 
 /// Block until an element is available at the head of the list, then pop it
 /// (BLPOP). Returns null on timeout.
-#[utoipa::path(post, path = "/v1/lists/{key}/blpop", tag = "Lists",
+#[utoipa::path(post, path = "/lists/{key}/blpop", tag = "Lists",
     params(("key" = String, Path, description = "List key")), request_body = BlockingPopRequest,
     responses((status = 200, description = "Popped value or null on timeout", body = PopResponse)))]
 pub async fn blpop(
@@ -96,7 +141,7 @@ pub async fn blpop(
 
 /// Block until an element is available at the tail of the list, then pop it
 /// (BRPOP). Returns null on timeout.
-#[utoipa::path(post, path = "/v1/lists/{key}/brpop", tag = "Lists",
+#[utoipa::path(post, path = "/lists/{key}/brpop", tag = "Lists",
     params(("key" = String, Path, description = "List key")), request_body = BlockingPopRequest,
     responses((status = 200, description = "Popped value or null on timeout", body = PopResponse)))]
 pub async fn brpop(

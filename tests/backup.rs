@@ -8,7 +8,7 @@
 //!   aged objects. `run_backup` exercises the full recover → serialize → sink
 //!   path the `keep backup` verb / CronJob runner uses.
 //!
-//! @spec projects/keep/tech-design/logic/adopt-libs-service-backup-snapshot-sink-keep-backup-verb.md
+//! @spec .aw/tech-design/projects/keep/logic/adopt-libs-service-backup-snapshot-sink-keep-backup-verb.md
 
 use std::time::SystemTime;
 

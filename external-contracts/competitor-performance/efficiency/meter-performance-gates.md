@@ -1,4 +1,10 @@
-# keep perf-gate (#126)
+---
+id: keep-meter-performance-gates
+summary: Keep meter-owned engine throughput and server resource gates, including commands, thresholds, and reference baselines for capability keep:competitor-performance.
+fill_sections: [tool-contract, e2e-test]
+---
+
+# EC: Keep Meter Performance Gates (#126)
 
 Two complementary gates, both driven by `meter` (the workspace's resource
 measurement tool). One guards **engine throughput** (regressions in the store
@@ -12,7 +18,7 @@ Run them through meter (which delegates `cargo bench` and, with a baseline,
 folds regressions to a non-zero exit):
 
 ```bash
-meter bench --target projects/keep --human          # run the gate benchmark
+meter bench --target apps/keep --human          # run the gate benchmark
 # or directly:
 cargo bench -p keep --bench engine_bench
 ```
@@ -49,7 +55,7 @@ enforced against the live keep server under a FIXED load. A breach is a `high`
 finding and a non-zero exit.
 
 ```bash
-cd projects/keep
+cd apps/keep
 KEEP_DISABLE_PERSISTENCE=true meter measure \
   --exec ../../target/release/keep --level vitals --duration-cap 30 \
   --drive 'for i in $(seq 1 15); do curl -sf -o /dev/null --max-time 1 \
@@ -66,7 +72,7 @@ non-zero with a `[gate] max_peak_rss_mb breached` finding.
 
 ## Notes
 
-- `meter run --target projects/keep` is the composite (test + bench + profile,
+- `meter run --target apps/keep` is the composite (test + bench + profile,
   worst-wins) for one-shot CI use.
 - Competitor comparison (vs Redis / Dragonfly) is a separate one-off harness:
   `examples/bench_compare.rs` (`--backend redis|dragonfly`). It is NOT part of

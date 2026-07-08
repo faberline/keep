@@ -5,7 +5,7 @@
 # no macOS host<->VM networking asymmetry. NOT a production image (that's
 # Dockerfile.release); the runtime carries a shell + curl for orchestration.
 #
-#   docker build -f projects/keep/Dockerfile.bench -t keep-bench .   # context = repo root
+#   docker build -f apps/keep/Dockerfile.bench -t keep-bench .   # context = repo root
 
 FROM rust:1.92-slim-bookworm AS builder
 WORKDIR /src

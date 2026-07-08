@@ -6,7 +6,7 @@
 # (cargo needs every workspace member's Cargo.toml). The root .dockerignore
 # excludes target/ and .git to keep the context sane.
 #
-#   docker build -f projects/keep/Dockerfile -t keep:dev .
+#   docker build -f apps/keep/Dockerfile -t keep:dev .
 
 FROM rust:1.92-slim-bookworm AS builder
 WORKDIR /src

@@ -8,7 +8,7 @@
 //! ConfigMap, headless + client Services, a PodDisruptionBudget, and the sharded
 //! StatefulSet, garbage-collected via owner references.
 //!
-//! @spec projects/keep/tech-design/interfaces/cli/adopt-libs-operator-keep-k8s-crd-operator-instance-cli.md
+//! @spec .aw/tech-design/projects/keep/interfaces/cli/adopt-libs-operator-keep-k8s-crd-operator-instance-cli.md
 
 use kube::CustomResource;
 use schemars::JsonSchema;

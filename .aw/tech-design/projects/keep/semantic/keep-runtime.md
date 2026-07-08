@@ -96,22 +96,22 @@ requirement KEEP_COLLECTIONS_API {
 ```yaml
 coverage_kind: semantic
 changes:
-  - path: projects/keep/README.md
+  - path: apps/keep/README.md
     action: claim
     section: overview
     impl_mode: hand-written
     reason: "Canonical capability surface for adopted keep runtime."
-  - path: projects/keep/tests/http_api.rs
+  - path: apps/keep/tests/http_api.rs
     action: claim
     section: unit-test
     impl_mode: hand-written
     reason: "Existing hand-written public API conformance gate."
-  - path: projects/keep/tests/durability.rs
+  - path: apps/keep/tests/durability.rs
     action: claim
     section: unit-test
     impl_mode: hand-written
     reason: "Existing hand-written durable-before-ack recovery gate."
-  - path: projects/keep/tests/collections_api.rs
+  - path: apps/keep/tests/collections_api.rs
     action: claim
     section: unit-test
     impl_mode: hand-written

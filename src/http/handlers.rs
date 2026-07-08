@@ -13,9 +13,11 @@ use axum::{
 };
 use serde::Deserialize;
 
+use crate::cluster::ClusterState;
 use crate::http::error::ApiErr;
 use crate::http::models::*;
 use crate::http::AppState;
+use crate::persistence::format::WalOp;
 use crate::types::{KvKey, KvValue};
 
 // ---------------------------------------------------------------------------
@@ -39,6 +41,36 @@ pub(crate) async fn ack_durable(st: &AppState) {
     }
 }
 
+pub(crate) async fn propose_write(st: &AppState, key: &KvKey, op: WalOp) -> Result<bool, ApiErr> {
+    #[cfg(feature = "raft")]
+    {
+        use axum::http::StatusCode;
+
+        if let Some(hosts) = &st.raft_hosts {
+            if !hosts.owns(key.as_str()) {
+                return Err(ApiErr::new(
+                    StatusCode::CONFLICT,
+                    "shard_not_owned",
+                    format!(
+                        "shard for key '{}' is not hosted by this node",
+                        key.as_str()
+                    ),
+                ));
+            }
+            hosts.write(key.as_str(), op).await.map_err(|e| {
+                ApiErr::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "raft_propose_failed",
+                    e.to_string(),
+                )
+            })?;
+            return Ok(true);
+        }
+    }
+    let _ = (st, key, op);
+    Ok(false)
+}
+
 /// TTL passed via query string on the raw-bytes write path.
 #[derive(Debug, Deserialize)]
 pub struct TtlQuery {
@@ -53,12 +85,12 @@ pub struct TtlQuery {
 /// everything else as a JSON `ValueResponse`.
 #[utoipa::path(
     get,
-    path = "/v1/kv/{key}",
+    path = "/kv/{key}",
     tag = "KV",
     params(("key" = String, Path, description = "Key to fetch")),
     responses(
         (status = 200, description = "Value found", body = ValueResponse),
-        (status = 404, description = "Key not found", body = crate::http::error::ApiError)
+        (status = 404, description = "Key not found", body = ApiError)
     )
 )]
 pub async fn get_key(
@@ -88,15 +120,15 @@ pub async fn get_key(
 /// `?ttl_ms=`), which is the efficient path for claim-check payloads.
 #[utoipa::path(
     put,
-    path = "/v1/kv/{key}",
+    path = "/kv/{key}",
     tag = "KV",
     params(("key" = String, Path, description = "Key to set")),
     request_body(content = SetRequest, description = "JSON value + optional ttl_ms (or send a raw octet-stream blob)"),
     responses(
         (status = 200, description = "Stored", body = OkResponse),
-        (status = 400, description = "Invalid key or body", body = crate::http::error::ApiError),
-        (status = 415, description = "Unsupported content-type", body = crate::http::error::ApiError),
-        (status = 507, description = "Out of memory", body = crate::http::error::ApiError)
+        (status = 400, description = "Invalid key or body", body = ApiError),
+        (status = 415, description = "Unsupported content-type", body = ApiError),
+        (status = 507, description = "Out of memory", body = ApiError)
     )
 )]
 pub async fn put_key(
@@ -113,17 +145,41 @@ pub async fn put_key(
         .unwrap_or("application/json");
 
     if ct.starts_with("application/octet-stream") {
-        st.engine
-            .set(&k, KvValue::Bytes(body.to_vec()), ttl(q.ttl_ms))
-            .map_err(ApiErr::from)?;
+        let value = KvValue::Bytes(body.to_vec());
+        let ttl = ttl(q.ttl_ms);
+        if !propose_write(
+            &st,
+            &k,
+            WalOp::Set {
+                key: k.as_str().to_string(),
+                value: value.clone(),
+                ttl,
+            },
+        )
+        .await?
+        {
+            st.engine.set(&k, value, ttl).map_err(ApiErr::from)?;
+        }
     } else if ct.starts_with("application/json") {
         // Fast parse: JSON tokens -> KvValue directly, no serde_json::Value tree
         // (the measured write-path hot cost). SetRequest stays the OpenAPI schema.
         let req: SetRequestFast = serde_json::from_slice(&body)
             .map_err(|e| ApiErr::bad_request(format!("invalid JSON body: {e}")))?;
-        st.engine
-            .set(&k, req.value.0, ttl(req.ttl_ms))
-            .map_err(ApiErr::from)?;
+        let value = req.value.0;
+        let ttl = ttl(req.ttl_ms);
+        if !propose_write(
+            &st,
+            &k,
+            WalOp::Set {
+                key: k.as_str().to_string(),
+                value: value.clone(),
+                ttl,
+            },
+        )
+        .await?
+        {
+            st.engine.set(&k, value, ttl).map_err(ApiErr::from)?;
+        }
     } else {
         return Err(ApiErr::unsupported_media_type(format!(
             "unsupported content-type: {ct}"
@@ -136,7 +192,7 @@ pub async fn put_key(
 /// Delete a key.
 #[utoipa::path(
     delete,
-    path = "/v1/kv/{key}",
+    path = "/kv/{key}",
     tag = "KV",
     params(("key" = String, Path, description = "Key to delete")),
     responses((status = 200, description = "Delete result", body = DeleteResponse))
@@ -146,7 +202,20 @@ pub async fn delete_key(
     Path(key): Path<String>,
 ) -> Result<Json<DeleteResponse>, ApiErr> {
     let k = key_of(&key)?;
-    let deleted = st.engine.delete(&k);
+    let deleted = st.engine.exists(&k);
+    let proposed = propose_write(
+        &st,
+        &k,
+        WalOp::Delete {
+            key: k.as_str().to_string(),
+        },
+    )
+    .await?;
+    let deleted = if proposed {
+        deleted
+    } else {
+        st.engine.delete(&k)
+    };
     ack_durable(&st).await;
     Ok(Json(DeleteResponse { deleted }))
 }
@@ -154,7 +223,7 @@ pub async fn delete_key(
 /// Existence check (no body).
 #[utoipa::path(
     head,
-    path = "/v1/kv/{key}",
+    path = "/kv/{key}",
     tag = "KV",
     params(("key" = String, Path, description = "Key to test")),
     responses(
@@ -173,13 +242,13 @@ pub async fn head_key(State(st): State<AppState>, Path(key): Path<String>) -> St
 /// Atomic increment/decrement of an integer value.
 #[utoipa::path(
     post,
-    path = "/v1/kv/{key}/incr",
+    path = "/kv/{key}/incr",
     tag = "KV",
     params(("key" = String, Path, description = "Counter key")),
     request_body = IncrRequest,
     responses(
         (status = 200, description = "New value", body = IncrResponse),
-        (status = 409, description = "Existing value is not an integer", body = crate::http::error::ApiError)
+        (status = 409, description = "Existing value is not an integer", body = ApiError)
     )
 )]
 pub async fn incr_key(
@@ -188,7 +257,29 @@ pub async fn incr_key(
     Json(req): Json<IncrRequest>,
 ) -> Result<Json<IncrResponse>, ApiErr> {
     let k = key_of(&key)?;
-    let value = st.engine.incr(&k, req.delta).map_err(ApiErr::from)?;
+    let value = if propose_write(
+        &st,
+        &k,
+        WalOp::Incr {
+            key: k.as_str().to_string(),
+            delta: req.delta,
+        },
+    )
+    .await?
+    {
+        match st.engine.get(&k) {
+            Some(KvValue::Int(value)) => value,
+            Some(other) => {
+                return Err(ApiErr::from(crate::error::KvError::TypeMismatch {
+                    expected: "Int".to_string(),
+                    actual: format!("{:?}", std::mem::discriminant(&other)),
+                }))
+            }
+            None => req.delta,
+        }
+    } else {
+        st.engine.incr(&k, req.delta).map_err(ApiErr::from)?
+    };
     ack_durable(&st).await;
     Ok(Json(IncrResponse { value }))
 }
@@ -196,7 +287,7 @@ pub async fn incr_key(
 /// Compare-and-swap.
 #[utoipa::path(
     post,
-    path = "/v1/kv/{key}/cas",
+    path = "/kv/{key}/cas",
     tag = "KV",
     params(("key" = String, Path, description = "Key to swap")),
     request_body = CasRequest,
@@ -209,10 +300,35 @@ pub async fn cas_key(
 ) -> Result<Json<CasResponse>, ApiErr> {
     let k = key_of(&key)?;
     let expected = json_to_kv(req.expected);
-    let swapped = st
-        .engine
-        .cas(&k, &expected, json_to_kv(req.new), ttl(req.ttl_ms))
-        .map_err(ApiErr::from)?;
+    let new = json_to_kv(req.new);
+    let ttl = ttl(req.ttl_ms);
+    let before = st.engine.get(&k).ok_or_else(|| {
+        ApiErr::new(
+            StatusCode::NOT_FOUND,
+            "key_not_found",
+            format!("key not found: {key}"),
+        )
+    })?;
+    let swapped = before == expected;
+    if !propose_write(
+        &st,
+        &k,
+        WalOp::Cas {
+            key: k.as_str().to_string(),
+            expected: expected.clone(),
+            new: new.clone(),
+            ttl,
+        },
+    )
+    .await?
+    {
+        let swapped = st
+            .engine
+            .cas(&k, &expected, new, ttl)
+            .map_err(ApiErr::from)?;
+        ack_durable(&st).await;
+        return Ok(Json(CasResponse { swapped }));
+    }
     ack_durable(&st).await;
     Ok(Json(CasResponse { swapped }))
 }
@@ -220,7 +336,7 @@ pub async fn cas_key(
 /// Set only if the key does not already exist.
 #[utoipa::path(
     post,
-    path = "/v1/kv/{key}/setnx",
+    path = "/kv/{key}/setnx",
     tag = "KV",
     params(("key" = String, Path, description = "Key to set")),
     request_body = SetRequest,
@@ -232,10 +348,24 @@ pub async fn setnx_key(
     Json(req): Json<SetRequest>,
 ) -> Result<Json<SetNxResponse>, ApiErr> {
     let k = key_of(&key)?;
-    let set = st
-        .engine
-        .setnx(&k, json_to_kv(req.value), ttl(req.ttl_ms))
-        .map_err(ApiErr::from)?;
+    let set = !st.engine.exists(&k);
+    let value = json_to_kv(req.value);
+    let ttl = ttl(req.ttl_ms);
+    if !propose_write(
+        &st,
+        &k,
+        WalOp::SetNx {
+            key: k.as_str().to_string(),
+            value: value.clone(),
+            ttl,
+        },
+    )
+    .await?
+    {
+        let set = st.engine.setnx(&k, value, ttl).map_err(ApiErr::from)?;
+        ack_durable(&st).await;
+        return Ok(Json(SetNxResponse { set }));
+    }
     ack_durable(&st).await;
     Ok(Json(SetNxResponse { set }))
 }
@@ -247,7 +377,7 @@ pub async fn setnx_key(
 /// Fetch many keys at once.
 #[utoipa::path(
     post,
-    path = "/v1/kv:mget",
+    path = "/kv:mget",
     tag = "Batch",
     request_body = MGetRequest,
     responses((status = 200, description = "Values parallel to the request keys", body = MGetResponse))
@@ -275,7 +405,7 @@ pub async fn mget(
 /// Set many keys at once with a shared TTL.
 #[utoipa::path(
     post,
-    path = "/v1/kv:mset",
+    path = "/kv:mset",
     tag = "Batch",
     request_body = MSetRequest,
     responses((status = 200, description = "Number of keys written", body = CountResponse))
@@ -290,10 +420,24 @@ pub async fn mset(State(st): State<AppState>, body: Bytes) -> Result<Json<CountR
         keys.push(KvKey::new(&k).map_err(ApiErr::from)?);
         vals.push(v.0);
     }
-    let pairs: Vec<(&KvKey, KvValue)> = keys.iter().zip(vals).collect();
-    st.engine
-        .mset(&pairs, ttl(req.ttl_ms))
-        .map_err(ApiErr::from)?;
+    let ttl = ttl(req.ttl_ms);
+    let pairs: Vec<(&KvKey, KvValue)> = keys.iter().zip(vals.iter().cloned()).collect();
+    let mut proposed = false;
+    for (key, value) in &pairs {
+        proposed |= propose_write(
+            &st,
+            key,
+            WalOp::Set {
+                key: key.as_str().to_string(),
+                value: value.clone(),
+                ttl,
+            },
+        )
+        .await?;
+    }
+    if !proposed {
+        st.engine.mset(&pairs, ttl).map_err(ApiErr::from)?;
+    }
     ack_durable(&st).await;
     Ok(Json(CountResponse { count: pairs.len() }))
 }
@@ -301,7 +445,7 @@ pub async fn mset(State(st): State<AppState>, body: Bytes) -> Result<Json<CountR
 /// Delete many keys at once.
 #[utoipa::path(
     post,
-    path = "/v1/kv:mdel",
+    path = "/kv:mdel",
     tag = "Batch",
     request_body = MDelRequest,
     responses((status = 200, description = "Number of keys deleted", body = CountResponse))
@@ -316,8 +460,24 @@ pub async fn mdel(
         .map(|s| KvKey::new(s))
         .collect::<Result<_, _>>()
         .map_err(ApiErr::from)?;
+    let existing = keys.iter().filter(|key| st.engine.exists(key)).count();
+    let mut proposed = false;
+    for key in &keys {
+        proposed |= propose_write(
+            &st,
+            key,
+            WalOp::Delete {
+                key: key.as_str().to_string(),
+            },
+        )
+        .await?;
+    }
     let refs: Vec<&KvKey> = keys.iter().collect();
-    let count = st.engine.mdel(&refs);
+    let count = if proposed {
+        existing
+    } else {
+        st.engine.mdel(&refs)
+    };
     ack_durable(&st).await;
     Ok(Json(CountResponse { count }))
 }
@@ -325,7 +485,7 @@ pub async fn mdel(
 /// List keys, optionally filtered by prefix.
 #[utoipa::path(
     get,
-    path = "/v1/kv",
+    path = "/kv",
     tag = "KV",
     params(
         ("prefix" = Option<String>, Query, description = "Only keys with this prefix"),
@@ -346,7 +506,7 @@ pub async fn scan(State(st): State<AppState>, Query(q): Query<ScanQuery>) -> Jso
 /// Acquire a leased lock. Idempotent for the same owner.
 #[utoipa::path(
     post,
-    path = "/v1/locks/{key}",
+    path = "/locks/{key}",
     tag = "Locks",
     params(("key" = String, Path, description = "Lock name")),
     request_body = LockRequest,
@@ -358,22 +518,35 @@ pub async fn lock(
     Json(req): Json<LockRequest>,
 ) -> Result<Json<LockResponse>, ApiErr> {
     let k = key_of(&key)?;
-    let acquired = st
-        .engine
-        .lock(&k, &req.owner, Duration::from_millis(req.ttl_ms));
+    let ttl = Duration::from_millis(req.ttl_ms);
+    let acquired = !st.engine.exists(&k);
+    if !propose_write(
+        &st,
+        &k,
+        WalOp::Lock {
+            key: k.as_str().to_string(),
+            owner: req.owner.clone(),
+            ttl,
+        },
+    )
+    .await?
+    {
+        let acquired = st.engine.lock(&k, &req.owner, ttl);
+        return Ok(Json(LockResponse { acquired }));
+    }
     Ok(Json(LockResponse { acquired }))
 }
 
 /// Release a lock held by `owner`.
 #[utoipa::path(
     delete,
-    path = "/v1/locks/{key}",
+    path = "/locks/{key}",
     tag = "Locks",
     params(("key" = String, Path, description = "Lock name")),
     request_body = UnlockRequest,
     responses(
         (status = 200, description = "Release result", body = UnlockResponse),
-        (status = 409, description = "Lock held by a different owner", body = crate::http::error::ApiError)
+        (status = 409, description = "Lock held by a different owner", body = ApiError)
     )
 )]
 pub async fn unlock(
@@ -382,20 +555,33 @@ pub async fn unlock(
     Json(req): Json<UnlockRequest>,
 ) -> Result<Json<UnlockResponse>, ApiErr> {
     let k = key_of(&key)?;
-    let released = st.engine.unlock(&k, &req.owner).map_err(ApiErr::from)?;
+    let released = matches!(st.engine.get(&k), Some(KvValue::String(owner)) if owner == req.owner);
+    if !propose_write(
+        &st,
+        &k,
+        WalOp::Unlock {
+            key: k.as_str().to_string(),
+            owner: req.owner.clone(),
+        },
+    )
+    .await?
+    {
+        let released = st.engine.unlock(&k, &req.owner).map_err(ApiErr::from)?;
+        return Ok(Json(UnlockResponse { released }));
+    }
     Ok(Json(UnlockResponse { released }))
 }
 
 /// Extend the lease on a held lock.
 #[utoipa::path(
     patch,
-    path = "/v1/locks/{key}",
+    path = "/locks/{key}",
     tag = "Locks",
     params(("key" = String, Path, description = "Lock name")),
     request_body = ExtendLockRequest,
     responses(
         (status = 200, description = "Extend result", body = ExtendLockResponse),
-        (status = 409, description = "Lock not held or owner mismatch", body = crate::http::error::ApiError)
+        (status = 409, description = "Lock not held or owner mismatch", body = ApiError)
     )
 )]
 pub async fn extend_lock(
@@ -404,10 +590,25 @@ pub async fn extend_lock(
     Json(req): Json<ExtendLockRequest>,
 ) -> Result<Json<ExtendLockResponse>, ApiErr> {
     let k = key_of(&key)?;
-    let extended = st
-        .engine
-        .extend_lock(&k, &req.owner, Duration::from_millis(req.ttl_ms))
-        .map_err(ApiErr::from)?;
+    let ttl = Duration::from_millis(req.ttl_ms);
+    let extended = matches!(st.engine.get(&k), Some(KvValue::String(owner)) if owner == req.owner);
+    if !propose_write(
+        &st,
+        &k,
+        WalOp::ExtendLock {
+            key: k.as_str().to_string(),
+            owner: req.owner.clone(),
+            ttl,
+        },
+    )
+    .await?
+    {
+        let extended = st
+            .engine
+            .extend_lock(&k, &req.owner, ttl)
+            .map_err(ApiErr::from)?;
+        return Ok(Json(ExtendLockResponse { extended }));
+    }
     Ok(Json(ExtendLockResponse { extended }))
 }
 
@@ -418,7 +619,7 @@ pub async fn extend_lock(
 /// Prepend values to a list (LPUSH).
 #[utoipa::path(
     post,
-    path = "/v1/lists/{key}/lpush",
+    path = "/lists/{key}/lpush",
     tag = "Lists",
     params(("key" = String, Path, description = "List key")),
     request_body = PushRequest,
@@ -430,8 +631,21 @@ pub async fn lpush(
     Json(req): Json<PushRequest>,
 ) -> Result<Json<PushResponse>, ApiErr> {
     let k = key_of(&key)?;
-    let values = req.values.into_iter().map(json_to_kv).collect();
-    let length = st.engine.lpush(&k, values).map_err(ApiErr::from)?;
+    let values: Vec<KvValue> = req.values.into_iter().map(json_to_kv).collect();
+    let length = if propose_write(
+        &st,
+        &k,
+        WalOp::LPush {
+            key: k.as_str().to_string(),
+            values: values.clone(),
+        },
+    )
+    .await?
+    {
+        st.engine.llen(&k).map_err(ApiErr::from)?
+    } else {
+        st.engine.lpush(&k, values).map_err(ApiErr::from)?
+    };
     st.waiters.notify(&key);
     Ok(Json(PushResponse { length }))
 }
@@ -439,7 +653,7 @@ pub async fn lpush(
 /// Append values to a list (RPUSH).
 #[utoipa::path(
     post,
-    path = "/v1/lists/{key}/rpush",
+    path = "/lists/{key}/rpush",
     tag = "Lists",
     params(("key" = String, Path, description = "List key")),
     request_body = PushRequest,
@@ -451,8 +665,21 @@ pub async fn rpush(
     Json(req): Json<PushRequest>,
 ) -> Result<Json<PushResponse>, ApiErr> {
     let k = key_of(&key)?;
-    let values = req.values.into_iter().map(json_to_kv).collect();
-    let length = st.engine.rpush(&k, values).map_err(ApiErr::from)?;
+    let values: Vec<KvValue> = req.values.into_iter().map(json_to_kv).collect();
+    let length = if propose_write(
+        &st,
+        &k,
+        WalOp::RPush {
+            key: k.as_str().to_string(),
+            values: values.clone(),
+        },
+    )
+    .await?
+    {
+        st.engine.llen(&k).map_err(ApiErr::from)?
+    } else {
+        st.engine.rpush(&k, values).map_err(ApiErr::from)?
+    };
     st.waiters.notify(&key);
     Ok(Json(PushResponse { length }))
 }
@@ -460,7 +687,7 @@ pub async fn rpush(
 /// Pop from the head of a list (LPOP).
 #[utoipa::path(
     post,
-    path = "/v1/lists/{key}/lpop",
+    path = "/lists/{key}/lpop",
     tag = "Lists",
     params(("key" = String, Path, description = "List key")),
     responses((status = 200, description = "Popped value or null", body = PopResponse))
@@ -470,15 +697,35 @@ pub async fn lpop(
     Path(key): Path<String>,
 ) -> Result<Json<PopResponse>, ApiErr> {
     let k = key_of(&key)?;
+    let value = st
+        .engine
+        .lrange(&k, 0, 0)
+        .map_err(ApiErr::from)?
+        .into_iter()
+        .next();
+    if !propose_write(
+        &st,
+        &k,
+        WalOp::LPop {
+            key: k.as_str().to_string(),
+        },
+    )
+    .await?
+    {
+        let value = st.engine.lpop(&k);
+        return Ok(Json(PopResponse {
+            value: value.map(kv_to_json),
+        }));
+    }
     Ok(Json(PopResponse {
-        value: st.engine.lpop(&k).map(kv_to_json),
+        value: value.map(kv_to_json),
     }))
 }
 
 /// Pop from the tail of a list (RPOP).
 #[utoipa::path(
     post,
-    path = "/v1/lists/{key}/rpop",
+    path = "/lists/{key}/rpop",
     tag = "Lists",
     params(("key" = String, Path, description = "List key")),
     responses((status = 200, description = "Popped value or null", body = PopResponse))
@@ -488,8 +735,28 @@ pub async fn rpop(
     Path(key): Path<String>,
 ) -> Result<Json<PopResponse>, ApiErr> {
     let k = key_of(&key)?;
+    let value = st
+        .engine
+        .lrange(&k, -1, -1)
+        .map_err(ApiErr::from)?
+        .into_iter()
+        .next();
+    if !propose_write(
+        &st,
+        &k,
+        WalOp::RPop {
+            key: k.as_str().to_string(),
+        },
+    )
+    .await?
+    {
+        let value = st.engine.rpop(&k);
+        return Ok(Json(PopResponse {
+            value: value.map(kv_to_json),
+        }));
+    }
     Ok(Json(PopResponse {
-        value: st.engine.rpop(&k).map(kv_to_json),
+        value: value.map(kv_to_json),
     }))
 }
 
@@ -576,14 +843,14 @@ pub async fn info(State(st): State<AppState>) -> Json<InfoResponse> {
 }
 
 /// Cluster topology + sharding view. Clients route a key with
-/// `crc32(key) % shard_count -> shard -> node` (see HA.md).
+/// `crc32(key) % shard_count -> shard -> node` (see the HA / Raft capability).
 #[utoipa::path(
     get,
     path = "/cluster",
     tag = "Admin",
-    responses((status = 200, description = "Cluster topology", body = crate::cluster::ClusterState))
+    responses((status = 200, description = "Cluster topology", body = ClusterState))
 )]
-pub async fn cluster(State(st): State<AppState>) -> Json<crate::cluster::ClusterState> {
+pub async fn cluster(State(st): State<AppState>) -> Json<ClusterState> {
     Json(st.cluster.snapshot())
 }
 
@@ -678,13 +945,37 @@ async fn claim_put(
     if ct.starts_with("application/json") {
         let req: SetRequestFast = serde_json::from_slice(&body)
             .map_err(|e| ApiErr::bad_request(format!("invalid JSON body: {e}")))?;
-        st.engine
-            .set(&k, req.value.0, ttl(req.ttl_ms))
-            .map_err(ApiErr::from)?;
+        let value = req.value.0;
+        let ttl = ttl(req.ttl_ms);
+        if !propose_write(
+            st,
+            &k,
+            WalOp::Set {
+                key: k.as_str().to_string(),
+                value: value.clone(),
+                ttl,
+            },
+        )
+        .await?
+        {
+            st.engine.set(&k, value, ttl).map_err(ApiErr::from)?;
+        }
     } else {
-        st.engine
-            .set(&k, KvValue::Bytes(body.to_vec()), ttl(q.ttl_ms))
-            .map_err(ApiErr::from)?;
+        let value = KvValue::Bytes(body.to_vec());
+        let ttl = ttl(q.ttl_ms);
+        if !propose_write(
+            st,
+            &k,
+            WalOp::Set {
+                key: k.as_str().to_string(),
+                value: value.clone(),
+                ttl,
+            },
+        )
+        .await?
+        {
+            st.engine.set(&k, value, ttl).map_err(ApiErr::from)?;
+        }
     }
     ack_durable(st).await;
     Ok((
@@ -699,11 +990,11 @@ async fn claim_put(
 
 /// Fetch a job input by id (worker reads its input — #167).
 #[utoipa::path(
-    get, path = "/v1/inputs/{id}", tag = "Claim-check",
+    get, path = "/inputs/{id}", tag = "Claim-check",
     params(("id" = String, Path, description = "Job input id")),
     responses(
         (status = 200, description = "Input payload"),
-        (status = 404, description = "Not found", body = crate::http::error::ApiError)
+        (status = 404, description = "Not found", body = ApiError)
     )
 )]
 /// Enforce a scoped claim-check token on worker ops (#446, #746). No-op when
@@ -745,7 +1036,7 @@ pub async fn get_input(
 
 /// Store a job input by id (producer writes the input — #167).
 #[utoipa::path(
-    put, path = "/v1/inputs/{id}", tag = "Claim-check",
+    put, path = "/inputs/{id}", tag = "Claim-check",
     params(("id" = String, Path, description = "Job input id")),
     responses((status = 200, description = "Stored", body = OkResponse))
 )]
@@ -762,11 +1053,11 @@ pub async fn put_input(
 
 /// Fetch a job result by id (producer reads the result — #167).
 #[utoipa::path(
-    get, path = "/v1/results/{id}", tag = "Claim-check",
+    get, path = "/results/{id}", tag = "Claim-check",
     params(("id" = String, Path, description = "Job result id")),
     responses(
         (status = 200, description = "Result payload"),
-        (status = 404, description = "Not found", body = crate::http::error::ApiError)
+        (status = 404, description = "Not found", body = ApiError)
     )
 )]
 pub async fn get_result(
@@ -780,7 +1071,7 @@ pub async fn get_result(
 
 /// Store a job result by id (worker writes its result — #167).
 #[utoipa::path(
-    put, path = "/v1/results/{id}", tag = "Claim-check",
+    put, path = "/results/{id}", tag = "Claim-check",
     params(("id" = String, Path, description = "Job result id")),
     responses((status = 200, description = "Stored", body = OkResponse))
 )]

@@ -4,6 +4,7 @@
 
 use utoipa::OpenApi;
 
+use crate::cluster::ClusterState;
 use crate::http::error::ApiError;
 use crate::http::models::*;
 use crate::http::{handlers, hash, lists, meta, sets, zsets};
@@ -136,7 +137,7 @@ use crate::http::{handlers, hash, lists, meta, sets, zsets};
         meta::ListRangeResponse,
         meta::LenResponse,
         lists::BlockingPopRequest,
-        crate::cluster::ClusterState,
+        ClusterState,
     ))
 )]
 pub struct ApiDoc;

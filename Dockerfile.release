@@ -4,7 +4,7 @@
 # surface (no shell/apt/curl in the final image). The sibling `Dockerfile` is
 # the from-source build for dev / CI.
 #
-#   docker build -f projects/keep/Dockerfile.release -t keep:0.4.3 \
+#   docker build -f apps/keep/Dockerfile.release -t keep:0.4.3 \
 #     --build-arg KEEP_VERSION=keep@0.4.3 .
 #
 # The image arch (BuildKit TARGETARCH) selects the matching linux tarball:

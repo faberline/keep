@@ -1,4 +1,4 @@
-// SPEC-MANAGED: projects/keep/external-contracts/competitor-performance/efficiency/perf-gate.md#keep-competitor-performance-meter-gate
+// SPEC-MANAGED: apps/keep/external-contracts/competitor-performance/efficiency/perf-gate.md#keep-competitor-performance-meter-gate
 // CODEGEN-BEGIN
 // AW-EC-BEGIN
 // @ec keep-competitor-performance-meter-gate
@@ -7,7 +7,7 @@
 // @contract keep-meter-performance-report
 // @category efficiency
 // @required_for_production true
-// @command cd projects/keep && ../../target/debug/vat run meter-efficiency
+// @command cd apps/keep && ../../target/debug/vat run meter-efficiency
 // AW-EC-END
 
 // Contract: meter owns the pass/fail evidence for Keep's performance-relevant API and engine gate.
@@ -16,7 +16,7 @@
 #[test]
 #[ignore = "AW EC gate: run via `aw health --verify-ec` or `cargo test -- --ignored`"]
 fn keep_competitor_performance_meter_gate() {
-    let command = "cd projects/keep && ../../target/debug/vat run meter-efficiency";
+    let command = "cd apps/keep && ../../target/debug/vat run meter-efficiency";
     let id = "keep-competitor-performance-meter-gate";
     let mut root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     while !root.join(".aw").is_dir() {

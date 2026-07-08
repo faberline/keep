@@ -2,7 +2,7 @@
 //!
 //! Deterministic, network-free microbenchmarks of the sharded KV engine — the
 //! part keep owns and can ratchet. Run via `cargo bench -p keep` or, as the
-//! gate, `meter bench --target projects/keep` (delegates cargo bench; with a
+//! gate, `meter bench --target apps/keep` (delegates cargo bench; with a
 //! baseline it folds regressions to a non-zero exit). The `concurrent_*` group
 //! is the important one: it guards the multi-core SET scaling fix (a global-lock
 //! regression would collapse it, exactly what the gate must catch).

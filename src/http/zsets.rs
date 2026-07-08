@@ -1,4 +1,4 @@
-//! Sorted-set routes under `/v1/zsets/{key}` (string members, f64 scores).
+//! Sorted-set routes under `/zsets/{key}` (string members, f64 scores).
 //! WAL-backed and durable-before-ack.
 
 use axum::{
@@ -9,9 +9,10 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::http::error::ApiErr;
-use crate::http::handlers::{ack_durable, key_of};
+use crate::http::handlers::{ack_durable, key_of, propose_write};
 use crate::http::models::CountResponse;
 use crate::http::AppState;
+use crate::persistence::format::WalOp;
 
 #[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
 pub struct ScoredMember {
@@ -70,7 +71,7 @@ pub struct RankResponse {
 }
 
 /// Add scored members (ZADD). Returns the number newly added.
-#[utoipa::path(post, path = "/v1/zsets/{key}", tag = "SortedSets",
+#[utoipa::path(post, path = "/zsets/{key}", tag = "SortedSets",
     params(("key" = String, Path, description = "Sorted-set key")), request_body = ZAddRequest,
     responses((status = 200, description = "Members added", body = CountResponse)))]
 pub async fn zadd(
@@ -84,14 +85,31 @@ pub async fn zadd(
         .into_iter()
         .map(|m| (m.member, m.score))
         .collect();
-    let count = st.engine.zadd(&k, members).map_err(ApiErr::from)?;
+    let existing = members
+        .iter()
+        .filter(|(member, _)| st.engine.zscore(&k, member).ok().flatten().is_some())
+        .count();
+    let count = if propose_write(
+        &st,
+        &k,
+        WalOp::ZAdd {
+            key: k.as_str().to_string(),
+            members: members.clone(),
+        },
+    )
+    .await?
+    {
+        members.len().saturating_sub(existing)
+    } else {
+        st.engine.zadd(&k, members).map_err(ApiErr::from)?
+    };
     ack_durable(&st).await;
     Ok(Json(CountResponse { count }))
 }
 
 /// Members in a rank range, ascending by score (ZRANGE). Negative indices count
 /// from the end (`stop` defaults to -1 = last).
-#[utoipa::path(get, path = "/v1/zsets/{key}", tag = "SortedSets",
+#[utoipa::path(get, path = "/zsets/{key}", tag = "SortedSets",
     params(("key" = String, Path, description = "Sorted-set key"),
         ("start" = Option<i64>, Query, description = "Start rank (default 0)"),
         ("stop" = Option<i64>, Query, description = "Stop rank (default -1)")),
@@ -113,7 +131,7 @@ pub async fn zrange(
 }
 
 /// Remove members (ZREM). Returns the number removed.
-#[utoipa::path(delete, path = "/v1/zsets/{key}", tag = "SortedSets",
+#[utoipa::path(delete, path = "/zsets/{key}", tag = "SortedSets",
     params(("key" = String, Path, description = "Sorted-set key")), request_body = ZRemRequest,
     responses((status = 200, description = "Members removed", body = CountResponse)))]
 pub async fn zrem(
@@ -122,13 +140,31 @@ pub async fn zrem(
     Json(req): Json<ZRemRequest>,
 ) -> Result<Json<CountResponse>, ApiErr> {
     let k = key_of(&key)?;
-    let count = st.engine.zrem(&k, req.members).map_err(ApiErr::from)?;
+    let existing = req
+        .members
+        .iter()
+        .filter(|member| st.engine.zscore(&k, member).ok().flatten().is_some())
+        .count();
+    let count = if propose_write(
+        &st,
+        &k,
+        WalOp::ZRem {
+            key: k.as_str().to_string(),
+            members: req.members.clone(),
+        },
+    )
+    .await?
+    {
+        existing
+    } else {
+        st.engine.zrem(&k, req.members).map_err(ApiErr::from)?
+    };
     ack_durable(&st).await;
     Ok(Json(CountResponse { count }))
 }
 
 /// Cardinality (ZCARD).
-#[utoipa::path(get, path = "/v1/zsets/{key}/length", tag = "SortedSets",
+#[utoipa::path(get, path = "/zsets/{key}/length", tag = "SortedSets",
     params(("key" = String, Path, description = "Sorted-set key")),
     responses((status = 200, description = "Member count", body = CountResponse)))]
 pub async fn zcard(
@@ -142,7 +178,7 @@ pub async fn zcard(
 }
 
 /// Increment a member's score (ZINCRBY). Returns the new score.
-#[utoipa::path(post, path = "/v1/zsets/{key}/incr", tag = "SortedSets",
+#[utoipa::path(post, path = "/zsets/{key}/incr", tag = "SortedSets",
     params(("key" = String, Path, description = "Sorted-set key")), request_body = ZIncrRequest,
     responses((status = 200, description = "New score", body = FloatValueResponse)))]
 pub async fn zincr(
@@ -151,16 +187,32 @@ pub async fn zincr(
     Json(req): Json<ZIncrRequest>,
 ) -> Result<Json<FloatValueResponse>, ApiErr> {
     let k = key_of(&key)?;
-    let value = st
-        .engine
-        .zincrby(&k, &req.member, req.delta)
-        .map_err(ApiErr::from)?;
+    let value = if propose_write(
+        &st,
+        &k,
+        WalOp::ZIncrBy {
+            key: k.as_str().to_string(),
+            member: req.member.clone(),
+            delta: req.delta,
+        },
+    )
+    .await?
+    {
+        st.engine
+            .zscore(&k, &req.member)
+            .map_err(ApiErr::from)?
+            .unwrap_or(req.delta)
+    } else {
+        st.engine
+            .zincrby(&k, &req.member, req.delta)
+            .map_err(ApiErr::from)?
+    };
     ack_durable(&st).await;
     Ok(Json(FloatValueResponse { value }))
 }
 
 /// A member's score (ZSCORE).
-#[utoipa::path(get, path = "/v1/zsets/{key}/members/{member}/score", tag = "SortedSets",
+#[utoipa::path(get, path = "/zsets/{key}/members/{member}/score", tag = "SortedSets",
     params(("key" = String, Path, description = "Key"), ("member" = String, Path, description = "Member")),
     responses((status = 200, description = "Score or null", body = ScoreResponse)))]
 pub async fn zscore(
@@ -174,7 +226,7 @@ pub async fn zscore(
 }
 
 /// A member's 0-based ascending rank (ZRANK).
-#[utoipa::path(get, path = "/v1/zsets/{key}/members/{member}/rank", tag = "SortedSets",
+#[utoipa::path(get, path = "/zsets/{key}/members/{member}/rank", tag = "SortedSets",
     params(("key" = String, Path, description = "Key"), ("member" = String, Path, description = "Member")),
     responses((status = 200, description = "Rank or null", body = RankResponse)))]
 pub async fn zrank(

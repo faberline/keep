@@ -20,8 +20,8 @@ e2e_tests:
     claim_id: guard-static-runtime-evidence
     contract_id: keep-guard-security-report
     category: security
-    test_path: projects/keep/tests/security_keep_security_hardening_guard_scan.rs
-    command: "cd projects/keep && ../../target/debug/vat run guard-security"
+    test_path: apps/keep/tests/security_keep_security_hardening_guard_scan.rs
+    command: "cd apps/keep && ../../target/debug/vat run guard-security"
     required_for_production: false
     assertions:
       - "guard scan over keep reports no untriaged Docker, Kubernetes, or static security findings."
@@ -38,10 +38,10 @@ tool_contracts:
     tool: guard
     manifest: guard-keep-security.toml
     category: security
-    command: "cd projects/keep && ../../target/debug/vat run guard-security"
+    command: "cd apps/keep && ../../target/debug/vat run guard-security"
     native:
       version: 1
       project: keep
       source_contract: keep-security-hardening-guard-scan
-      delegate_command: "cd projects/keep && ../../target/debug/vat run guard-security"
+      delegate_command: "cd apps/keep && ../../target/debug/vat run guard-security"
 ```

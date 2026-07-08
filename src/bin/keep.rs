@@ -50,9 +50,9 @@ enum Command {
     /// verifies its sha256, and atomically replaces the executable. `--check`
     /// reports the available version without changing anything.
     Upgrade(UpgradeArgs),
-    /// Search, view, and file keep issues on the axiom tracker
-    /// (`search`/`view`/`create`). `create` bundles a diagnostics block and
-    /// auto-tags `project:keep`; `search` is filtered to keep's own issues.
+    /// Search, view, file, and follow up on keep issues on the axiom tracker
+    /// (`search`/`view`/`create`/`comment`). `create` bundles diagnostics and
+    /// auto-tags `project:keep`; `comment` reopens before posting diagnostics.
     Issue(IssueArgs),
     /// Kubernetes artifacts split by layer: the cluster-scoped CRD, the operator
     /// control plane, and app-namespace Keep instances. Render paths are offline
@@ -72,12 +72,12 @@ enum Command {
     /// `--format json-schema` for the data types, `--shapes` for the request
     /// cookbook, `--fields` for the value-type catalog. `spec gen --lang
     /// ts|py|rust --out <dir>` generates a typed client instead.
-    // @spec projects/keep/tech-design/interfaces/cli/deploy-cli-keep-spec-spec-gen-dockerfile-render.md
+    // @spec .aw/tech-design/projects/keep/interfaces/cli/deploy-cli-keep-spec-spec-gen-dockerfile-render.md
     Spec(SpecArgs),
     /// Render keep's runtime image Dockerfiles — offline, no server. Image
     /// construction is owned here (not by `k8s`) because the same artifact feeds
     /// compose, kind, and real registries.
-    // @spec projects/keep/tech-design/interfaces/cli/deploy-cli-keep-spec-spec-gen-dockerfile-render.md
+    // @spec .aw/tech-design/projects/keep/interfaces/cli/deploy-cli-keep-spec-spec-gen-dockerfile-render.md
     Dockerfile(DockerfileArgs),
 }
 
@@ -215,7 +215,7 @@ struct UpgradeArgs {
     yes: bool,
 }
 
-/// `keep issue <search|view|create>` — search, read, and file keep issues.
+/// `keep issue <search|view|create|comment>` — manage keep issues.
 /// Positional slots are reserved for the verb + its primary object, so the rest
 /// are flags (the CLI convention).
 #[derive(clap::Args, Debug)]
@@ -232,6 +232,8 @@ enum IssueCommand {
     View(IssueViewArgs),
     /// File a structured issue (auto-tagged `project:keep`).
     Create(IssueCreateArgs),
+    /// Reopen if needed and add a diagnostics-rich follow-up comment.
+    Comment(IssueCommentArgs),
 }
 
 /// `keep issue search [query] [--state] [--limit]` flags.
@@ -269,6 +271,19 @@ struct IssueCreateArgs {
     message: Vec<String>,
 }
 
+/// `keep issue comment <number> [message...]` flags.
+#[derive(clap::Args, Debug)]
+struct IssueCommentArgs {
+    /// Issue number.
+    number: u64,
+    /// Print the comment/reopen request without changing GitHub state.
+    #[arg(long)]
+    dry_run: bool,
+    /// Free-text follow-up note.
+    #[arg(num_args = 0..)]
+    message: Vec<String>,
+}
+
 /// `keep backup --dest <uri>` flags (#776). The destination is the one primary
 /// object; everything else is a flag (the CLI convention).
 #[derive(clap::Args, Debug)]
@@ -295,7 +310,7 @@ struct BackupArgs {
 /// Positional slots are reserved for the `gen` subcommand; everything else is a
 /// flag (the CLI convention).
 ///
-/// @spec projects/keep/tech-design/interfaces/cli/deploy-cli-keep-spec-spec-gen-dockerfile-render.md
+/// @spec .aw/tech-design/projects/keep/interfaces/cli/deploy-cli-keep-spec-spec-gen-dockerfile-render.md
 #[derive(clap::Args, Debug)]
 struct SpecArgs {
     /// Generate a typed client from the spec instead of printing it.
@@ -361,7 +376,7 @@ enum SpecFormat {
 
 /// `keep dockerfile <render>` — render keep's runtime image Dockerfiles.
 ///
-/// @spec projects/keep/tech-design/interfaces/cli/deploy-cli-keep-spec-spec-gen-dockerfile-render.md
+/// @spec .aw/tech-design/projects/keep/interfaces/cli/deploy-cli-keep-spec-spec-gen-dockerfile-render.md
 #[derive(clap::Args, Debug)]
 struct DockerfileArgs {
     #[command(subcommand)]
@@ -464,12 +479,12 @@ const TOPICS: &[cli_std::llm::Topic] = &[
         body: "# keep — HTTP/2 API surface\n\n\
             One port speaks HTTP/1.1 and HTTP/2 cleartext (h2c, prior-knowledge). JSON \
             values, or raw `application/octet-stream` blobs on the value path.\n\n\
-            - `GET|PUT|DELETE|HEAD /v1/kv/{key}` — scalar value (`?ttl_ms=` on PUT).\n\
-            - `POST /v1/kv/{key}/incr|cas|setnx` — atomic integer / compare-and-swap.\n\
-            - `POST /v1/kv:mset|kv:mget|kv:mdel` — batch.\n\
-            - `GET /v1/kv?prefix=&limit=` — prefix scan.\n\
-            - `POST|DELETE /v1/locks/{name}` — owner+TTL advisory locks.\n\
-            - `/v1/hashes /v1/sets /v1/zsets /v1/lists` — collections.\n\
+            - `GET|PUT|DELETE|HEAD /kv/{key}` — scalar value (`?ttl_ms=` on PUT).\n\
+            - `POST /kv/{key}/incr|cas|setnx` — atomic integer / compare-and-swap.\n\
+            - `POST /kv:mset|kv:mget|kv:mdel` — batch.\n\
+            - `GET /kv?prefix=&limit=` — prefix scan.\n\
+            - `POST|DELETE /locks/{name}` — owner+TTL advisory locks.\n\
+            - `/hashes /sets /zsets /lists` — collections.\n\
             - `/healthz /readyz /metrics /openapi.json /docs` — probes, metrics, OpenAPI.\n\n\
             The full document: `GET /openapi.json` (served by the binary).\n",
     },
@@ -479,8 +494,8 @@ const TOPICS: &[cli_std::llm::Topic] = &[
         body: "# keep — claim-check data plane\n\n\
             keep is loom/relay's result store: a worker GETs its input and PUTs its result \
             by message id; the producer mirrors it.\n\n\
-            - `GET|PUT /v1/inputs/{id}` — job input payload.\n\
-            - `GET|PUT /v1/results/{id}` — job result payload.\n\n\
+            - `GET|PUT /inputs/{id}` — job input payload.\n\
+            - `GET|PUT /results/{id}` — job result payload.\n\n\
             Bytes-first (octet-stream), durable before the write is acked.\n\n\
             **Scoped tokens** (#445/#446): set `KEEP_TOKEN_SECRET` to require an HMAC \
             `Authorization: Bearer <token>` scoped to the bare input/result key on worker ops.\n\n\
@@ -556,7 +571,7 @@ async fn dispatch(cmd: Command) -> Result<()> {
 /// `keep spec` — offline OpenAPI / JSON-Schema / cookbook, or `spec gen` to
 /// generate a typed client. No engine, no server, no I/O beyond stdout / `--out`.
 ///
-/// @spec projects/keep/tech-design/interfaces/cli/deploy-cli-keep-spec-spec-gen-dockerfile-render.md
+/// @spec .aw/tech-design/projects/keep/interfaces/cli/deploy-cli-keep-spec-spec-gen-dockerfile-render.md
 fn spec(args: SpecArgs) -> Result<()> {
     // `spec gen` writes a typed client; everything else prints to stdout.
     if let Some(SpecSub::Gen(gen)) = args.gen {
@@ -581,7 +596,7 @@ fn spec(args: SpecArgs) -> Result<()> {
 /// (offline; no engine or server) via the shared `libs/openapi-codegen`, written
 /// into `--out`. One codegen path, no external tool.
 ///
-/// @spec projects/keep/tech-design/interfaces/cli/deploy-cli-keep-spec-spec-gen-dockerfile-render.md
+/// @spec .aw/tech-design/projects/keep/interfaces/cli/deploy-cli-keep-spec-spec-gen-dockerfile-render.md
 fn spec_gen(args: GenArgs) -> Result<()> {
     use cclab_openapi_codegen::{generate, GenOptions, HttpClient, Lang};
     let lang = match args.lang {
@@ -618,7 +633,7 @@ fn spec_gen(args: GenArgs) -> Result<()> {
 /// (marker stripping + `keep@version` substitution), so `render` stays the
 /// source of truth.
 ///
-/// @spec projects/keep/tech-design/interfaces/cli/deploy-cli-keep-spec-spec-gen-dockerfile-render.md
+/// @spec .aw/tech-design/projects/keep/interfaces/cli/deploy-cli-keep-spec-spec-gen-dockerfile-render.md
 fn dockerfile(args: DockerfileArgs) -> Result<()> {
     match args.cmd {
         DockerfileCmd::Render(a) => {
@@ -644,9 +659,9 @@ fn render_release_dockerfile(version: Option<&str>) -> String {
     let template = strip_ownership_markers(include_str!("../../Dockerfile.release"));
     let mut out = String::new();
     for line in template.lines() {
-        if line.starts_with("#   docker build -f projects/keep/Dockerfile.release -t keep:") {
+        if line.starts_with("#   docker build -f apps/keep/Dockerfile.release -t keep:") {
             out.push_str(&format!(
-                "#   docker build -f projects/keep/Dockerfile.release -t keep:{version} \\"
+                "#   docker build -f apps/keep/Dockerfile.release -t keep:{version} \\"
             ));
         } else if line.starts_with("#     --build-arg KEEP_VERSION=") {
             out.push_str(&format!("#     --build-arg KEEP_VERSION={tag} ."));
@@ -696,7 +711,7 @@ fn strip_ownership_markers(input: &str) -> String {
 /// through the shared libs/service-backup runner (#776). Offline: no server, no
 /// network beyond the sink (local `file://` here).
 ///
-/// @spec projects/keep/tech-design/logic/adopt-libs-service-backup-snapshot-sink-keep-backup-verb.md
+/// @spec .aw/tech-design/projects/keep/logic/adopt-libs-service-backup-snapshot-sink-keep-backup-verb.md
 fn dispatch_backup(args: BackupArgs) -> Result<()> {
     let dest = keep::backup::BackupDestination::from_uri(&args.dest)?;
     let retention = match args.retention_secs {
@@ -871,8 +886,9 @@ fn ensure_trailing_newline(input: &str) -> String {
     }
 }
 
-/// `keep issue <verb>` — dispatch search/view/create to cli-std. `create` always
-/// tags `project:keep`; `search` is filtered to keep's own issues.
+/// `keep issue <verb>` — dispatch search/view/create/comment to cli-std.
+/// `create` always tags `project:keep`; `search` is filtered to keep's own
+/// issues; `comment` reopens before adding the diagnostics-rich note.
 async fn dispatch_issue(args: IssueArgs) -> Result<()> {
     match args.cmd {
         IssueCommand::Search(m) => {
@@ -908,6 +924,20 @@ async fn dispatch_issue(args: IssueArgs) -> Result<()> {
                     url: None,
                     repo: None,
                     label: vec!["project:keep".to_string()],
+                    dry_run: m.dry_run,
+                    yes: true,
+                },
+            )
+            .await
+        }
+        IssueCommand::Comment(m) => {
+            let msg = m.message.join(" ");
+            cli_std::issue::comment(
+                &TOOL,
+                cli_std::issue::CommentOptions {
+                    number: m.number,
+                    message: (!msg.trim().is_empty()).then_some(msg),
+                    repo: None,
                     dry_run: m.dry_run,
                     yes: true,
                 },
@@ -950,12 +980,7 @@ async fn serve_main(args: ServeArgs) -> Result<()> {
         (engine, Some(persistence))
     };
 
-    let cluster = keep::ClusterConfig::new(
-        args.node_id,
-        args.node_count,
-        args.shard_count,
-        args.peers.clone(),
-    );
+    let cluster = derive_cluster_config(&args)?;
     info!(
         node_id = cluster.node_id,
         node_count = cluster.node_count,
@@ -973,37 +998,46 @@ async fn serve_main(args: ServeArgs) -> Result<()> {
             tracing::info!("claim-check token enforcement ON");
         }
     }
-    #[cfg_attr(not(feature = "raft"), allow(unused_mut))]
-    let mut app = keep::router(state.clone());
-
     // Peer raft RPCs (`/shard/{id}/raft/*`, `/shard/{id}/raftz`) share the h2c
     // serve port. Built only when the raft feature is compiled in and k8s has
     // scaled the StatefulSet into replica/HA mode (REPLICAS_PER_SHARD > 1);
     // single-node deployments keep the direct-to-engine write path. The hosts
     // are held for the server's lifetime (Drop aborts their tick/pump tasks).
     #[cfg(feature = "raft")]
-    let _shard_hosts = if raft_host::cluster::replica_mode() {
+    let shard_hosts = if raft_host::cluster::replica_mode() {
         let replicas = std::env::var("KEEP_REPLICAS_PER_SHARD")
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
             .unwrap_or(1);
-        let hosts = keep::raft::ShardHosts::new(
-            (*state.cluster).clone(),
-            state.engine.clone(),
-            &args.data_dir,
-            replicas,
-        )
-        .await?;
+        let hosts = Arc::new(
+            keep::raft::ShardHosts::new(
+                (*state.cluster).clone(),
+                state.engine.clone(),
+                &args.data_dir,
+                replicas,
+            )
+            .await?,
+        );
         info!(
             shard_hosts = hosts.host_count(),
             replicas_per_shard = replicas,
             "raft: per-shard hosts up; peer transport merged onto serve port"
         );
-        app = app.merge(hosts.router());
         Some(hosts)
     } else {
         None
     };
+    #[cfg(feature = "raft")]
+    if let Some(hosts) = shard_hosts.clone() {
+        state = state.with_raft_hosts(hosts);
+    }
+
+    #[cfg_attr(not(feature = "raft"), allow(unused_mut))]
+    let mut app = keep::router(state.clone());
+    #[cfg(feature = "raft")]
+    if let Some(hosts) = &shard_hosts {
+        app = app.merge(hosts.router());
+    }
 
     let listener = TcpListener::bind(addr).await?;
     info!(%addr, "listening (HTTP/1.1 + HTTP/2 cleartext)");
@@ -1035,10 +1069,117 @@ async fn serve_main(args: ServeArgs) -> Result<()> {
     Ok(())
 }
 
+fn derive_cluster_config(args: &ServeArgs) -> Result<keep::ClusterConfig> {
+    if let Some(cluster) = local_topology_override(args) {
+        return Ok(cluster);
+    }
+    if !has_downward_api_topology() {
+        return Ok(keep::ClusterConfig::new(
+            args.node_id,
+            args.node_count,
+            args.shard_count,
+            args.peers.clone(),
+        ));
+    }
+
+    let headless =
+        std::env::var("KEEP_HEADLESS_SERVICE").unwrap_or_else(|_| "keep-headless".to_string());
+    let dims = raft_host::ClusterDims::from_env()?;
+    let topo = raft_host::ClusterTopology::from_env("keep", &headless, args.port, "KEEP_PEERS")?;
+    let node_count = topo.replicas_per_shard.max(1) as usize;
+    let mut peers = vec![String::new(); node_count];
+    for (node, url) in topo.peers {
+        if let Some(slot) = peers.get_mut(node as usize) {
+            *slot = url;
+        }
+    }
+    Ok(keep::ClusterConfig::from_shared_topology(
+        topo.node_id as usize,
+        node_count,
+        dims.shard_count,
+        peers,
+    ))
+}
+
+fn local_topology_override(args: &ServeArgs) -> Option<keep::ClusterConfig> {
+    let has_override = std::env::var_os("KEEP_NODE_ID").is_some()
+        || std::env::var_os("KEEP_PEERS").is_some()
+        || args.node_id != 0
+        || !args.peers.is_empty();
+    if !has_override {
+        return None;
+    }
+    let node_id = env_parse("KEEP_NODE_ID").unwrap_or(args.node_id);
+    let node_count = env_parse("KEEP_NODE_COUNT")
+        .unwrap_or(args.node_count)
+        .max(node_id + 1);
+    let shard_count = env_parse("KEEP_SHARD_COUNT").unwrap_or(args.shard_count);
+    let peers = std::env::var("KEEP_PEERS")
+        .ok()
+        .map(|raw| {
+            raw.split(',')
+                .map(str::trim)
+                .filter(|entry| !entry.is_empty())
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+        .unwrap_or_else(|| args.peers.clone());
+    Some(keep::ClusterConfig::new(
+        node_id,
+        node_count,
+        shard_count,
+        peers,
+    ))
+}
+
+fn env_parse<T>(key: &str) -> Option<T>
+where
+    T: std::str::FromStr,
+{
+    std::env::var(key).ok()?.parse().ok()
+}
+
+fn has_downward_api_topology() -> bool {
+    [
+        "POD_NAME",
+        "SHARD_COUNT",
+        "REPLICAS_PER_SHARD",
+        "VOTER_COUNT",
+    ]
+    .iter()
+    .all(|key| std::env::var_os(key).is_some())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use clap::CommandFactory;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    const TOPOLOGY_ENV: &[&str] = &[
+        "POD_NAME",
+        "SHARD_COUNT",
+        "REPLICAS_PER_SHARD",
+        "VOTER_COUNT",
+        "KEEP_HEADLESS_SERVICE",
+        "KEEP_NODE_ID",
+        "KEEP_NODE_COUNT",
+        "KEEP_SHARD_COUNT",
+        "KEEP_PEERS",
+    ];
+
+    fn clear_topology_env() {
+        for key in TOPOLOGY_ENV {
+            std::env::remove_var(key);
+        }
+    }
+
+    fn serve_args(extra: &[&str]) -> ServeArgs {
+        let mut argv = vec!["keep"];
+        argv.extend_from_slice(extra);
+        Cli::try_parse_from(argv).expect("serve args parse").serve
+    }
 
     /// The clap derive surface is internally consistent (catches conflicting
     /// args / bad value parsers at test time, not at runtime).
@@ -1047,9 +1188,9 @@ mod tests {
         Cli::command().debug_assert();
     }
 
-    /// `keep issue search/view/create` parse with their convention flags (#540).
+    /// `keep issue search/view/create/comment` parse with their convention flags.
     #[test]
-    fn issue_group_parses_search_view_create() {
+    fn issue_group_parses_search_view_create_comment() {
         let cli = Cli::try_parse_from([
             "keep", "issue", "search", "drain", "--state", "all", "--limit", "5",
         ])
@@ -1095,12 +1236,90 @@ mod tests {
             }
             other => panic!("expected issue create, got {other:?}"),
         }
+
+        let cli = Cli::try_parse_from([
+            "keep",
+            "issue",
+            "comment",
+            "926",
+            "--dry-run",
+            "still",
+            "failing",
+        ])
+        .expect("issue comment should parse");
+        match cli.cmd {
+            Some(Command::Issue(IssueArgs {
+                cmd: IssueCommand::Comment(a),
+            })) => {
+                assert_eq!(a.number, 926);
+                assert!(a.dry_run);
+                assert_eq!(a.message, vec!["still".to_string(), "failing".to_string()]);
+            }
+            other => panic!("expected issue comment, got {other:?}"),
+        }
     }
 
     /// The migrated-away `keep report-issue` command no longer parses (#540).
     #[test]
     fn report_issue_command_is_gone() {
         assert!(Cli::try_parse_from(["keep", "report-issue", "--title", "x"]).is_err());
+    }
+
+    #[test]
+    fn cluster_topology_defaults_to_single_node() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_topology_env();
+
+        let cluster = derive_cluster_config(&serve_args(&[])).unwrap();
+
+        assert_eq!(cluster.node_id, 0);
+        assert_eq!(cluster.node_count, 1);
+        assert_eq!(cluster.shard_count, 1);
+        assert!(cluster.peers.is_empty());
+    }
+
+    #[test]
+    fn cluster_topology_keeps_local_override_precedence() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_topology_env();
+        std::env::set_var("POD_NAME", "keep-2");
+        std::env::set_var("SHARD_COUNT", "1");
+        std::env::set_var("REPLICAS_PER_SHARD", "3");
+        std::env::set_var("VOTER_COUNT", "3");
+        std::env::set_var("KEEP_NODE_ID", "1");
+        std::env::set_var("KEEP_PEERS", "127.0.0.1:7117,127.0.0.1:7118");
+
+        let cluster = derive_cluster_config(&serve_args(&[])).unwrap();
+
+        assert_eq!(cluster.node_id, 1);
+        assert_eq!(cluster.node_count, 2);
+        assert_eq!(cluster.shard_count, 2);
+        assert_eq!(
+            cluster.peers,
+            vec!["127.0.0.1:7117".to_string(), "127.0.0.1:7118".to_string()]
+        );
+        clear_topology_env();
+    }
+
+    #[test]
+    fn cluster_topology_uses_downward_api_when_no_local_override() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_topology_env();
+        std::env::set_var("POD_NAME", "keep-2");
+        std::env::set_var("SHARD_COUNT", "1");
+        std::env::set_var("REPLICAS_PER_SHARD", "3");
+        std::env::set_var("VOTER_COUNT", "3");
+        std::env::set_var("KEEP_HEADLESS_SERVICE", "keep-headless");
+
+        let cluster = derive_cluster_config(&serve_args(&[])).unwrap();
+
+        assert_eq!(cluster.node_id, 2);
+        assert_eq!(cluster.node_count, 3);
+        assert_eq!(cluster.shard_count, 1);
+        assert_eq!(cluster.peers[0], "http://keep-0.keep-headless:7117");
+        assert_eq!(cluster.peers[1], "http://keep-1.keep-headless:7117");
+        assert_eq!(cluster.peers[2], "");
+        clear_topology_env();
     }
 
     /// `keep k8s crd/operator/instance` verbs parse with their convention flags

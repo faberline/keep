@@ -8,7 +8,7 @@
 //!   `uint64`; unsigned counts keep `minimum`).
 //! - R5: the process-level rustls crypto provider install is idempotent.
 //!
-//! @spec projects/keep/tech-design/interfaces/cli/adopt-libs-operator-keep-k8s-crd-operator-instance-cli.md
+//! @spec .aw/tech-design/projects/keep/interfaces/cli/adopt-libs-operator-keep-k8s-crd-operator-instance-cli.md
 #![cfg(feature = "operator")]
 
 use std::collections::HashMap;

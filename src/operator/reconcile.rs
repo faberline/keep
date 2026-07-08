@@ -6,7 +6,7 @@
 //! which workload to poll for readiness, and the `Keep` status subresource to
 //! write.
 //!
-//! @spec projects/keep/tech-design/interfaces/cli/adopt-libs-operator-keep-k8s-crd-operator-instance-cli.md
+//! @spec .aw/tech-design/projects/keep/interfaces/cli/adopt-libs-operator-keep-k8s-crd-operator-instance-cli.md
 
 use kube::ResourceExt;
 use operator::{ManagedService, ReadinessTarget, ReadyFacts};

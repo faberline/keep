@@ -5,7 +5,8 @@
 //! nodes; a client routes a key with `crc32(key) % shard_count -> shard ->
 //! node`. This module is the addressing/membership substrate that both the
 //! client-routing story and a future raft consensus layer build on. It does NOT
-//! itself replicate or coordinate — that's phase C (see HA.md).
+//! itself replicate or coordinate — that's phase C (see the keep HA / Raft
+//! capability and TD roadmap).
 //!
 //! Single-node default (node_count = 1): one node owns every shard.
 
@@ -49,6 +50,24 @@ impl ClusterConfig {
             node_id: node_id.min(node_count - 1),
             node_count,
             shard_count,
+            peers,
+        }
+    }
+
+    /// Build from the shared k8s topology helper. Unlike the legacy local
+    /// sharding constructor, this preserves the StatefulSet's shard count
+    /// literally: one shard with three replicas is valid in HA mode.
+    pub fn from_shared_topology(
+        node_id: usize,
+        node_count: usize,
+        shard_count: u32,
+        peers: Vec<String>,
+    ) -> Self {
+        let node_count = node_count.max(1);
+        Self {
+            node_id: node_id.min(node_count - 1),
+            node_count,
+            shard_count: shard_count.max(1),
             peers,
         }
     }
@@ -142,5 +161,13 @@ mod tests {
     fn shard_count_floored_to_node_count() {
         let c = ClusterConfig::new(0, 5, 2, vec![]);
         assert!(c.shard_count >= 5);
+    }
+
+    #[test]
+    fn shared_topology_preserves_shard_count_below_replica_count() {
+        let c = ClusterConfig::from_shared_topology(2, 3, 1, vec![]);
+        assert_eq!(c.node_id, 2);
+        assert_eq!(c.node_count, 3);
+        assert_eq!(c.shard_count, 1);
     }
 }

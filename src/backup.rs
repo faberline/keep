@@ -14,7 +14,7 @@
 //! adapter feature is linked into `service-backup`; `file://` is the must-work
 //! local path.
 //!
-//! @spec projects/keep/tech-design/logic/adopt-libs-service-backup-snapshot-sink-keep-backup-verb.md
+//! @spec .aw/tech-design/projects/keep/logic/adopt-libs-service-backup-snapshot-sink-keep-backup-verb.md
 
 use std::path::Path;
 use std::time::SystemTime;

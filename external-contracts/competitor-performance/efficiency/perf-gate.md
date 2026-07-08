@@ -11,6 +11,10 @@ The current vat runner delegates through meter and keeps the transient benchmark
 workspace isolated. Redis/Dragonfly comparison remains a dogfood work root until
 the external services are part of the required gate.
 
+Gate commands, thresholds, reference baselines, and the Redis/Dragonfly dogfood
+boundary are preserved in
+[`meter-performance-gates.md`](meter-performance-gates.md).
+
 ## External Contract
 <!-- type: e2e-test lang: yaml -->
 
@@ -21,8 +25,8 @@ e2e_tests:
     claim_id: vat-meter-runtime-gate
     contract_id: keep-meter-performance-report
     category: efficiency
-    test_path: projects/keep/tests/benchmark_keep_competitor_performance_meter_gate.rs
-    command: "cd projects/keep && ../../target/debug/vat run meter-efficiency"
+    test_path: apps/keep/tests/benchmark_keep_competitor_performance_meter_gate.rs
+    command: "cd apps/keep && ../../target/debug/vat run meter-efficiency"
     assertions:
       - "meter owns the pass/fail evidence for Keep's performance-relevant API and engine gate."
       - "The gate runs inside vat so report artifacts and transient state do not mutate the host checkout."
@@ -38,10 +42,10 @@ tool_contracts:
     tool: meter
     manifest: meter-keep-performance.toml
     category: efficiency
-    command: "cd projects/keep && ../../target/debug/vat run meter-efficiency"
+    command: "cd apps/keep && ../../target/debug/vat run meter-efficiency"
     native:
       version: 1
       project: keep
       source_contract: keep-competitor-performance-meter-gate
-      delegate_command: "cd projects/keep && ../../target/debug/vat run meter-efficiency"
+      delegate_command: "cd apps/keep && ../../target/debug/vat run meter-efficiency"
 ```

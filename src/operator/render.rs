@@ -12,7 +12,7 @@
 //! Service/PDB/ServiceAccount shapes; keep adds its ConfigMap, health probes,
 //! security hardening, and disk tier on top.
 //!
-//! @spec projects/keep/tech-design/interfaces/cli/adopt-libs-operator-keep-k8s-crd-operator-instance-cli.md
+//! @spec .aw/tech-design/projects/keep/interfaces/cli/adopt-libs-operator-keep-k8s-crd-operator-instance-cli.md
 
 use serde_json::{json, Value};
 

@@ -9,8 +9,18 @@ use axum::{
     Router,
 };
 use keep::{router, AppState, KvEngine};
+#[cfg(feature = "raft")]
+use keep::{ClusterConfig, KvKey, KvValue};
 use serde_json::{json, Value};
 use tower::ServiceExt;
+
+#[cfg(feature = "raft")]
+struct RaftHttpNode {
+    url: String,
+    engine: Arc<KvEngine>,
+    hosts: Arc<keep::raft::ShardHosts>,
+    serve: tokio::task::JoinHandle<()>,
+}
 
 fn app() -> (Router, AppState) {
     let state = AppState::new(Arc::new(KvEngine::with_shards(16)));
@@ -42,6 +52,84 @@ async fn send_json(app: &Router, method: &str, path: &str, body: Value) -> (Stat
     (status, value)
 }
 
+#[cfg(feature = "raft")]
+fn tmp_dir(tag: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("keep-http-raft-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[cfg(feature = "raft")]
+async fn bind_local() -> (tokio::net::TcpListener, String) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    (listener, format!("http://127.0.0.1:{port}"))
+}
+
+#[cfg(feature = "raft")]
+async fn raft_http_cluster(tag: &str) -> (std::path::PathBuf, Vec<RaftHttpNode>) {
+    let dir = tmp_dir(tag);
+    let mut listeners = Vec::new();
+    let mut urls = Vec::new();
+    for _ in 0..3 {
+        let (listener, url) = bind_local().await;
+        listeners.push(listener);
+        urls.push(url);
+    }
+
+    let mut nodes = Vec::new();
+    for (node_id, listener) in listeners.into_iter().enumerate() {
+        let engine = Arc::new(KvEngine::with_shards(4));
+        let cluster = ClusterConfig::from_shared_topology(node_id, 3, 1, urls.clone());
+        let hosts = Arc::new(
+            keep::raft::ShardHosts::new(
+                cluster.clone(),
+                engine.clone(),
+                &dir.join(format!("node-{node_id}")),
+                3,
+            )
+            .await
+            .unwrap(),
+        );
+        let state = AppState::new(engine.clone())
+            .with_cluster(cluster)
+            .with_raft_hosts(hosts.clone());
+        let app = router(state).merge(hosts.router());
+        let serve = tokio::spawn(async move {
+            service_http::serve(listener, app, std::future::pending::<()>()).await;
+        });
+        nodes.push(RaftHttpNode {
+            url: urls[node_id].clone(),
+            engine,
+            hosts,
+            serve,
+        });
+    }
+    (dir, nodes)
+}
+
+#[cfg(feature = "raft")]
+async fn await_raft_leader(nodes: &[RaftHttpNode], key: &str) -> usize {
+    for _ in 0..400 {
+        for (idx, node) in nodes.iter().enumerate() {
+            if node.hosts.host_for(key).unwrap().is_leader().await {
+                return idx;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    panic!("no raft leader elected for key {key}");
+}
+
+#[cfg(feature = "raft")]
+async fn stop_raft_http_cluster(dir: std::path::PathBuf, nodes: Vec<RaftHttpNode>) {
+    for node in nodes {
+        node.serve.abort();
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 #[tokio::test]
 async fn set_get_delete_roundtrip() {
     let (app, _) = app();
@@ -50,35 +138,64 @@ async fn set_get_delete_roundtrip() {
     let (st, _) = send_json(
         &app,
         "PUT",
-        "/v1/kv/foo",
+        "/kv/foo",
         json!({"value": {"a": 1, "b": [2, 3]}}),
     )
     .await;
     assert_eq!(st, StatusCode::OK);
 
     // GET it back.
-    let (st, body) = send_json(&app, "GET", "/v1/kv/foo", Value::Null).await;
+    let (st, body) = send_json(&app, "GET", "/kv/foo", Value::Null).await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(body["value"], json!({"a": 1, "b": [2, 3]}));
 
     // HEAD => 200.
     let req = Request::builder()
         .method("HEAD")
-        .uri("/v1/kv/foo")
+        .uri("/kv/foo")
         .body(Body::empty())
         .unwrap();
     let (st, _) = send(&app, req).await;
     assert_eq!(st, StatusCode::OK);
 
     // DELETE => deleted true.
-    let (st, body) = send_json(&app, "DELETE", "/v1/kv/foo", Value::Null).await;
+    let (st, body) = send_json(&app, "DELETE", "/kv/foo", Value::Null).await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(body["deleted"], json!(true));
 
     // GET now 404.
-    let (st, body) = send_json(&app, "GET", "/v1/kv/foo", Value::Null).await;
+    let (st, body) = send_json(&app, "GET", "/kv/foo", Value::Null).await;
     assert_eq!(st, StatusCode::NOT_FOUND);
     assert_eq!(body["code"], json!("key_not_found"));
+}
+
+#[cfg(feature = "raft")]
+#[tokio::test]
+async fn replica_mode_http_write_proposes_and_replicates() {
+    let key = "raft-http-write";
+    let (dir, nodes) = raft_http_cluster("write").await;
+    let leader = await_raft_leader(&nodes, key).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .put(format!("{}/kv/{key}", nodes[leader].url))
+        .json(&json!({"value": "via-http-raft"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let kv_key = KvKey::new(key).unwrap();
+    for _ in 0..400 {
+        if nodes.iter().all(|node| {
+            node.engine.get(&kv_key) == Some(KvValue::String("via-http-raft".to_string()))
+        }) {
+            stop_raft_http_cluster(dir, nodes).await;
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    panic!("HTTP raft write did not reach every replica engine");
 }
 
 #[tokio::test]
@@ -89,7 +206,7 @@ async fn claim_check_blob_roundtrip() {
     // PUT raw bytes.
     let req = Request::builder()
         .method("PUT")
-        .uri("/v1/kv/result:job-1")
+        .uri("/kv/result:job-1")
         .header(header::CONTENT_TYPE, "application/octet-stream")
         .body(Body::from(blob.clone()))
         .unwrap();
@@ -99,7 +216,7 @@ async fn claim_check_blob_roundtrip() {
     // GET returns the bytes verbatim as octet-stream.
     let req = Request::builder()
         .method("GET")
-        .uri("/v1/kv/result:job-1")
+        .uri("/kv/result:job-1")
         .body(Body::empty())
         .unwrap();
     let resp = app.clone().oneshot(req).await.unwrap();
@@ -118,11 +235,11 @@ async fn claim_check_blob_roundtrip() {
 async fn incr_and_cas() {
     let (app, _) = app();
 
-    let (st, body) = send_json(&app, "POST", "/v1/kv/counter/incr", json!({"delta": 5})).await;
+    let (st, body) = send_json(&app, "POST", "/kv/counter/incr", json!({"delta": 5})).await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(body["value"], json!(5));
 
-    let (st, body) = send_json(&app, "POST", "/v1/kv/counter/incr", json!({"delta": -2})).await;
+    let (st, body) = send_json(&app, "POST", "/kv/counter/incr", json!({"delta": -2})).await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(body["value"], json!(3));
 
@@ -130,7 +247,7 @@ async fn incr_and_cas() {
     let (st, body) = send_json(
         &app,
         "POST",
-        "/v1/kv/counter/cas",
+        "/kv/counter/cas",
         json!({"expected": 3, "new": 99}),
     )
     .await;
@@ -141,7 +258,7 @@ async fn incr_and_cas() {
     let (st, body) = send_json(
         &app,
         "POST",
-        "/v1/kv/counter/cas",
+        "/kv/counter/cas",
         json!({"expected": 3, "new": 0}),
     )
     .await;
@@ -156,7 +273,7 @@ async fn batch_mset_mget() {
     let (st, _) = send_json(
         &app,
         "POST",
-        "/v1/kv:mset",
+        "/kv:mset",
         json!({"entries": {"k1": "v1", "k2": 2}}),
     )
     .await;
@@ -165,7 +282,7 @@ async fn batch_mset_mget() {
     let (st, body) = send_json(
         &app,
         "POST",
-        "/v1/kv:mget",
+        "/kv:mget",
         json!({"keys": ["k1", "k2", "missing"]}),
     )
     .await;
@@ -180,10 +297,10 @@ async fn batch_mset_mget() {
 async fn scan_by_prefix() {
     let (app, _) = app();
     for k in ["user:1", "user:2", "post:1"] {
-        let (st, _) = send_json(&app, "PUT", &format!("/v1/kv/{k}"), json!({"value": 1})).await;
+        let (st, _) = send_json(&app, "PUT", &format!("/kv/{k}"), json!({"value": 1})).await;
         assert_eq!(st, StatusCode::OK);
     }
-    let (st, body) = send_json(&app, "GET", "/v1/kv?prefix=user:&limit=10", Value::Null).await;
+    let (st, body) = send_json(&app, "GET", "/kv?prefix=user:&limit=10", Value::Null).await;
     assert_eq!(st, StatusCode::OK);
     let mut keys: Vec<String> = body["keys"]
         .as_array()
@@ -202,7 +319,7 @@ async fn locks_lifecycle() {
     let (st, body) = send_json(
         &app,
         "POST",
-        "/v1/locks/job",
+        "/locks/job",
         json!({"owner": "a", "ttl_ms": 60000}),
     )
     .await;
@@ -213,7 +330,7 @@ async fn locks_lifecycle() {
     let (st, body) = send_json(
         &app,
         "POST",
-        "/v1/locks/job",
+        "/locks/job",
         json!({"owner": "b", "ttl_ms": 60000}),
     )
     .await;
@@ -221,7 +338,7 @@ async fn locks_lifecycle() {
     assert_eq!(body["acquired"], json!(false));
 
     // Owner releases.
-    let (st, body) = send_json(&app, "DELETE", "/v1/locks/job", json!({"owner": "a"})).await;
+    let (st, body) = send_json(&app, "DELETE", "/locks/job", json!({"owner": "a"})).await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(body["released"], json!(true));
 }
@@ -233,14 +350,14 @@ async fn list_push_pop() {
     let (st, body) = send_json(
         &app,
         "POST",
-        "/v1/lists/q/rpush",
+        "/lists/q/rpush",
         json!({"values": ["a", "b", "c"]}),
     )
     .await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(body["length"], json!(3));
 
-    let (st, body) = send_json(&app, "POST", "/v1/lists/q/lpop", Value::Null).await;
+    let (st, body) = send_json(&app, "POST", "/lists/q/lpop", Value::Null).await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(body["value"], json!("a"));
 }
@@ -280,8 +397,8 @@ async fn probes_and_drain() {
 async fn metrics_records_per_route_requests() {
     let (app, _) = app();
     // Exercise a couple of data-plane routes.
-    send_json(&app, "PUT", "/v1/kv/m", json!({"value": 1})).await;
-    send_json(&app, "GET", "/v1/kv/m", Value::Null).await;
+    send_json(&app, "PUT", "/kv/m", json!({"value": 1})).await;
+    send_json(&app, "GET", "/kv/m", Value::Null).await;
 
     let req = Request::builder()
         .uri("/metrics")
@@ -296,7 +413,7 @@ async fn metrics_records_per_route_requests() {
         "missing request counter"
     );
     assert!(
-        text.contains("route=\"/v1/kv/{key}\""),
+        text.contains("route=\"/kv/{key}\""),
         "missing matched-route label:\n{text}"
     );
     // Latency histogram + the existing engine gauges.
@@ -333,7 +450,7 @@ async fn openapi_document_is_served() {
     assert_eq!(st, StatusCode::OK);
     let doc: Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(doc["info"]["title"], json!("keep"));
-    assert!(doc["paths"]["/v1/kv/{key}"].is_object());
+    assert!(doc["paths"]["/kv/{key}"].is_object());
     assert!(doc["paths"]["/healthz"].is_object());
 }
 
@@ -368,27 +485,27 @@ async fn keep_ns_isolates_same_bare_key() {
     // Two namespaces write the SAME bare result id.
     let (st, _) = send(
         &app,
-        claim_put_req("/v1/results/job-1", Some("tenant-a"), "AAA"),
+        claim_put_req("/results/job-1", Some("tenant-a"), "AAA"),
     )
     .await;
     assert_eq!(st, StatusCode::OK);
     let (st, _) = send(
         &app,
-        claim_put_req("/v1/results/job-1", Some("tenant-b"), "BBB"),
+        claim_put_req("/results/job-1", Some("tenant-b"), "BBB"),
     )
     .await;
     assert_eq!(st, StatusCode::OK);
 
     // Each namespace reads back only its own value — no cross-namespace collision.
-    let (st, body) = send(&app, claim_get_req("/v1/results/job-1", Some("tenant-a"))).await;
+    let (st, body) = send(&app, claim_get_req("/results/job-1", Some("tenant-a"))).await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(body, b"AAA".to_vec());
-    let (st, body) = send(&app, claim_get_req("/v1/results/job-1", Some("tenant-b"))).await;
+    let (st, body) = send(&app, claim_get_req("/results/job-1", Some("tenant-b"))).await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(body, b"BBB".to_vec());
 
     // A namespace that never wrote this id sees nothing.
-    let (st, _) = send(&app, claim_get_req("/v1/results/job-1", Some("tenant-c"))).await;
+    let (st, _) = send(&app, claim_get_req("/results/job-1", Some("tenant-c"))).await;
     assert_eq!(st, StatusCode::NOT_FOUND);
 }
 
@@ -397,18 +514,18 @@ async fn keep_ns_absent_is_backcompat() {
     let (app, _) = app();
 
     // No X-Keep-Namespace ⇒ bare 'result:job-2' storage key.
-    let (st, _) = send(&app, claim_put_req("/v1/results/job-2", None, "PLAIN")).await;
+    let (st, _) = send(&app, claim_put_req("/results/job-2", None, "PLAIN")).await;
     assert_eq!(st, StatusCode::OK);
-    let (st, body) = send(&app, claim_get_req("/v1/results/job-2", None)).await;
+    let (st, body) = send(&app, claim_get_req("/results/job-2", None)).await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(body, b"PLAIN".to_vec());
 
     // The bare key is observable on the generic KV path at 'result:job-2'.
-    let (st, _) = send(&app, claim_get_req("/v1/kv/result:job-2", None)).await;
+    let (st, _) = send(&app, claim_get_req("/kv/result:job-2", None)).await;
     assert_eq!(st, StatusCode::OK);
 
     // A namespaced read does NOT see the bare-written value.
-    let (st, _) = send(&app, claim_get_req("/v1/results/job-2", Some("tenant-a"))).await;
+    let (st, _) = send(&app, claim_get_req("/results/job-2", Some("tenant-a"))).await;
     assert_eq!(st, StatusCode::NOT_FOUND);
 }
 
@@ -431,7 +548,7 @@ async fn keep_ns_token_checks_bare_key() {
     // the bare 'job-3' from the URL, before the namespace prefix is applied.
     let req = Request::builder()
         .method("PUT")
-        .uri("/v1/results/job-3")
+        .uri("/results/job-3")
         .header(header::CONTENT_TYPE, "application/octet-stream")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .header("x-keep-namespace", "tenant-a")
@@ -443,7 +560,7 @@ async fn keep_ns_token_checks_bare_key() {
     // Without the token ⇒ rejected, namespace notwithstanding.
     let req = Request::builder()
         .method("PUT")
-        .uri("/v1/results/job-3")
+        .uri("/results/job-3")
         .header(header::CONTENT_TYPE, "application/octet-stream")
         .header("x-keep-namespace", "tenant-a")
         .body(Body::from("R3"))
@@ -455,7 +572,7 @@ async fn keep_ns_token_checks_bare_key() {
 /// #746: after the service-auth adoption, the claim-check contract is unchanged
 /// — enforcement runs through keep's `KeepVerifier` per-handler but still
 /// returns 403 (not 401) for invalid and out-of-scope tokens, and the accepted
-/// read scope on GET /v1/inputs/{id} returns 200.
+/// read scope on GET /inputs/{id} returns 200.
 #[tokio::test]
 async fn keep_token_invalid_and_out_of_scope_are_403() {
     let secret = b"test-secret".to_vec();
@@ -472,7 +589,7 @@ async fn keep_token_invalid_and_out_of_scope_are_403() {
     let token = claimtoken::sign(&secret, &scope);
     let put = Request::builder()
         .method("PUT")
-        .uri("/v1/inputs/job-7")
+        .uri("/inputs/job-7")
         .header(header::CONTENT_TYPE, "application/octet-stream")
         .body(Body::from("IN7"))
         .unwrap();
@@ -483,7 +600,7 @@ async fn keep_token_invalid_and_out_of_scope_are_403() {
     // Accepted read scope ⇒ 200.
     let get_ok = Request::builder()
         .method("GET")
-        .uri("/v1/inputs/job-7")
+        .uri("/inputs/job-7")
         .header(header::AUTHORIZATION, format!("Bearer {token}"))
         .body(Body::empty())
         .unwrap();
@@ -494,7 +611,7 @@ async fn keep_token_invalid_and_out_of_scope_are_403() {
     // A syntactically-broken bearer value ⇒ 403 (not 401).
     let get_bad = Request::builder()
         .method("GET")
-        .uri("/v1/inputs/job-7")
+        .uri("/inputs/job-7")
         .header(header::AUTHORIZATION, "Bearer not-a-real-token")
         .body(Body::empty())
         .unwrap();
@@ -510,7 +627,7 @@ async fn keep_token_invalid_and_out_of_scope_are_403() {
     let other_token = claimtoken::sign(&secret, &other);
     let get_oos = Request::builder()
         .method("GET")
-        .uri("/v1/inputs/job-7")
+        .uri("/inputs/job-7")
         .header(header::AUTHORIZATION, format!("Bearer {other_token}"))
         .body(Body::empty())
         .unwrap();
@@ -526,7 +643,7 @@ async fn keep_token_disabled_is_open() {
 
     let put = Request::builder()
         .method("PUT")
-        .uri("/v1/inputs/job-open")
+        .uri("/inputs/job-open")
         .header(header::CONTENT_TYPE, "application/octet-stream")
         .body(Body::from("OPEN"))
         .unwrap();
@@ -536,7 +653,7 @@ async fn keep_token_disabled_is_open() {
     // No Authorization header, enforcement off ⇒ 200.
     let get = Request::builder()
         .method("GET")
-        .uri("/v1/inputs/job-open")
+        .uri("/inputs/job-open")
         .body(Body::empty())
         .unwrap();
     let (st, body) = send(&app, get).await;

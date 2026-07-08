@@ -4,7 +4,7 @@
 //! with the expected shape (no server, no network), and `spec gen` must compose
 //! the shared openapi-codegen on keep's own OpenAPI for every language.
 //!
-//! @spec projects/keep/tech-design/interfaces/cli/deploy-cli-keep-spec-spec-gen-dockerfile-render.md
+//! @spec .aw/tech-design/projects/keep/interfaces/cli/deploy-cli-keep-spec-spec-gen-dockerfile-render.md
 
 use keep::spec::{json_schema_json, openapi_json, openapi_yaml, request_shapes, value_catalog};
 use serde_json::Value;
@@ -20,7 +20,7 @@ fn openapi_is_valid_json_with_kv_data_plane() {
     );
     let paths = v["paths"].as_object().expect("has paths");
     assert!(
-        paths.keys().any(|p| p.contains("/v1/kv")),
+        paths.keys().any(|p| p.contains("/kv")),
         "exposes the KV data plane: {:?}",
         paths.keys().collect::<Vec<_>>()
     );
@@ -137,6 +137,58 @@ fn value_catalog_matches_the_kvvalue_enum() {
     ] {
         assert!(types.contains(&t), "value catalog missing `{t}`: {types:?}");
     }
+}
+
+/// Recursively collect every `$ref` value anywhere in the document.
+fn collect_refs(v: &Value, out: &mut Vec<String>) {
+    match v {
+        Value::Object(map) => {
+            for (k, val) in map {
+                if k == "$ref" {
+                    if let Some(s) = val.as_str() {
+                        out.push(s.to_string());
+                    }
+                }
+                collect_refs(val, out);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                collect_refs(item, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// R1+R2: the document is self-complete — every `$ref` in the emitted OpenAPI
+/// resolves to a key registered under `components.schemas`. Strict: walks ALL
+/// refs recursively, no allowlist (no `crate.*`-dotted dangling refs).
+#[test]
+fn every_ref_resolves_to_a_registered_component_schema() {
+    let v: Value = serde_json::from_str(&openapi_json()).expect("openapi is valid JSON");
+    let schemas = v["components"]["schemas"]
+        .as_object()
+        .expect("components.schemas object");
+
+    let mut refs = Vec::new();
+    collect_refs(&v, &mut refs);
+    assert!(!refs.is_empty(), "document carries schema refs");
+
+    let dangling: Vec<&String> = refs
+        .iter()
+        .filter(|r| {
+            let Some(name) = r.strip_prefix("#/components/schemas/") else {
+                // Any non-schema ref shape is itself a self-completeness defect.
+                return true;
+            };
+            !schemas.contains_key(name)
+        })
+        .collect();
+    assert!(
+        dangling.is_empty(),
+        "dangling $refs (must all resolve in components.schemas): {dangling:?}"
+    );
 }
 
 /// R2: `spec gen` composes the SHARED codegen on keep's own OpenAPI — one
