@@ -57,7 +57,7 @@ jobs:
           [[ "$WORKFLOW_REF" == "${GITHUB_REPOSITORY}/.github/workflows/keep-release-candidate.yml@refs/heads/main" ]] || { echo "candidate workflow ref mismatch" >&2; exit 1; }
           git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "candidate is not landed on main" >&2; exit 1; }
-          cargo_version="$(sed -n 's/^version = "\([0-9][0-9.]*\)"$/\1/p' apps/keep/Cargo.toml | head -n1)"
+          cargo_version="$(sed -n 's/^version = "\([0-9][0-9.]*\)"$/\1/p' Cargo.toml | head -n1)"
           [[ "$cargo_version" == "$REQUESTED_VERSION" ]] || { echo "Cargo version mismatch" >&2; exit 1; }
           set +e
           git ls-remote --exit-code --tags origin "refs/tags/keep@${cargo_version}" >/dev/null 2>&1
@@ -133,7 +133,7 @@ jobs:
           name="keep-${{ matrix.target }}"
           mkdir -p "pkg/${name}" out
           cp "target/${{ matrix.target }}/release/keep" "pkg/${name}/keep"
-          cp apps/keep/README.md "pkg/${name}/README.md"
+          cp README.md "pkg/${name}/README.md"
           tar -C pkg -czf "out/${name}.tar.gz" "$name"
           (
             cd out
@@ -230,7 +230,7 @@ jobs:
         run: |
           set -euo pipefail
           {
-            echo "image_repo=ghcr.io/chrischeng-c4/keep"
+            echo "image_repo=ghcr.io/faberline/keep"
             echo "candidate_tag=release-candidate-${{ github.run_id }}-${{ github.run_attempt }}"
           } >> "$GITHUB_OUTPUT"
       - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
@@ -245,7 +245,7 @@ jobs:
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
-          file: apps/keep/Dockerfile.release
+          file: Dockerfile.release
           platforms: linux/amd64,linux/arm64
           push: true
           provenance: false
@@ -418,7 +418,7 @@ jobs:
         run: |
           set -euo pipefail
           scripts/release/verify-release-candidate.sh --app keep \
-            --repo chrischeng-c4/axiom \
+            --repo faberline/keep \
             --version "${{ needs.identity.outputs.version }}" \
             --commit "${{ needs.identity.outputs.commit }}" \
             --run-id "${{ github.run_id }}" \
@@ -482,7 +482,7 @@ jobs:
         run: |
           set -euo pipefail
           scripts/release/verify-release-candidate.sh --app keep \
-            --repo chrischeng-c4/axiom \
+            --repo faberline/keep \
             --version "${{ needs.identity.outputs.version }}" \
             --commit "${{ needs.identity.outputs.commit }}" \
             --run-id "${{ github.run_id }}" \

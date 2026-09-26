@@ -1,3 +1,43 @@
+[workspace]
+resolver = "2"
+members = ["."]
+
+[workspace.package]
+authors = ["Chris Cheng <chris.cheng.c4@gmail.com>"]
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/faberline/keep"
+
+[workspace.dependencies]
+tokio = { version = "1.40", features = ["full"] }
+futures = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["preserve_order"] }
+serde_yaml = "0.9"
+anyhow = "1.0"
+thiserror = "2.0"
+reqwest = { version = "0.12", default-features = false, features = ["charset", "http2", "system-proxy", "rustls-tls-native-roots", "json", "cookies", "gzip", "brotli", "multipart", "stream"] }
+axum = { version = "0.8", features = ["ws"] }
+tower = "0.5"
+tower-http = { version = "0.5", features = ["cors", "compression-gzip", "trace"] }
+utoipa = "4"
+async-trait = "0.1"
+tracing = "0.1"
+parking_lot = "0.12"
+clap = { version = "4", features = ["derive", "string"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[profile.test]
+opt-level = 1
+
 [package]
 name = "keep"
 version = "0.4.13"

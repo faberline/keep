@@ -10,10 +10,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 fn main() {
     // Re-run when HEAD moves so the stamped sha stays current. The workspace
-    // `.git` lives 2 levels up from apps/keep/; in a linked worktree `.git`
+    // `.git` lives 2 levels up from ; in a linked worktree `.git`
     // is a file rather than a dir, so guard the rerun hint.
-    if std::path::Path::new("../../.git/HEAD").exists() {
-        println!("cargo:rerun-if-changed=../../.git/HEAD");
+    if std::path::Path::new(".git/HEAD").exists() {
+        println!("cargo:rerun-if-changed=.git/HEAD");
     }
 
     let git_sha = short_sha().unwrap_or_else(|| "unknown".to_string());

@@ -49,13 +49,13 @@ health/readiness probes, metrics, and graceful drain behavior.
   operational surface.
 - Gate — behavior: `cargo test -p keep --test http_api` - binary-facing
   OpenAPI/probe/metrics and API conformance
-- Source: `apps/keep/tests/http_api.rs`, `apps/keep/src/bin/keep.rs`
+- Source: `tests/http_api.rs`, `src/bin/keep.rs`
 
 | Work Root | Kind | WI | Gate / Evidence |
 |---|---|---:|---|
-| keep-process-interface | epic | - | apps/keep/src/bin/keep.rs; apps/keep/tests/http_api.rs |
-| openapi-probe-metrics-surface | epic | - | apps/keep/tests/http_api.rs |
-| graceful-drain-readiness-flip | epic | - | apps/keep/tests/http_api.rs |
+| keep-process-interface | epic | - | src/bin/keep.rs; tests/http_api.rs |
+| openapi-probe-metrics-surface | epic | - | tests/http_api.rs |
+| graceful-drain-readiness-flip | epic | - | tests/http_api.rs |
 
 ### Competitive KV Feature Parity
 
@@ -69,14 +69,14 @@ relay-facing worker data-plane integration.
   `keep::client::KvClient` - in-tree HTTP client.
 - Gate — behavior: `cargo test -p keep --test http_api --test collections_api`
   - public KV, collection, lock, TTL, and claim-check conformance
-- Source: `apps/keep/tests/http_api.rs`, `apps/keep/tests/collections_api.rs`,
-  `apps/keep/README.md`
+- Source: `tests/http_api.rs`, `tests/collections_api.rs`,
+  `README.md`
 
 | Work Root | Kind | WI | Gate / Evidence |
 |---|---|---:|---|
-| redis-dragonfly-api-breadth | epic | - | apps/keep/tests/http_api.rs; apps/keep/tests/collections_api.rs |
-| http-key-value-surface | epic | - | apps/keep/tests/http_api.rs |
-| hash-set-sorted-set-operations | epic | - | apps/keep/tests/collections_api.rs |
+| redis-dragonfly-api-breadth | epic | - | tests/http_api.rs; tests/collections_api.rs |
+| http-key-value-surface | epic | - | tests/http_api.rs |
+| hash-set-sorted-set-operations | epic | - | tests/collections_api.rs |
 | relay-keep-worker-facing-contract | epic | 108 | pending integration spec |
 
 ### Competitive KV Performance
@@ -85,25 +85,25 @@ Keep performance claims stay tied to repeatable engine/resource gates and an
 external Redis/Dragonfly comparison, not anecdotal local timings.
 
 - Root WI: #126
-- Surfaces: Meter/Vat: `apps/keep/vat.toml#meter-efficiency` - isolated meter
+- Surfaces: Meter/Vat: `vat.toml#meter-efficiency` - isolated meter
   execution for performance-relevant API and durability gates.; Example:
   `bench_compare` - Redis/Dragonfly comparison harness.; Meter:
-  `apps/keep/external-contracts/competitor-performance/efficiency/meter-performance-gates.md`
+  `external-contracts/competitor-performance/efficiency/meter-performance-gates.md`
   - engine throughput and resource gate.
 - Gate — efficiency:
-  `cd apps/keep && ../../target/debug/vat run meter-efficiency` - meter-owned
+  `vat run meter-efficiency` - meter-owned
   runtime evidence inside vat
 - Gate — behavior: `cargo test -p keep` - API behavior under the
   performance-relevant surfaces
-- Source: `apps/keep/vat.toml`,
-  `apps/keep/external-contracts/competitor-performance/efficiency/meter-performance-gates.md`,
-  `apps/keep/examples/bench_compare.rs`
+- Source: `vat.toml`,
+  `external-contracts/competitor-performance/efficiency/meter-performance-gates.md`,
+  `examples/bench_compare.rs`
 
 | Work Root | Kind | WI | Gate / Evidence |
 |---|---|---:|---|
-| vat-meter-runtime-gate | epic | 126 | apps/keep/vat.toml#meter-efficiency |
-| engine-throughput-ratchet | epic | 126 | apps/keep/external-contracts/competitor-performance/efficiency/meter-performance-gates.md |
-| redis-dragonfly-comparison | epic | 126 | apps/keep/examples/bench_compare.rs |
+| vat-meter-runtime-gate | epic | 126 | vat.toml#meter-efficiency |
+| engine-throughput-ratchet | epic | 126 | external-contracts/competitor-performance/efficiency/meter-performance-gates.md |
+| redis-dragonfly-comparison | epic | 126 | examples/bench_compare.rs |
 
 ### Long-Running Stability
 
@@ -113,20 +113,20 @@ HA that preserves the public KV API.
 
 - Root WI: #121
 - Surfaces: CLI: `keep` - long-running WAL/snapshot-backed service process.;
-  K8s: `apps/keep/k8s` - StatefulSet/PDB deployment shape.; Rust API:
+  K8s: `k8s` - StatefulSet/PDB deployment shape.; Rust API:
   `keep::raft` - raft-runtime-backed HA path.
 - Gate — stability:
   `cargo test -p keep --test durability --test http_api --test raft_node` -
   recovery, drain, probe, and raft state-machine conformance
-- Source: `apps/keep/tests/durability.rs`, `apps/keep/tests/http_api.rs`,
-  `apps/keep/tests/raft_node.rs`,
+- Source: `tests/durability.rs`, `tests/http_api.rs`,
+  `tests/raft_node.rs`,
   `.aw/tech-design/projects/keep/logic/ha-raft-sharding-roadmap.md`,
-  `apps/keep/k8s`
+  `k8s`
 
 | Work Root | Kind | WI | Gate / Evidence |
 |---|---|---:|---|
-| wal-backed-cold-recovery | epic | - | apps/keep/tests/durability.rs |
-| graceful-shutdown-and-readiness-drain | epic | - | apps/keep/src/bin/keep.rs; apps/keep/tests/http_api.rs |
+| wal-backed-cold-recovery | epic | - | tests/durability.rs |
+| graceful-shutdown-and-readiness-drain | epic | - | src/bin/keep.rs; tests/http_api.rs |
 | multi-node-http-2-raft-network | epic | 121 | .aw/tech-design/projects/keep/logic/ha-raft-sharding-roadmap.md |
 
 ### Security Hardening
@@ -136,23 +136,23 @@ adding explicit negative gates for authn/z, TLS, network policy, and malformed
 or oversized request handling before production readiness.
 
 - Root WI: none; this capability predates the tracker.
-- Surfaces: Guard/Vat: `apps/keep/vat.toml#guard-security` - isolated guard
+- Surfaces: Guard/Vat: `vat.toml#guard-security` - isolated guard
   scan with meter runtime evidence.; HTTP: keep public API - request body and
-  data-plane boundary.; K8s: `apps/keep/k8s` - deployment boundary for future
+  data-plane boundary.; K8s: `k8s` - deployment boundary for future
   network policy and identity.
-- Gate — security: `cd apps/keep && ../../target/debug/vat run guard-security`
+- Gate — security: `vat run guard-security`
   - guard-owned static/runtime evidence
 - Gate — behavior: `cargo test -p keep --test http_api` - body-limit and
   public-route smoke
-- Source: `apps/keep/vat.toml`, `apps/keep/src/http/routes.rs`,
-  `apps/keep/tests/http_api.rs`
+- Source: `vat.toml`, `src/http/routes.rs`,
+  `tests/http_api.rs`
 
 | Work Root | Kind | WI | Gate / Evidence |
 |---|---|---:|---|
-| body-limit-and-public-route-boundary | epic | - | apps/keep/src/http/routes.rs; apps/keep/tests/http_api.rs |
+| body-limit-and-public-route-boundary | epic | - | src/http/routes.rs; tests/http_api.rs |
 | auth-tls-network-policy-boundary | epic | - | pending guard/negative security inventory |
-| guard-static-runtime-evidence | epic | - | apps/keep/vat.toml#guard-security |
-| malformed-and-oversized-request-negative-tests | epic | - | apps/keep/vat.toml#guard-security |
+| guard-static-runtime-evidence | epic | - | vat.toml#guard-security |
+| malformed-and-oversized-request-negative-tests | epic | - | vat.toml#guard-security |
 
 ### HTTP/2 API List
 
@@ -178,14 +178,14 @@ response carries a `Server-Timing: app;dur=<ms>` baseline (#2490).
   (`Server-Timing: app;dur=` per-response latency) on every response.
 - Gate — behavior: `cargo test -p keep --test http_api --test collections_api`
   - public route list and data-plane conformance
-- Source: `apps/keep/README.md#http-surface-v1`, `apps/keep/tests/http_api.rs`,
-  `apps/keep/tests/collections_api.rs`
+- Source: `README.md#http-surface-v1`, `tests/http_api.rs`,
+  `tests/collections_api.rs`
 
 | Work Root | Kind | WI | Gate / Evidence |
 |---|---|---:|---|
-| http2-api-route-list | epic | - | apps/keep/README.md#http-surface-v1 |
-| openapi-docs-probes-and-metrics | epic | - | apps/keep/tests/http_api.rs |
-| collection-route-breadth | epic | - | apps/keep/tests/collections_api.rs |
+| http2-api-route-list | epic | - | README.md#http-surface-v1 |
+| openapi-docs-probes-and-metrics | epic | - | tests/http_api.rs |
+| collection-route-breadth | epic | - | tests/collections_api.rs |
 
 ### Kubernetes-Native Deployment
 
@@ -194,21 +194,21 @@ headless and ClusterIP service discovery, probe-aware readiness drain, bounded
 config through env/flags, and nonroot container images.
 
 - Root WI: none; this capability predates the tracker.
-- Surfaces: K8s: `apps/keep/k8s` - StatefulSet, headless/ClusterIP Services,
+- Surfaces: K8s: `k8s` - StatefulSet, headless/ClusterIP Services,
   ConfigMap, PDB, and overlays.; Container: `Dockerfile` and
   `Dockerfile.release` - repo-root and published-binary images.
 - Gate — behavior: `cargo test -p keep --test http_api` - readiness, metrics,
   and graceful drain behavior
-- Gate — stability: `kubectl apply -k apps/keep/k8s/overlays/dev` - deployment
+- Gate — stability: `kubectl apply -k k8s/overlays/dev` - deployment
   dogfood path
-- Source: `apps/keep/k8s`, `apps/keep/Dockerfile`,
-  `apps/keep/Dockerfile.release`, `apps/keep/tests/http_api.rs`
+- Source: `k8s`, `Dockerfile`,
+  `Dockerfile.release`, `tests/http_api.rs`
 
 | Work Root | Kind | WI | Gate / Evidence |
 |---|---|---:|---|
-| statefulset-pvc-service-topology | epic | - | apps/keep/k8s |
-| readiness-drain-and-probe-contract | epic | - | apps/keep/tests/http_api.rs |
-| nonroot-container-image-path | epic | - | apps/keep/Dockerfile; apps/keep/Dockerfile.release |
+| statefulset-pvc-service-topology | epic | - | k8s |
+| readiness-drain-and-probe-contract | epic | - | tests/http_api.rs |
+| nonroot-container-image-path | epic | - | Dockerfile; Dockerfile.release |
 
 ### Primary Replicas
 
@@ -225,15 +225,15 @@ names the replica requirement.
 - Gate — stability: `cargo test -p keep --test raft_node` - current raft
   state-machine conformance
 - Gate — behavior: multi-node HTTP/2 raft network - staged failover gate
-- Source: `apps/keep/tests/raft_node.rs`,
+- Source: `tests/raft_node.rs`,
   `.aw/tech-design/projects/keep/logic/ha-raft-sharding-roadmap.md`,
-  `apps/keep/k8s`
+  `k8s`
 
 | Work Root | Kind | WI | Gate / Evidence |
 |---|---|---:|---|
-| single-node-raftcore-state-machine | epic | 121 | apps/keep/tests/raft_node.rs |
+| single-node-raftcore-state-machine | epic | 121 | tests/raft_node.rs |
 | primary-replica-topology-contract | epic | 121 | .aw/tech-design/projects/keep/logic/ha-raft-sharding-roadmap.md |
-| multi-node-replica-failover | epic | 121 | .aw/tech-design/projects/keep/logic/ha-raft-sharding-roadmap.md; apps/keep/k8s |
+| multi-node-replica-failover | epic | 121 | .aw/tech-design/projects/keep/logic/ha-raft-sharding-roadmap.md; k8s |
 
 ### KV API
 
@@ -247,12 +247,12 @@ opaque blob roundtrips.
   client.
 - Gate — behavior: `cargo test -p keep --test http_api` - public HTTP API
   conformance
-- Source: `apps/keep/tests/http_api.rs`
+- Source: `tests/http_api.rs`
 
 | Work Root | Kind | WI | Gate / Evidence |
 |---|---|---:|---|
-| http-key-value-surface | epic | - | apps/keep/tests/http_api.rs |
-| claim-check-blob-roundtrip | epic | - | apps/keep/tests/http_api.rs |
+| http-key-value-surface | epic | - | tests/http_api.rs |
+| claim-check-blob-roundtrip | epic | - | tests/http_api.rs |
 
 ### Collections
 
@@ -263,12 +263,12 @@ durable engine and HTTP surface.
 - Surfaces: HTTP: `/hashes`, `/sets`, `/zsets`, `/lists` - collection APIs.
 - Gate — behavior: `cargo test -p keep --test collections_api` - collection
   operation conformance
-- Source: `apps/keep/tests/collections_api.rs`
+- Source: `tests/collections_api.rs`
 
 | Work Root | Kind | WI | Gate / Evidence |
 |---|---|---:|---|
-| hash-set-sorted-set-operations | epic | - | apps/keep/tests/collections_api.rs |
-| list-push-pop-blocking-pop-operations | epic | - | apps/keep/tests/collections_api.rs |
+| hash-set-sorted-set-operations | epic | - | tests/collections_api.rs |
+| list-push-pop-blocking-pop-operations | epic | - | tests/collections_api.rs |
 
 ### Durability
 
@@ -280,8 +280,8 @@ cold restart.
   HTTP: mutation APIs - durable-before-ack public writes.
 - Gate — stability: `cargo test -p keep --test durability` - cold recovery
   conformance
-- Source: `apps/keep/tests/durability.rs`
-- Evidence: apps/keep/tests/durability.rs
+- Source: `tests/durability.rs`
+- Evidence: tests/durability.rs
 
 ### HA / Raft
 
@@ -293,12 +293,12 @@ changing the public KV API.
   StatefulSet - PVC-backed instances.
 - Gate — stability: `cargo test -p keep --test raft_node` - raft state-machine
   conformance
-- Source: `apps/keep/tests/raft_node.rs`,
+- Source: `tests/raft_node.rs`,
   `.aw/tech-design/projects/keep/logic/ha-raft-sharding-roadmap.md`
 
 | Work Root | Kind | WI | Gate / Evidence |
 |---|---|---:|---|
-| single-node-raftcore-state-machine | epic | 121 | apps/keep/tests/raft_node.rs |
+| single-node-raftcore-state-machine | epic | 121 | tests/raft_node.rs |
 | multi-node-http-2-raft-network | epic | 121 | .aw/tech-design/projects/keep/logic/ha-raft-sharding-roadmap.md |
 
 ### Relay Worker Data Plane
@@ -311,7 +311,7 @@ worker contract.
   integration contract.
 - Gate — behavior: future relay+keep integration gate - worker-facing contract
   closure
-- Source: `apps/keep/README.md`, `apps/relay/tests/worker_loop.rs`
+- Source: `README.md`, `apps/relay/tests/worker_loop.rs`
 - Evidence: pending integration spec
 
 ## Architecture
@@ -388,7 +388,7 @@ Images: `Dockerfile` (from-source, build context = repo root) and
 - ✅ durable-before-ack WAL (no-drop, group commit) — #114
 - ✅ perf-gate via meter: engine throughput ratchet + server resource gate — see [meter-performance-gates.md](external-contracts/competitor-performance/efficiency/meter-performance-gates.md) (#126). Competitor comparison (vs Redis/Dragonfly) is the separate one-off `examples/bench_compare.rs`.
 - ☐ worker-facing OpenAPI contract finalized with relay — #108
-- ◑ HA — phase A (sharded scale-out + `/cluster`) done; phase C raft via raft-runtime integrated (`--features raft`, engine-backed state machine, HTTP write propose path, proven by `tests/raft_node.rs` and the raft HTTP API test) — multi-node failover remains staged; see [.aw/tech-design/projects/keep/logic/ha-raft-sharding-roadmap.md](../../.aw/tech-design/projects/keep/logic/ha-raft-sharding-roadmap.md) (#121)
+- ◑ HA — phase A (sharded scale-out + `/cluster`) done; phase C raft via raft-runtime integrated (`--features raft`, engine-backed state machine, HTTP write propose path, proven by `tests/raft_node.rs` and the raft HTTP API test) — multi-node failover remains staged; see [.aw/tech-design/projects/keep/logic/ha-raft-sharding-roadmap.md](.aw/tech-design/projects/keep/logic/ha-raft-sharding-roadmap.md) (#121)
 - ✅ queuekit and queue-era `ion` feature consumers now use `keep::client`
   instead of the retired raw-TCP `cclab-kv` client; remaining cleanup is
   deduping legacy `cclab-kv` copies.

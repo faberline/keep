@@ -29,8 +29,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable, Dict, NoReturn, Optional, Tuple
 
-REPOSITORY = "chrischeng-c4/axiom"
-IMAGE_OWNER = "ghcr.io/chrischeng-c4"
+REPOSITORY = "faberline/keep"
+IMAGE_OWNER = "ghcr.io/faberline"
 ACCEPTANCE_JOB = "deploy + verify on GKE"
 VERIFY_IMAGE_STEP = "Verify prebuilt image input"
 HARNESS_STEP = "Run acceptance harness"

@@ -8,8 +8,8 @@
 # --app parameterized twins in this directory. Every function prints one
 # value per line and refuses an app it does not know, so a typo cannot fall
 # through to an empty target list.
-RELEASE_REPO="chrischeng-c4/axiom"
-RELEASE_IMAGE_OWNER="ghcr.io/chrischeng-c4"
+RELEASE_REPO="faberline/keep"
+RELEASE_IMAGE_OWNER="ghcr.io/faberline"
 RELEASE_COMPATIBILITY_LINE="- Compatibility: no HTTP, CLI, wire format, on-disk format, or Kubernetes manifest shape changed in this release."
 
 release_refuse() { printf 'refused: %s\n' "$*" >&2; exit 2; }
@@ -23,12 +23,12 @@ release_app_require() {
 # Where the app's Cargo.toml, build.sh, and Dockerfile.release live.
 release_app_root() {
   release_app_require "$1"
-  case "$1" in sift) printf 'apps/sift\n' ;; *) printf 'apps/%s\n' "$1" ;; esac
+  printf '.\n'  # each release app is the root of its own repository
 }
 # Directory of the app's verify-release-candidate.sh and verify-release-artifacts.sh.
 release_app_scripts_dir() {
   release_app_require "$1"
-  case "$1" in tape) printf 'apps/%s/scripts\n' "$1" ;; *) printf 'scripts/release\n' ;; esac
+  case "$1" in tape) printf 'scripts\n' ;; *) printf 'scripts/release\n' ;; esac
 }
 # True for the apps whose verifiers take --app (the shared twins here).
 release_app_uses_shared_scripts() {

@@ -2,9 +2,9 @@
 
 ## Brief
 
-How to change `apps/keep`. What it promises and the work roots it owns live in
+How to change `keep`. What it promises and the work roots it owns live in
 [README.md](README.md); repository-wide authoring and verification rules live
-in the root [CONTRIBUTING.md](../../CONTRIBUTING.md).
+in the root [CONTRIBUTING.md](https://github.com/faberline/workspace/blob/main/CONTRIBUTING.md).
 
 Use `product-deliver` for authorized work. QA owns the red e2e case and its
 registration. Dev owns the red unit test and scoped implementation. A fresh

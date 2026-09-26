@@ -52,8 +52,8 @@ BUILD_RELEASE_SH = ROOT / "scripts" / "build" / "release.sh"
 AGENTS_SKILL = ROOT / ".agents" / "skills" / "build-release" / "SKILL.md"
 CLAUDE_SKILL = ROOT / ".claude" / "skills" / "build-release" / "SKILL.md"
 
-REPO = "chrischeng-c4/axiom"
-IMAGE_OWNER = "ghcr.io/chrischeng-c4"
+REPO = "faberline/keep"
+IMAGE_OWNER = "ghcr.io/faberline"
 GKE_HARNESS_APPS = ("keep", "defer", "relay", "loom")
 ACCEPTANCE_JOB = "deploy + verify on GKE"
 VERIFY_IMAGE_STEP = "Verify prebuilt image input"
@@ -157,8 +157,8 @@ def shared_app(name: str, root: str, targets: Tuple[str, ...], backend: str, fun
 APPS: Dict[str, App] = {
     "tape": App(
         name="tape",
-        root="apps/tape",
-        scripts_dir="apps/tape/scripts",
+        root=".",
+        scripts_dir="scripts",
         shared_scripts=False,
         onboarded=True,
         targets=FIVE_TARGETS,
@@ -172,10 +172,10 @@ APPS: Dict[str, App] = {
         functional=(),
     ),
     # onboarded flips to True in the PR that lands the app's two workflows.
-    "sift": shared_app("sift", "apps/sift", FIVE_TARGETS, "gcp", SIFT_FIELDS, onboarded=True),
-    "keep": shared_app("keep", "apps/keep", TWO_TARGETS, "gke-acceptance", HARNESS_FIELDS, onboarded=True),
-    "relay": shared_app("relay", "apps/relay", TWO_TARGETS, "gke-acceptance", HARNESS_FIELDS, onboarded=True),
-    "defer": shared_app("defer", "apps/defer", TWO_TARGETS, "gke-acceptance", HARNESS_FIELDS, onboarded=True),
+    "sift": shared_app("sift", ".", FIVE_TARGETS, "gcp", SIFT_FIELDS, onboarded=True),
+    "keep": shared_app("keep", ".", TWO_TARGETS, "gke-acceptance", HARNESS_FIELDS, onboarded=True),
+    "relay": shared_app("relay", ".", TWO_TARGETS, "gke-acceptance", HARNESS_FIELDS, onboarded=True),
+    "defer": shared_app("defer", ".", TWO_TARGETS, "gke-acceptance", HARNESS_FIELDS, onboarded=True),
 }
 FIXTURE_APPS = ("keep", "sift")  # one per receipt backend
 FIXTURE_VERSION = {"keep": "0.4.13", "sift": "0.1.2"}

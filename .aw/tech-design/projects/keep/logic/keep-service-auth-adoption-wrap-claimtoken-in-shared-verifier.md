@@ -87,10 +87,10 @@ requirements:
 elements:
   keep_auth_unit_tests:
     kind: test
-    path: apps/keep/src/http/auth.rs
+    path: src/http/auth.rs
   keep_http_api:
     kind: test
-    path: apps/keep/tests/http_api.rs
+    path: tests/http_api.rs
 relations:
   - { from: keep_auth_unit_tests, verifies: verifier_wraps_claimtoken }
   - { from: keep_auth_unit_tests, verifies: shared_plumbing_per_handler }
@@ -133,32 +133,32 @@ requirementDiagram
 
 ```yaml
 changes:
-  - path: apps/keep/Cargo.toml
+  - path: Cargo.toml
     action: modify
     section: logic
     impl_mode: hand-written
     description: "Add the libs/service-auth dependency to Keep."
-  - path: apps/keep/src/http/auth.rs
+  - path: src/http/auth.rs
     action: create
     section: logic
     impl_mode: hand-written
     description: "New module: KeepPrincipal (concrete principal wrapping claimtoken::Scope, with authorizes(id, write)) and KeepVerifier implementing service_auth::Verifier by composing service_auth::bearer_token + claimtoken::verify."
-  - path: apps/keep/src/http/mod.rs
+  - path: src/http/mod.rs
     action: modify
     section: logic
     impl_mode: hand-written
     description: "Declare pub mod auth; replace AppState.token_secret with verifier: Option<Arc<KeepVerifier>>; with_token_secret builds a KeepVerifier so the optional (None=open) semantics and constructor API are preserved."
-  - path: apps/keep/src/http/handlers.rs
+  - path: src/http/handlers.rs
     action: modify
     section: logic
     impl_mode: hand-written
     description: "Rewrite check_scope to delegate token verification to AppState.verifier (the shared Verifier) and keep the per-handler bare-id scope decision and the exact 403 forbidden body; no-op when no verifier; still called only by get_input and put_result."
-  - path: apps/keep/src/http/auth.rs
+  - path: src/http/auth.rs
     action: create
     section: unit-test
     impl_mode: hand-written
     description: "Unit tests: KeepVerifier authenticates a valid token to a KeepPrincipal, authorizes the bare id for read/write scope, and returns AuthError for missing/invalid/expired/out-of-scope tokens."
-  - path: apps/keep/tests/http_api.rs
+  - path: tests/http_api.rs
     action: modify
     section: unit-test
     impl_mode: hand-written

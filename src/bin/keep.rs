@@ -479,7 +479,7 @@ struct ServeArgs {
 /// (`upgrade` / `issue`), per the CONTRIBUTING.md CLI convention.
 const TOOL: cli_std::ToolInfo = cli_std::ToolInfo {
     project: "keep",
-    repo: "chrischeng-c4/axiom",
+    repo: "faberline/keep",
     target: env!("KEEP_TARGET"),
     version: env!("CARGO_PKG_VERSION"),
     git_sha: env!("KEEP_GIT_SHA"),
@@ -695,9 +695,9 @@ fn render_release_dockerfile(version: Option<&str>) -> String {
         cli_std::artifact::strip_source_ownership_markers(include_str!("../../Dockerfile.release"));
     let mut out = String::new();
     for line in template.lines() {
-        if line.starts_with("#   docker build -f apps/keep/Dockerfile.release -t keep:") {
+        if line.starts_with("#   docker build -f Dockerfile.release -t keep:") {
             out.push_str(&format!(
-                "#   docker build -f apps/keep/Dockerfile.release -t keep:{version} \\"
+                "#   docker build -f Dockerfile.release -t keep:{version} \\"
             ));
         } else if line.starts_with("#     --build-arg KEEP_VERSION=") {
             out.push_str(&format!("#     --build-arg KEEP_VERSION={tag} ."));

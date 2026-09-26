@@ -186,7 +186,7 @@ verify_full_supply_chain() {
   for pair in "amd64:$AMD64_DIGEST" "arm64:$ARM64_DIGEST"; do
     labels="$(docker buildx imagetools inspect "${image_repo}@${pair#*:}" --format '{{json .Image.Config.Labels}}')" || fail "${pair%%:*} image labels cannot be read"
     jq -e --arg commit "$COMMIT" --arg version "$VERSION" --arg run_url "$expected_run_url" '
-      .["org.opencontainers.image.source"] == "https://github.com/chrischeng-c4/axiom" and .["org.opencontainers.image.revision"] == $commit and .["org.opencontainers.image.version"] == $version and .["org.opencontainers.image.url"] == $run_url
+      .["org.opencontainers.image.source"] == "https://github.com/faberline/keep" and .["org.opencontainers.image.revision"] == $commit and .["org.opencontainers.image.version"] == $version and .["org.opencontainers.image.url"] == $run_url
     ' <<<"$labels" >/dev/null || fail "${pair%%:*} image labels do not bind candidate identity"
   done
   cosign verify --certificate-identity "$EXPECTED_CERT_ID" --certificate-oidc-issuer https://token.actions.githubusercontent.com "$IMAGE" >/dev/null

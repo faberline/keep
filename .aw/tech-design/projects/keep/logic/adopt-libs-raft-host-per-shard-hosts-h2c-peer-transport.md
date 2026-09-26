@@ -90,7 +90,7 @@ requirements:
 elements:
   raft_node_tests:
     kind: test
-    path: apps/keep/tests/raft_node.rs
+    path: tests/raft_node.rs
 relations:
   - { from: raft_node_tests, verifies: single_node_ryw }
   - { from: raft_node_tests, verifies: per_shard_routing }
@@ -144,22 +144,22 @@ requirementDiagram
 
 ```yaml
 changes:
-  - path: apps/keep/Cargo.toml
+  - path: Cargo.toml
     action: modify
     section: logic
     impl_mode: hand-written
     description: "Add the optional raft-host dependency and make the raft feature pull dep:raft-host alongside dep:raft-core."
-  - path: apps/keep/src/raft.rs
+  - path: src/raft.rs
     action: modify
     section: logic
     impl_mode: hand-written
     description: "Replace RaftKv/ShardedRaft with KvStateMachine (raft_host::RaftStateMachine over KvEngine, shard-filtered snapshot/restore) and ShardHosts (HashMap<ShardId, Arc<RaftHost>>: per-shard spawn, shard_topology derivation, write routing via host.propose, and a router() that nests each host under /shard/{id})."
-  - path: apps/keep/src/bin/keep.rs
+  - path: src/bin/keep.rs
     action: modify
     section: logic
     impl_mode: hand-written
     description: "When the raft feature is enabled and replica mode is on, build ShardHosts and merge its shard-scoped peer router onto the serve app so the h2c peer transport rides the serve port."
-  - path: apps/keep/tests/raft_node.rs
+  - path: tests/raft_node.rs
     action: modify
     section: unit-test
     impl_mode: hand-written

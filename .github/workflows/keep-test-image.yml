@@ -4,7 +4,7 @@
 # line (sha-<git12> tags, digest-pinned by consumers) is separate from any
 # release line and is pruned by ghcr-test-image-cleanup.yml. Unlike lumen's,
 # this build has no musl/multi-arch matrix: the acceptance cluster's nodes are
-# amd64 e2 machines, and apps/keep/Dockerfile is a from-source workspace
+# amd64 e2 machines, and Dockerfile is a from-source workspace
 # build whose context must be the repo root.
 #
 # `workflow_call` outputs mirror the publish job's outputs so
@@ -83,7 +83,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: apps/keep/Dockerfile
+          file: Dockerfile
           platforms: linux/amd64
           push: true
           # NEVER add `latest` or a semver tag here — dev/test line only.

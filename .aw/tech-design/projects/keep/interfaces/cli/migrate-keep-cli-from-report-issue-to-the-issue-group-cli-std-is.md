@@ -63,7 +63,7 @@ requirements:
 elements:
   keep_cli_tests:
     kind: test
-    path: apps/keep/src/bin/keep.rs
+    path: src/bin/keep.rs
 relations:
   - { from: keep_cli_tests, verifies: issue_group_parses }
   - { from: keep_cli_tests, verifies: report_issue_gone }
@@ -93,17 +93,17 @@ requirementDiagram
 
 ```yaml
 changes:
-  - path: apps/keep/Cargo.toml
+  - path: Cargo.toml
     action: modify
     section: logic
     impl_mode: hand-written
     description: "Replace the report-issue feature with an issue feature gating cli-std/online so the issue group's network paths build, mirroring jet."
-  - path: apps/keep/src/bin/keep.rs
+  - path: src/bin/keep.rs
     action: modify
     section: logic
     impl_mode: hand-written
     description: "Replace the ReportIssue clap command + ReportIssueArgs with an Issue subcommand group (search/view/create/comment) dispatching to cli_std::issue::{search,view,create,comment}; auto-tag app:keep on create and filter search to it; update the module doc comment."
-  - path: apps/keep/src/bin/keep.rs
+  - path: src/bin/keep.rs
     action: modify
     section: unit-test
     impl_mode: hand-written

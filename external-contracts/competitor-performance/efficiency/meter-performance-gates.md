@@ -18,7 +18,7 @@ Run them through meter (which delegates `cargo bench` and, with a baseline,
 folds regressions to a non-zero exit):
 
 ```bash
-meter bench --target apps/keep --human          # run the gate benchmark
+meter bench --target . --human          # run the gate benchmark
 # or directly:
 cargo bench -p keep --bench engine_bench
 ```
@@ -55,7 +55,7 @@ enforced against the live keep server under a FIXED load. A breach is a `high`
 finding and a non-zero exit.
 
 ```bash
-cd apps/keep
+cd .
 KEEP_DISABLE_PERSISTENCE=true meter measure \
   --exec ../../target/release/keep --level vitals --duration-cap 30 \
   --drive 'for i in $(seq 1 15); do curl -sf -o /dev/null --max-time 1 \
@@ -72,7 +72,7 @@ non-zero with a `[gate] max_peak_rss_mb breached` finding.
 
 ## Notes
 
-- `meter run --target apps/keep` is the composite (test + bench + profile,
+- `meter run --target .` is the composite (test + bench + profile,
   worst-wins) for one-shot CI use.
 - Competitor comparison (vs Redis / Dragonfly) is a separate one-off harness:
   `examples/bench_compare.rs` (`--backend redis|dragonfly`). It is NOT part of

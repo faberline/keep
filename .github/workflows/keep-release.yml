@@ -109,7 +109,7 @@ jobs:
         run: |
           set -euo pipefail
           scripts/release/verify-release-artifacts.sh --app keep \
-            --repo chrischeng-c4/axiom \
+            --repo faberline/keep \
             --tag "keep@${{ inputs.version }}" \
             --commit "$GITHUB_SHA" \
             --candidate-run-id "${{ inputs.candidate_run_id }}" \
@@ -197,7 +197,7 @@ jobs:
         run: |
           set -euo pipefail
           scripts/release/verify-release-artifacts.sh --app keep \
-            --repo chrischeng-c4/axiom \
+            --repo faberline/keep \
             --tag "keep@${{ inputs.version }}" \
             --commit "$GITHUB_SHA" \
             --candidate-run-id "${{ inputs.candidate_run_id }}" \
@@ -232,7 +232,7 @@ jobs:
         run: |
           set -euo pipefail
           scripts/release/verify-release-artifacts.sh --app keep \
-            --repo chrischeng-c4/axiom \
+            --repo faberline/keep \
             --tag "keep@${{ inputs.version }}" \
             --commit "$GITHUB_SHA" \
             --candidate-run-id "${{ inputs.candidate_run_id }}" \
@@ -257,7 +257,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          image_repo=ghcr.io/chrischeng-c4/keep
+          image_repo=ghcr.io/faberline/keep
           root_digest="${{ needs.verify-inputs.outputs.root_digest }}"
           version="${{ inputs.version }}"
           root_ref="${image_repo}@${root_digest}"
@@ -346,7 +346,7 @@ jobs:
           - GKE receipt sidecar SHA-256: ${{ needs.verify-inputs.outputs.gke_receipt_sidecar_sha256 }}
           - Release path: landed main -> immutable candidate -> digest-pinned GKE acceptance -> protected annotated tag -> no-rebuild promotion.
           - Compatibility: no HTTP, CLI, wire format, on-disk format, or Kubernetes manifest shape changed in this release.
-          - Image: ghcr.io/chrischeng-c4/keep:${{ inputs.version }} is the root index digest above; latest moves only when this is the newest semver.
+          - Image: ghcr.io/faberline/keep:${{ inputs.version }} is the root index digest above; latest moves only when this is the newest semver.
           EOF
           gh release create "keep@${{ inputs.version }}" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "keep@${{ inputs.version }}" --notes-file release-notes.md \
             candidate/keep-*.tar.gz candidate/keep-*.tar.gz.sha256 candidate/spdx-amd64.json candidate/spdx-arm64.json gke-receipt/keep-gke-receipt.json gke-receipt/keep-gke-receipt.json.sha256
@@ -358,7 +358,7 @@ jobs:
         run: |
           set -euo pipefail
           scripts/release/verify-release-artifacts.sh --app keep \
-            --repo chrischeng-c4/axiom \
+            --repo faberline/keep \
             --tag "keep@${{ inputs.version }}" \
             --commit "$GITHUB_SHA" \
             --candidate-run-id "${{ inputs.candidate_run_id }}" \

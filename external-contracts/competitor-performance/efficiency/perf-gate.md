@@ -25,8 +25,8 @@ e2e_tests:
     claim_id: vat-meter-runtime-gate
     contract_id: keep-meter-performance-report
     category: efficiency
-    test_path: apps/keep/tests/benchmark_keep_competitor_performance_meter_gate.rs
-    command: "cd apps/keep && ../../target/debug/vat run meter-efficiency"
+    test_path: tests/benchmark_keep_competitor_performance_meter_gate.rs
+    command: "vat run meter-efficiency"
     assertions:
       - "meter owns the pass/fail evidence for Keep's performance-relevant API and engine gate."
       - "The gate runs inside vat so report artifacts and transient state do not mutate the host checkout."
@@ -42,10 +42,10 @@ tool_contracts:
     tool: meter
     manifest: meter-keep-performance.toml
     category: efficiency
-    command: "cd apps/keep && ../../target/debug/vat run meter-efficiency"
+    command: "vat run meter-efficiency"
     native:
       version: 1
       project: keep
       source_contract: keep-competitor-performance-meter-gate
-      delegate_command: "cd apps/keep && ../../target/debug/vat run meter-efficiency"
+      delegate_command: "vat run meter-efficiency"
 ```

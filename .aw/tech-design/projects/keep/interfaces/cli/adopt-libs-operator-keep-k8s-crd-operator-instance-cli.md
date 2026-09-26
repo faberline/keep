@@ -99,10 +99,10 @@ requirements:
 elements:
   operator_tests:
     kind: test
-    path: apps/keep/tests/operator.rs
+    path: tests/operator.rs
   keep_cli:
     kind: test
-    path: apps/keep/src/bin/keep.rs
+    path: src/bin/keep.rs
 relations:
   - { from: operator_tests, verifies: crd_flatten }
   - { from: operator_tests, verifies: render_downward_api }
@@ -159,67 +159,67 @@ requirementDiagram
 
 ```yaml
 changes:
-  - path: apps/keep/Cargo.toml
+  - path: Cargo.toml
     action: modify
     section: logic
     impl_mode: hand-written
     description: "Add the operator feature and its optional deps (kube, k8s-openapi, schemars, operator, serde_yaml, rustls); wire a private rustls-provider feature enabled by operator/raft/client/self-update/issue."
-  - path: apps/keep/src/lib.rs
+  - path: src/lib.rs
     action: modify
     section: logic
     impl_mode: hand-written
     description: "Declare pub mod tls (always) and #[cfg(feature = operator)] pub mod operator."
-  - path: apps/keep/src/tls.rs
+  - path: src/tls.rs
     action: create
     section: logic
     impl_mode: hand-written
     description: "install_default_crypto_provider: once-guarded aws_lc_rs rustls provider install, compiled real behind the rustls-provider feature and a no-op otherwise."
-  - path: apps/keep/src/operator/mod.rs
+  - path: src/operator/mod.rs
     action: create
     section: logic
     impl_mode: hand-written
     description: "operator module root: crd_yaml() that serializes the Keep CRD and normalizes uint formats, plus re-exports of Keep/KeepSpec/KeepStatus and run."
-  - path: apps/keep/src/operator/crd.rs
+  - path: src/operator/crd.rs
     action: create
     section: logic
     impl_mode: hand-written
     description: "KeepSpec (#[serde(flatten)] cluster: operator::ClusterSpec + keep engineShards/logLevel/graceSecs/storage/storageClass), the Keep CustomResource (keep.dev/v1alpha1), and KeepStatus."
-  - path: apps/keep/src/operator/render.rs
+  - path: src/operator/render.rs
     action: create
     section: logic
     impl_mode: hand-written
     description: "render(&Keep) -> Vec<Value>: service_account, keep ConfigMap, sharded_statefulset (downward-API env + /data PVC) hardened with probes/securityContext/tmp, headless + client Service, and PDB via operator::render helpers."
-  - path: apps/keep/src/operator/reconcile.rs
+  - path: src/operator/reconcile.rs
     action: create
     section: logic
     impl_mode: hand-written
     description: "impl operator::ManagedService for Keep (MANAGER, render, readiness_targets = StatefulSet, status_patch) and pub async fn run() = operator::run::<Keep>()."
-  - path: apps/keep/src/bin/keep.rs
+  - path: src/bin/keep.rs
     action: modify
     section: logic
     impl_mode: hand-written
     description: "Call keep::tls::install_default_crypto_provider() before Cli::parse(); add the K8s command tree (crd render, operator render|run, instance render --profile dev|staging|prod|template) with operator run gated behind the operator feature; add CLI parse tests for the new verbs."
-  - path: apps/keep/k8s/operator/crd.yaml
+  - path: k8s/operator/crd.yaml
     action: create
     section: logic
     impl_mode: hand-written
     description: "Generated Keep CustomResourceDefinition, checked in so `keep k8s crd render` works without the operator feature (include_str fallback)."
-  - path: apps/keep/k8s/operator/rbac.yaml
+  - path: k8s/operator/rbac.yaml
     action: create
     section: logic
     impl_mode: hand-written
     description: "keep-system Namespace, operator ServiceAccount, ClusterRole (keeps + status, statefulsets, services/configmaps/serviceaccounts, poddisruptionbudgets, leases) and ClusterRoleBinding."
-  - path: apps/keep/k8s/operator/deployment.yaml
+  - path: k8s/operator/deployment.yaml
     action: create
     section: logic
     impl_mode: hand-written
     description: "Operator controller Deployment running `keep k8s operator run` from the keep image with downward-API POD_NAME/POD_NAMESPACE for leader election."
-  - path: apps/keep/k8s/operator/kustomization.yaml
+  - path: k8s/operator/kustomization.yaml
     action: create
     section: logic
     impl_mode: hand-written
     description: "Kustomization installing crd.yaml + rbac.yaml + deployment.yaml for the operator control plane."
-  - path: apps/keep/tests/operator.rs
+  - path: tests/operator.rs
     action: create
     section: unit-test
     impl_mode: hand-written

@@ -3,12 +3,12 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: apps/keep/build.sh <debug|release>
+Usage: ./build.sh <debug|release>
 
 debug    Build keep and install target/debug/keep to ~/.cargo/bin/keep.
 release  Prepare the local release candidate: read the version from
-         apps/keep/Cargo.toml, pin apps/keep/k8s/{base,operator} to
-         keep:<version> and apps/keep/Dockerfile.release to keep@<version>,
+         Cargo.toml, pin k8s/{base,operator} to
+         keep:<version> and Dockerfile.release to keep@<version>,
          build with --release --locked, and install locally. It neither bumps
          the version nor commits.
 
@@ -23,7 +23,7 @@ fail_hint() {
   local mode="$1"
   echo ""
   echo "Build failed."
-  echo "Retry with: apps/keep/build.sh ${mode}"
+  echo "Retry with: ./build.sh ${mode}"
   echo "Verify with: ~/.cargo/bin/keep --version"
 }
 
@@ -48,15 +48,15 @@ trap 'fail_hint "$MODE"' ERR
 # harness override the image by that name (`kustomize edit set image keep=…`),
 # and a registry-qualified pin would silently stop matching that override.
 KEEP_IMAGE_PINS=(
-  apps/keep/k8s/base/statefulset.yaml
-  apps/keep/k8s/operator/deployment.yaml
+  k8s/base/statefulset.yaml
+  k8s/operator/deployment.yaml
 )
 
 # `keep dockerfile render --variant release` substitutes CARGO_PKG_VERSION into
 # exactly these three lines of the committed Dockerfile.release and must
 # reproduce the file byte-for-byte (`cargo test -p keep --test deploy_cli`), so
 # a Cargo.toml bump without this sync turns that test red; this sync is the fix.
-KEEP_DOCKERFILE=apps/keep/Dockerfile.release
+KEEP_DOCKERFILE=Dockerfile.release
 
 install_keep() {
   local profile="$1"
@@ -90,11 +90,11 @@ sync_keep_release_dockerfile() {
   local version="$1" dockerfile="$2"
   KEEP_RELEASE_VERSION="$version" perl -pi -e '
     s#^ARG KEEP_VERSION=.*$#ARG KEEP_VERSION=keep\@$ENV{KEEP_RELEASE_VERSION}#;
-    s#^\#   docker build -f apps/keep/Dockerfile.release -t keep:.*$#\#   docker build -f apps/keep/Dockerfile.release -t keep:$ENV{KEEP_RELEASE_VERSION} \\#;
+    s#^\#   docker build -f Dockerfile.release -t keep:.*$#\#   docker build -f Dockerfile.release -t keep:$ENV{KEEP_RELEASE_VERSION} \\#;
     s#^\#     --build-arg KEEP_VERSION=.*$#\#     --build-arg KEEP_VERSION=keep\@$ENV{KEEP_RELEASE_VERSION} .#;
   ' "$dockerfile"
   if ! grep -Fxq "ARG KEEP_VERSION=keep@${version}" "$dockerfile" \
-    || ! grep -Fxq "#   docker build -f apps/keep/Dockerfile.release -t keep:${version} \\" "$dockerfile" \
+    || ! grep -Fxq "#   docker build -f Dockerfile.release -t keep:${version} \\" "$dockerfile" \
     || ! grep -Fxq "#     --build-arg KEEP_VERSION=keep@${version} ." "$dockerfile"; then
     echo "error: failed to pin ${dockerfile} to keep@${version}" >&2
     return 1
@@ -108,7 +108,7 @@ case "$MODE" in
     echo "next: done"
     ;;
   release)
-    CURRENT_VERSION="$(project_build_read_version apps/keep/Cargo.toml)"
+    CURRENT_VERSION="$(project_build_read_version Cargo.toml)"
     sync_keep_release_image_pins "$CURRENT_VERSION" "${KEEP_IMAGE_PINS[@]}"
     sync_keep_release_dockerfile "$CURRENT_VERSION" "$KEEP_DOCKERFILE"
     cargo build --release --locked -p keep --bin keep

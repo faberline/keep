@@ -85,7 +85,7 @@ elements:
     path: libs/service-http/src/probes.rs
   keep_http_api:
     kind: test
-    path: apps/keep/tests/http_api.rs
+    path: tests/http_api.rs
 relations:
   - { from: service_http_unit_tests, verifies: shared_ready_ok }
   - { from: service_http_unit_tests, verifies: shared_ready_draining }
@@ -136,27 +136,27 @@ requirementDiagram
 
 ```yaml
 changes:
-  - path: apps/keep/Cargo.toml
+  - path: Cargo.toml
     action: modify
     section: logic
     impl_mode: hand-written
     description: "Add the service-http dependency to Keep."
-  - path: apps/keep/src/http/mod.rs
+  - path: src/http/mod.rs
     action: modify
     section: logic
     impl_mode: hand-written
     description: "Implement service_http::ReadinessHook and MetricsProvider for AppState so the shared probe router reports Keep readiness and Prometheus metrics."
-  - path: apps/keep/src/http/routes.rs
+  - path: src/http/routes.rs
     action: modify
     section: logic
     impl_mode: hand-written
     description: "Build the router from service_http::standard_probe_routes for healthz/readyz/metrics/openapi/docs, merged with Keep's auth/body-limited data plane and local info/cluster admin routes; drop the hand-rolled probe routes."
-  - path: apps/keep/src/bin/keep.rs
+  - path: src/bin/keep.rs
     action: modify
     section: logic
     impl_mode: hand-written
     description: "Serve the merged app and drain through service_http::serve, trace_layer, and shutdown_with_drain instead of the local hyper auto::Builder, GracefulShutdown, and signal handling."
-  - path: apps/keep/tests/http_api.rs
+  - path: tests/http_api.rs
     action: modify
     section: unit-test
     impl_mode: hand-written

@@ -63,7 +63,7 @@ requirement KEEP_NS_TOKEN_CHECKS_BARE_KEY {
 ```yaml
 coverage_kind: behavioral
 changes:
-  - path: apps/keep/src/http/handlers.rs
+  - path: src/http/handlers.rs
     action: modify
     impl_mode: hand-written
     description: |
@@ -75,7 +75,7 @@ changes:
       prefix is applied AFTER check_scope verifies the claim-check token against
       the bare key from the URL, so token scope stays bare per the settled loom
       design.
-  - path: apps/keep/tests/http_api.rs
+  - path: tests/http_api.rs
     action: modify
     impl_mode: hand-written
     description: |

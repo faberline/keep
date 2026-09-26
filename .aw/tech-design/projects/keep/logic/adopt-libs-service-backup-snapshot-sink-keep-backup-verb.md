@@ -75,10 +75,10 @@ requirements:
 elements:
   keep_backup_tests:
     kind: test
-    path: apps/keep/tests/backup.rs
+    path: tests/backup.rs
   keep_operator_tests:
     kind: test
-    path: apps/keep/tests/operator.rs
+    path: tests/operator.rs
 relations:
   - { from: keep_backup_tests, verifies: consistent_snapshot_bytes }
   - { from: keep_backup_tests, verifies: local_backup_runner }
@@ -119,42 +119,42 @@ requirementDiagram
 
 ```yaml
 changes:
-  - path: apps/keep/Cargo.toml
+  - path: Cargo.toml
     action: modify
     section: logic
     impl_mode: hand-written
     description: "Add the service-backup path dependency (always linked; used by the backup module and, behind the operator feature, by KeepSpec)."
-  - path: apps/keep/src/lib.rs
+  - path: src/lib.rs
     action: modify
     section: logic
     impl_mode: hand-written
     description: "Declare and export the new `backup` module."
-  - path: apps/keep/src/backup.rs
+  - path: src/backup.rs
     action: create
     section: logic
     impl_mode: hand-written
     description: "keep's backup adoption: re-export service_backup types (mirrors lumen's backup_sink), a KeepSnapshot payload built from engine.dump_values, snapshot_bytes/snapshot_bytes_from_data_dir, and run_backup that recovers the engine, serializes a consistent snapshot, and calls sink_from_destination + run_backup_once."
-  - path: apps/keep/src/bin/keep.rs
+  - path: src/bin/keep.rs
     action: modify
     section: logic
     impl_mode: hand-written
     description: "Add the `keep backup` verb (--dest, --data-dir, --shards, --retention-secs) that builds a BackupDestination, runs run_backup, and prints the BackupRunResult."
-  - path: apps/keep/src/operator/crd.rs
+  - path: src/operator/crd.rs
     action: modify
     section: logic
     impl_mode: hand-written
     description: "Add an optional `backup: Option<KeepBackupSpec>` field to KeepSpec (schedule + destination URI + retentionSecs). The CRD carries the destination as a URI string rather than embedding service_backup's tagged-union BackupDestination schema (whose shared `prefix` property differs across variants and is not a valid Kubernetes structural schema); the `keep backup` verb parses it back via BackupDestination::from_uri. The crd_yaml uint normalization already covers retentionSecs (u64)."
-  - path: apps/keep/src/operator/render.rs
+  - path: src/operator/render.rs
     action: modify
     section: logic
     impl_mode: hand-written
     description: "Render a backup CronJob via operator::render::cron_job when spec.backup is Some, invoking `keep backup` with the policy's schedule, destination URI, and retention; no CronJob otherwise."
-  - path: apps/keep/tests/backup.rs
+  - path: tests/backup.rs
     action: create
     section: unit-test
     impl_mode: hand-written
     description: "R1/R2: snapshot_bytes round-trips the engine's key/value set, and run_backup_once writes then prunes an artifact at a file:// destination."
-  - path: apps/keep/tests/operator.rs
+  - path: tests/operator.rs
     action: modify
     section: unit-test
     impl_mode: hand-written

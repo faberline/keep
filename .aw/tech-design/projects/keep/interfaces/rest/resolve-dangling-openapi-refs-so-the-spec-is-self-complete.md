@@ -70,7 +70,7 @@ requirements:
 elements:
   keep_spec_cli_tests:
     kind: test
-    path: apps/keep/tests/spec_cli.rs
+    path: tests/spec_cli.rs
 relations:
   - { from: keep_spec_cli_tests, verifies: refs_resolve }
   - { from: keep_spec_cli_tests, verifies: strict_walk }
@@ -108,17 +108,17 @@ requirementDiagram
 
 ```yaml
 changes:
-  - path: apps/keep/src/http/handlers.rs
+  - path: src/http/handlers.rs
     action: modify
     section: logic
     impl_mode: hand-written
     description: "Import ApiError and ClusterState and reference them by short name in every #[utoipa::path] responses(body = ...) annotation (and the cluster handler signature) so utoipa 4 emits refs matching the registered component keys instead of crate.*-dotted names."
-  - path: apps/keep/src/http/openapi.rs
+  - path: src/http/openapi.rs
     action: modify
     section: logic
     impl_mode: hand-written
     description: "Register ClusterState in components(schemas(...)) via an imported short path for one consistent short-name registration style across the ApiDoc."
-  - path: apps/keep/tests/spec_cli.rs
+  - path: tests/spec_cli.rs
     action: modify
     section: unit-test
     impl_mode: hand-written

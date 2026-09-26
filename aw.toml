@@ -8,13 +8,13 @@ traits = ["long_running", "cli_facing", "competitive_replacement", "network_expo
 
 [ec.efficiency]
 tool = "meter"
-meter = "apps/keep"
-command = "cd apps/keep && ../../target/debug/vat run meter-efficiency"
+meter = "."
+command = "vat run meter-efficiency"
 
 [ec.security]
 tool = "guard"
-dir = "apps/keep"
-command = "cd apps/keep && ../../target/debug/vat run guard-security"
+dir = "."
+command = "vat run guard-security"
 
 [[workspaces]]
 name = "keep"
@@ -35,9 +35,9 @@ capability_id = "competitor-performance"
 claim_id = "vat-meter-runtime-gate"
 contract_id = "keep-meter-performance-report"
 category = "efficiency"
-td_ref = "apps/keep/external-contracts/competitor-performance/efficiency/perf-gate.md#keep-competitor-performance-meter-gate"
-test_path = "apps/keep/tests/benchmark_keep_competitor_performance_meter_gate.rs"
-command = "cd apps/keep && ../../target/debug/vat run meter-efficiency"
+td_ref = "external-contracts/competitor-performance/efficiency/perf-gate.md#keep-competitor-performance-meter-gate"
+test_path = "tests/benchmark_keep_competitor_performance_meter_gate.rs"
+command = "vat run meter-efficiency"
 required_for_production = true
 assertions = [
     "meter owns the pass/fail evidence for Keep's performance-relevant API and engine gate.",
@@ -51,9 +51,9 @@ capability_id = "security-hardening"
 claim_id = "guard-static-runtime-evidence"
 contract_id = "keep-guard-security-report"
 category = "security"
-td_ref = "apps/keep/external-contracts/security-hardening/security/security-evidence.md#keep-security-hardening-guard-scan"
-test_path = "apps/keep/tests/security_keep_security_hardening_guard_scan.rs"
-command = "cd apps/keep && ../../target/debug/vat run guard-security"
+td_ref = "external-contracts/security-hardening/security/security-evidence.md#keep-security-hardening-guard-scan"
+test_path = "tests/security_keep_security_hardening_guard_scan.rs"
+command = "vat run guard-security"
 required_for_production = false
 assertions = [
     "guard scan over keep reports no untriaged Docker, Kubernetes, or static security findings.",
@@ -64,18 +64,18 @@ assertions = [
 [[aw.ec.generated.tool_manifests]]
 id = "keep-guard-security"
 tool = "guard"
-path = "apps/keep/guard-keep-security.toml"
-td_ref = "apps/keep/external-contracts/security-hardening/security/security-evidence.md#keep-guard-security"
+path = "guard-keep-security.toml"
+td_ref = "external-contracts/security-hardening/security/security-evidence.md#keep-guard-security"
 content_digest = "sha256:d36ff48dddb5c6d2b2cc5b8f0389c881cc5d2adf20d821ca9555c4430466a7ac"
-command = "cd apps/keep && ../../target/debug/vat run guard-security"
+command = "vat run guard-security"
 category = "security"
 
 [[aw.ec.generated.tool_manifests]]
 id = "keep-meter-performance"
 tool = "meter"
-path = "apps/keep/meter-keep-performance.toml"
-td_ref = "apps/keep/external-contracts/competitor-performance/efficiency/perf-gate.md#keep-meter-performance"
+path = "meter-keep-performance.toml"
+td_ref = "external-contracts/competitor-performance/efficiency/perf-gate.md#keep-meter-performance"
 content_digest = "sha256:062279b6d2ade0ba6e46c722b30c351218dcf9256770a8ebaee8891ae136b770"
-command = "cd apps/keep && ../../target/debug/vat run meter-efficiency"
+command = "vat run meter-efficiency"
 category = "efficiency"
 # AW-EC-END

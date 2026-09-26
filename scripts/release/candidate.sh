@@ -7,7 +7,7 @@
 #
 # usage: scripts/release/candidate.sh <app> <version> <commit> [--out <dir>]
 #   app      one of: tape sift keep relay defer
-#   version  X.Y.Z, equal to <root>/Cargo.toml at <commit>
+#   version  X.Y.Z, equal to Cargo.toml at <commit>
 #   commit   40-hex sha; must be the head of origin/main (the workflow's
 #            identity job requires the dispatched commit to equal GITHUB_SHA)
 #   --out    bundle download directory
@@ -38,7 +38,6 @@ release_app_require "$app"
 for tool in gh jq; do command -v "$tool" >/dev/null || release_refuse "$tool is required"; done
 
 workflow="${app}-release-candidate.yml"
-root="$(release_app_root "$app")"
 tag="${app}@${version}"
 
 dirty=$("${GIT[@]}" status --porcelain)
@@ -46,9 +45,9 @@ dirty=$("${GIT[@]}" status --porcelain)
 "${GIT[@]}" fetch --quiet origin main
 origin_main=$("${GIT[@]}" rev-parse origin/main)
 [ "$origin_main" = "$commit" ] || release_refuse "origin/main is $origin_main, not $commit — the candidate identity job requires the dispatched commit to be the head of main; land first, then pass that head"
-manifest_line=$("${GIT[@]}" show "${commit}:${root}/Cargo.toml" | sed -n '/^\[package\]/,/^\[/p' | grep -m1 '^version' || true)
+manifest_line=$("${GIT[@]}" show "${commit}:Cargo.toml" | sed -n '/^\[package\]/,/^\[/p' | grep -m1 '^version' || true)
 manifest_version=$(sed -E 's/^version *= *"([^"]+)".*/\1/' <<<"$manifest_line")
-[ "$manifest_version" = "$version" ] || release_refuse "${root}/Cargo.toml at $commit says '${manifest_line:-<no version line>}', not version $version"
+[ "$manifest_version" = "$version" ] || release_refuse "Cargo.toml at $commit says '${manifest_line:-<no version line>}', not version $version"
 [ -z "$("${GIT[@]}" ls-remote --tags origin "refs/tags/$tag")" ] || release_refuse "tag $tag already exists on origin — a candidate is dispatched before the tag, never after"
 if gh release view "$tag" --repo "$RELEASE_REPO" --json tagName >/dev/null 2>&1; then
   release_refuse "GitHub Release $tag already exists"
