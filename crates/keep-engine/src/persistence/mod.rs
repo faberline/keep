@@ -13,6 +13,7 @@
 ///!
 ///! All writes are logged to WAL before acknowledging to client. With 100ms batched
 ///! fsync, the system can lose at most ~100ms of data on crash (acceptable for task backends).
+pub mod blob_store;
 pub mod format;
 pub mod handle;
 pub mod recovery;
@@ -20,6 +21,7 @@ pub mod snapshot;
 pub mod wal;
 
 // Re-export key types for convenience
+pub use blob_store::{BlobStore, DiskBlob};
 pub use handle::PersistenceHandle;
 
 use std::path::PathBuf;

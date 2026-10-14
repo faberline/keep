@@ -132,12 +132,7 @@ async fn wait_ready(process: &mut KeepProcess, client: &reqwest::Client, base: &
     }
 }
 
-async fn put_value(
-    client: &reqwest::Client,
-    base: &str,
-    key: &str,
-    traceparent: Option<&str>,
-) {
+async fn put_value(client: &reqwest::Client, base: &str, key: &str, traceparent: Option<&str>) {
     let mut request = client
         .put(format!("{base}/kv/{key}"))
         .json(&json!({ "value": "trace-test" }));
@@ -224,13 +219,19 @@ async fn real_keep_process_correlates_structured_stdout() {
     let invalid = request_event(&events, "trace-invalid");
     let invalid_trace = required_str(invalid, "trace_id");
     assert!(valid_nonzero_lower_hex(invalid_trace, 32));
-    assert!(valid_nonzero_lower_hex(required_str(invalid, "span_id"), 16));
+    assert!(valid_nonzero_lower_hex(
+        required_str(invalid, "span_id"),
+        16
+    ));
     assert!(invalid.get("parent_span_id").is_none());
 
     let missing = request_event(&events, "trace-missing");
     let missing_trace = required_str(missing, "trace_id");
     assert!(valid_nonzero_lower_hex(missing_trace, 32));
-    assert!(valid_nonzero_lower_hex(required_str(missing, "span_id"), 16));
+    assert!(valid_nonzero_lower_hex(
+        required_str(missing, "span_id"),
+        16
+    ));
     assert!(missing.get("parent_span_id").is_none());
     assert_ne!(invalid_trace, missing_trace);
 

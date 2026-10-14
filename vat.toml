@@ -7,9 +7,6 @@ base = "."
 workdir = "."
 keep = "always"
 
-[env]
-PATH = "/Users/chrischeng/.rustup/toolchains/stable-aarch64-apple-darwin/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/Users/chrischeng/.cargo/bin"
-
 [[setup]]
 id = "build-aw-tools"
 cmd = ["sh", "-c", "command -v meter >/dev/null && command -v guard >/dev/null || { echo \"install the gate tools: cargo install --locked --git https://github.com/faberline/meter meter-cli; cargo install --locked --git https://github.com/faberline/guard guard-cli\" >&2; exit 1; }"]

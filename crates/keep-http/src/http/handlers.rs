@@ -28,6 +28,31 @@ pub(crate) fn key_of(s: &str) -> Result<KvKey, ApiErr> {
     KvKey::new(s).map_err(ApiErr::from)
 }
 
+/// Returns true if `key` is in the reserved claim-check keyspace (`input:*`,
+/// `result:*`, or namespaced `{ns}::input:*`, `{ns}::result:*`).
+pub(crate) fn is_claim_check_key(key: &str) -> bool {
+    let bare = match key.rsplit_once("::") {
+        Some((_, suffix)) => suffix,
+        None => key,
+    };
+    bare.starts_with("input:") || bare.starts_with("result:")
+}
+
+/// When scoped claim-check token enforcement (`KEEP_TOKEN_SECRET`) is active,
+/// prevent callers from bypassing `/inputs/{id}` and `/results/{id}` scope
+/// checks via raw `/kv/*` routes. When token enforcement is disabled, `/kv/*`
+/// remains open for backward compatibility.
+pub(crate) fn check_kv_claim_isolation(st: &AppState, key: &str) -> Result<(), ApiErr> {
+    if st.verifier.is_some() && is_claim_check_key(key) {
+        return Err(ApiErr::new(
+            StatusCode::FORBIDDEN,
+            "forbidden",
+            "claim-check keys must be accessed via /inputs/{id} or /results/{id} when token enforcement is enabled",
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn ttl(ms: Option<u64>) -> Option<Duration> {
     ms.map(Duration::from_millis)
 }
@@ -97,6 +122,7 @@ pub async fn get_key(
     State(st): State<AppState>,
     Path(key): Path<String>,
 ) -> Result<Response, ApiErr> {
+    check_kv_claim_isolation(&st, &key)?;
     let k = key_of(&key)?;
     match st.engine.get(&k) {
         None => Err(ApiErr::new(
@@ -138,6 +164,7 @@ pub async fn put_key(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ApiErr> {
+    check_kv_claim_isolation(&st, &key)?;
     let k = key_of(&key)?;
     let ct = headers
         .get(CONTENT_TYPE)
@@ -201,6 +228,7 @@ pub async fn delete_key(
     State(st): State<AppState>,
     Path(key): Path<String>,
 ) -> Result<Json<DeleteResponse>, ApiErr> {
+    check_kv_claim_isolation(&st, &key)?;
     let k = key_of(&key)?;
     let deleted = st.engine.exists(&k);
     let proposed = propose_write(
@@ -232,6 +260,9 @@ pub async fn delete_key(
     )
 )]
 pub async fn head_key(State(st): State<AppState>, Path(key): Path<String>) -> StatusCode {
+    if check_kv_claim_isolation(&st, &key).is_err() {
+        return StatusCode::FORBIDDEN;
+    }
     match key_of(&key) {
         Ok(k) if st.engine.exists(&k) => StatusCode::OK,
         Ok(_) => StatusCode::NOT_FOUND,
@@ -256,6 +287,7 @@ pub async fn incr_key(
     Path(key): Path<String>,
     Json(req): Json<IncrRequest>,
 ) -> Result<Json<IncrResponse>, ApiErr> {
+    check_kv_claim_isolation(&st, &key)?;
     let k = key_of(&key)?;
     let value = if propose_write(
         &st,
@@ -298,6 +330,7 @@ pub async fn cas_key(
     Path(key): Path<String>,
     Json(req): Json<CasRequest>,
 ) -> Result<Json<CasResponse>, ApiErr> {
+    check_kv_claim_isolation(&st, &key)?;
     let k = key_of(&key)?;
     let expected = json_to_kv(req.expected);
     let new = json_to_kv(req.new);
@@ -347,6 +380,7 @@ pub async fn setnx_key(
     Path(key): Path<String>,
     Json(req): Json<SetRequest>,
 ) -> Result<Json<SetNxResponse>, ApiErr> {
+    check_kv_claim_isolation(&st, &key)?;
     let k = key_of(&key)?;
     let set = !st.engine.exists(&k);
     let value = json_to_kv(req.value);
@@ -386,6 +420,9 @@ pub async fn mget(
     State(st): State<AppState>,
     Json(req): Json<MGetRequest>,
 ) -> Result<Json<MGetResponse>, ApiErr> {
+    for s in &req.keys {
+        check_kv_claim_isolation(&st, s)?;
+    }
     let keys: Vec<KvKey> = req
         .keys
         .iter()
@@ -417,6 +454,7 @@ pub async fn mset(State(st): State<AppState>, body: Bytes) -> Result<Json<CountR
     let mut keys = Vec::with_capacity(req.entries.len());
     let mut vals = Vec::with_capacity(req.entries.len());
     for (k, v) in req.entries {
+        check_kv_claim_isolation(&st, &k)?;
         keys.push(KvKey::new(&k).map_err(ApiErr::from)?);
         vals.push(v.0);
     }
@@ -454,6 +492,9 @@ pub async fn mdel(
     State(st): State<AppState>,
     Json(req): Json<MDelRequest>,
 ) -> Result<Json<CountResponse>, ApiErr> {
+    for s in &req.keys {
+        check_kv_claim_isolation(&st, s)?;
+    }
     let keys: Vec<KvKey> = req
         .keys
         .iter()
@@ -494,9 +535,11 @@ pub async fn mdel(
     responses((status = 200, description = "Matching keys", body = ScanResponse))
 )]
 pub async fn scan(State(st): State<AppState>, Query(q): Query<ScanQuery>) -> Json<ScanResponse> {
-    Json(ScanResponse {
-        keys: st.engine.scan(q.prefix.as_deref(), q.limit),
-    })
+    let mut keys = st.engine.scan(q.prefix.as_deref(), q.limit);
+    if st.verifier.is_some() {
+        keys.retain(|k| !is_claim_check_key(k));
+    }
+    Json(ScanResponse { keys })
 }
 
 // ---------------------------------------------------------------------------
@@ -532,8 +575,10 @@ pub async fn lock(
     .await?
     {
         let acquired = st.engine.lock(&k, &req.owner, ttl);
+        ack_durable(&st).await;
         return Ok(Json(LockResponse { acquired }));
     }
+    ack_durable(&st).await;
     Ok(Json(LockResponse { acquired }))
 }
 
@@ -567,8 +612,10 @@ pub async fn unlock(
     .await?
     {
         let released = st.engine.unlock(&k, &req.owner).map_err(ApiErr::from)?;
+        ack_durable(&st).await;
         return Ok(Json(UnlockResponse { released }));
     }
+    ack_durable(&st).await;
     Ok(Json(UnlockResponse { released }))
 }
 
@@ -607,8 +654,10 @@ pub async fn extend_lock(
             .engine
             .extend_lock(&k, &req.owner, ttl)
             .map_err(ApiErr::from)?;
+        ack_durable(&st).await;
         return Ok(Json(ExtendLockResponse { extended }));
     }
+    ack_durable(&st).await;
     Ok(Json(ExtendLockResponse { extended }))
 }
 
@@ -646,6 +695,7 @@ pub async fn lpush(
     } else {
         st.engine.lpush(&k, values).map_err(ApiErr::from)?
     };
+    ack_durable(&st).await;
     st.waiters.notify(&key);
     Ok(Json(PushResponse { length }))
 }
@@ -680,6 +730,7 @@ pub async fn rpush(
     } else {
         st.engine.rpush(&k, values).map_err(ApiErr::from)?
     };
+    ack_durable(&st).await;
     st.waiters.notify(&key);
     Ok(Json(PushResponse { length }))
 }
@@ -713,10 +764,12 @@ pub async fn lpop(
     .await?
     {
         let value = st.engine.lpop(&k);
+        ack_durable(&st).await;
         return Ok(Json(PopResponse {
             value: value.map(kv_to_json),
         }));
     }
+    ack_durable(&st).await;
     Ok(Json(PopResponse {
         value: value.map(kv_to_json),
     }))
@@ -751,10 +804,12 @@ pub async fn rpop(
     .await?
     {
         let value = st.engine.rpop(&k);
+        ack_durable(&st).await;
         return Ok(Json(PopResponse {
             value: value.map(kv_to_json),
         }));
     }
+    ack_durable(&st).await;
     Ok(Json(PopResponse {
         value: value.map(kv_to_json),
     }))
@@ -804,21 +859,8 @@ pub async fn readyz(State(st): State<AppState>) -> (StatusCode, &'static str) {
 pub async fn metrics(
     State(st): State<AppState>,
 ) -> (StatusCode, [(&'static str, &'static str); 1], String) {
-    let keys = st.engine.len();
-    let shards = st.engine.num_shards();
-    let mem = st.engine.estimate_memory();
-    let body = format!(
-        "# HELP keep_keys_total Number of keys across all shards.\n\
-         # TYPE keep_keys_total gauge\n\
-         keep_keys_total {keys}\n\
-         # HELP keep_shards Number of engine shards.\n\
-         # TYPE keep_shards gauge\n\
-         keep_shards {shards}\n\
-         # HELP keep_memory_bytes Estimated resident bytes of stored data.\n\
-         # TYPE keep_memory_bytes gauge\n\
-         keep_memory_bytes {mem}\n{}",
-        st.metrics.render()
-    );
+    use service_http::MetricsProvider;
+    let body = st.render_metrics();
     (
         StatusCode::OK,
         [("content-type", "text/plain; version=0.0.4")],
@@ -838,6 +880,11 @@ pub async fn info(State(st): State<AppState>) -> Json<InfoResponse> {
         keys: st.engine.len(),
         shards: st.engine.num_shards(),
         memory_bytes: st.engine.estimate_memory(),
+        maxmemory_bytes: st.engine.get_maxmemory(),
+        disk_blob_bytes: st.engine.used_disk_bytes(),
+        evicted_keys: st.engine.evicted_keys(),
+        spilled_keys: st.engine.spilled_keys(),
+        eviction_policy: st.engine.get_eviction_policy().as_str().to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
     })
 }

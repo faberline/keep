@@ -8,52 +8,167 @@ use crate::types::{KvKey, KvValue};
 use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 /// Default number of shards (power of 2 for efficient modulo)
 const DEFAULT_NUM_SHARDS: usize = 256;
 
-/// Entry in the KV store with metadata
-#[derive(Debug, Clone)]
+/// Process-wide monotonic clock epoch for lock-free nanosecond access tracking
+#[inline]
+fn engine_epoch() -> Instant {
+    static EPOCH: OnceLock<Instant> = OnceLock::new();
+    *EPOCH.get_or_init(Instant::now)
+}
+
+/// Global monotonic counter combined with elapsed nanoseconds to guarantee strict
+/// ordering even when two accesses occur within the same CPU clock tick.
+#[inline]
+fn now_access_stamp() -> u64 {
+    static TICK: AtomicU64 = AtomicU64::new(1);
+    let nanos = (engine_epoch().elapsed().as_nanos() as u64) << 16;
+    let seq = TICK.fetch_add(1, Ordering::Relaxed) & 0xFFFF;
+    nanos | seq
+}
+
+/// Entry in the KV store with metadata and lock-free LRU/LFU tracking
+#[derive(Debug)]
 pub struct Entry {
-    /// The stored value
+    /// The stored value (or `KvValue::Null` when payload is spilled to disk)
     pub value: KvValue,
+    /// Optional reference-counted handle to a disk-spilled blob payload
+    pub spilled: Option<Arc<crate::persistence::blob_store::DiskBlob>>,
     /// When the entry was created
     pub created_at: Instant,
     /// Optional expiration time (TTL)
     pub expires_at: Option<Instant>,
     /// Version for CAS operations
     pub version: u64,
+    /// Cached resident RAM footprint in bytes for O(1) incremental memory accounting
+    pub ram_bytes: usize,
+    /// Lock-free LRU timestamp (monotonic stamp)
+    pub last_accessed: AtomicU64,
+    /// Lock-free LFU access counter
+    pub access_count: AtomicU64,
+}
+
+impl Clone for Entry {
+    fn clone(&self) -> Self {
+        Self {
+            value: self.value.clone(),
+            spilled: self.spilled.clone(),
+            created_at: self.created_at,
+            expires_at: self.expires_at,
+            version: self.version,
+            ram_bytes: self.ram_bytes,
+            last_accessed: AtomicU64::new(self.last_accessed.load(Ordering::Relaxed)),
+            access_count: AtomicU64::new(self.access_count.load(Ordering::Relaxed)),
+        }
+    }
 }
 
 impl Entry {
-    /// Create a new entry
+    /// Create a new in-memory entry
     pub fn new(value: KvValue, ttl: Option<Duration>) -> Self {
         let now = Instant::now();
         Self {
             value,
+            spilled: None,
             created_at: now,
             expires_at: ttl.map(|d| now + d),
             version: 1,
+            ram_bytes: 0,
+            last_accessed: AtomicU64::new(now_access_stamp()),
+            access_count: AtomicU64::new(1),
+        }
+    }
+
+    /// Create a new disk-spilled entry whose payload resides in [`DiskBlob`]
+    pub fn new_spilled(
+        blob: Arc<crate::persistence::blob_store::DiskBlob>,
+        ttl: Option<Duration>,
+    ) -> Self {
+        let now = Instant::now();
+        Self {
+            value: KvValue::Null,
+            spilled: Some(blob),
+            created_at: now,
+            expires_at: ttl.map(|d| now + d),
+            version: 1,
+            ram_bytes: 0,
+            last_accessed: AtomicU64::new(now_access_stamp()),
+            access_count: AtomicU64::new(1),
+        }
+    }
+
+    /// Construct an entry with explicit timestamps and version (used by snapshot restore)
+    pub fn with_timestamps(
+        value: KvValue,
+        created_at: Instant,
+        expires_at: Option<Instant>,
+        version: u64,
+    ) -> Self {
+        Self {
+            value,
+            spilled: None,
+            created_at,
+            expires_at,
+            version,
+            ram_bytes: 0,
+            last_accessed: AtomicU64::new(now_access_stamp()),
+            access_count: AtomicU64::new(1),
         }
     }
 
     /// Check if entry has expired
+    #[inline]
     pub fn is_expired(&self) -> bool {
         self.expires_at
             .map(|exp| Instant::now() >= exp)
             .unwrap_or(false)
     }
+
+    /// Record an access lock-free (safe to call under a shared `RwLock::read` guard)
+    #[inline]
+    pub fn touch(&self) {
+        self.last_accessed
+            .store(now_access_stamp(), Ordering::Relaxed);
+        self.access_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Materialize the value, reading from disk if spilled
+    pub fn materialize_value(&self) -> Option<KvValue> {
+        if let Some(blob) = &self.spilled {
+            blob.read_value().ok()
+        } else {
+            Some(self.value.clone())
+        }
+    }
+
+    /// Consume a cloned entry and populate `self.value` from disk if spilled
+    pub fn materialize_into(mut self) -> Option<Self> {
+        if let Some(blob) = &self.spilled {
+            self.value = blob.read_value().ok()?;
+        }
+        Some(self)
+    }
+}
+
+/// Candidate information returned by shard eviction sampling
+#[derive(Debug, Clone)]
+pub struct EvictionCandidate {
+    pub key: String,
+    pub last_accessed: u64,
+    pub access_count: u64,
+    pub can_spill: bool,
 }
 
 /// A single shard containing a portion of the keyspace
 pub struct Shard {
     data: RwLock<HashMap<String, Entry>>,
-    /// LRU tracking: records last access time for each key
-    lru_times: RwLock<HashMap<String, Instant>>,
-    /// LFU tracking: records access frequency for each key
-    lfu_counts: RwLock<HashMap<String, u64>>,
+    /// O(1) incremental resident RAM usage in bytes for this shard
+    used_memory_bytes: AtomicUsize,
 }
 
 impl Shard {
@@ -61,56 +176,110 @@ impl Shard {
     pub fn new() -> Self {
         Self {
             data: RwLock::new(HashMap::new()),
-            lru_times: RwLock::new(HashMap::new()),
-            lfu_counts: RwLock::new(HashMap::new()),
+            used_memory_bytes: AtomicUsize::new(0),
         }
     }
 
-    /// Update LRU/LFU tracking for a key access
-    fn track_access(&self, key: &str) {
-        self.lru_times
-            .write()
-            .insert(key.to_string(), Instant::now());
-        *self.lfu_counts.write().entry(key.to_string()).or_insert(0) += 1;
+    #[inline]
+    fn compute_entry_ram(key_len: usize, entry: &Entry) -> usize {
+        let val_size = if entry.spilled.is_some() {
+            32 // Arc<DiskBlob> metadata overhead in RAM
+        } else {
+            Self::estimate_value_size(&entry.value)
+        };
+        key_len + val_size + 64
     }
 
-    /// Remove tracking data for a key
-    fn remove_tracking(&self, key: &str) {
-        self.lru_times.write().remove(key);
-        self.lfu_counts.write().remove(key);
+    #[inline]
+    fn add_mem(&self, bytes: usize) {
+        self.used_memory_bytes.fetch_add(bytes, Ordering::Relaxed);
     }
 
-    /// Get a value by key (returns None if expired)
-    /// Also updates LRU/LFU tracking for eviction policies
+    #[inline]
+    fn sub_mem(&self, bytes: usize) {
+        let _ = self
+            .used_memory_bytes
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
+                Some(cur.saturating_sub(bytes))
+            });
+    }
+
+    #[inline]
+    fn insert_entry(
+        &self,
+        guard: &mut HashMap<String, Entry>,
+        key: String,
+        mut entry: Entry,
+    ) -> Option<Entry> {
+        let ram = Self::compute_entry_ram(key.len(), &entry);
+        entry.ram_bytes = ram;
+        self.add_mem(ram);
+        let prev = guard.insert(key, entry);
+        if let Some(ref old) = prev {
+            self.sub_mem(old.ram_bytes);
+        }
+        prev
+    }
+
+    #[inline]
+    fn remove_entry(&self, guard: &mut HashMap<String, Entry>, key: &str) -> Option<Entry> {
+        let removed = guard.remove(key);
+        if let Some(ref old) = removed {
+            self.sub_mem(old.ram_bytes);
+        }
+        removed
+    }
+
+    #[inline]
+    fn refresh_entry_ram(&self, key_len: usize, entry: &mut Entry) {
+        let old_ram = entry.ram_bytes;
+        let new_ram = Self::compute_entry_ram(key_len, entry);
+        entry.ram_bytes = new_ram;
+        if new_ram >= old_ram {
+            self.add_mem(new_ram - old_ram);
+        } else {
+            self.sub_mem(old_ram - new_ram);
+        }
+    }
+
+    /// Get a value by key (returns None if expired).
+    /// Updates LRU/LFU atomically under the shared read lock and materializes
+    /// any disk-spilled value *outside* the shard lock.
     pub fn get(&self, key: &str) -> Option<Entry> {
-        let guard = self.data.read();
-        guard.get(key).and_then(|entry| {
-            if entry.is_expired() {
-                None
-            } else {
-                // Track access for LRU/LFU eviction
-                self.track_access(key);
-                Some(entry.clone())
-            }
-        })
+        let cloned = {
+            let guard = self.data.read();
+            guard.get(key).and_then(|entry| {
+                if entry.is_expired() {
+                    None
+                } else {
+                    entry.touch();
+                    Some(entry.clone())
+                }
+            })
+        };
+        cloned.and_then(Entry::materialize_into)
     }
 
     /// Set a value with optional TTL
     pub fn set(&self, key: String, value: KvValue, ttl: Option<Duration>) -> Option<Entry> {
+        self.set_entry(key, Entry::new(value, ttl))
+    }
+
+    /// Set a pre-constructed Entry (in-memory or disk-spilled)
+    pub fn set_entry(&self, key: String, entry: Entry) -> Option<Entry> {
         let mut guard = self.data.write();
-        // Clean up expired entry if exists
         if let Some(existing) = guard.get(&key) {
             if existing.is_expired() {
-                guard.remove(&key);
+                self.remove_entry(&mut guard, &key);
             }
         }
-        guard.insert(key, Entry::new(value, ttl))
+        self.insert_entry(&mut guard, key, entry)
     }
 
     /// Delete a key, returns the old entry if existed
     pub fn delete(&self, key: &str) -> Option<Entry> {
         let mut guard = self.data.write();
-        guard.remove(key)
+        self.remove_entry(&mut guard, key)
     }
 
     /// Check if key exists (and not expired)
@@ -124,20 +293,33 @@ impl Shard {
         let mut guard = self.data.write();
 
         match guard.get_mut(key) {
-            Some(entry) if !entry.is_expired() => match &mut entry.value {
-                KvValue::Int(n) => {
-                    *n = n.saturating_add(delta);
-                    entry.version += 1;
-                    Ok(*n)
+            Some(entry) if !entry.is_expired() => {
+                if entry.spilled.is_some() {
+                    return Err(KvError::TypeMismatch {
+                        expected: "Int".to_string(),
+                        actual: "SpilledBlob".to_string(),
+                    });
                 }
-                other => Err(KvError::TypeMismatch {
-                    expected: "Int".to_string(),
-                    actual: format!("{:?}", std::mem::discriminant(other)),
-                }),
-            },
+                match &mut entry.value {
+                    KvValue::Int(n) => {
+                        *n = n.saturating_add(delta);
+                        let res = *n;
+                        entry.version += 1;
+                        entry.touch();
+                        Ok(res)
+                    }
+                    other => Err(KvError::TypeMismatch {
+                        expected: "Int".to_string(),
+                        actual: format!("{:?}", std::mem::discriminant(other)),
+                    }),
+                }
+            }
             _ => {
-                // Key doesn't exist, create with delta as initial value
-                guard.insert(key.to_string(), Entry::new(KvValue::Int(delta), None));
+                self.insert_entry(
+                    &mut guard,
+                    key.to_string(),
+                    Entry::new(KvValue::Int(delta), None),
+                );
                 Ok(delta)
             }
         }
@@ -155,15 +337,23 @@ impl Shard {
 
         match guard.get_mut(key) {
             Some(entry) if !entry.is_expired() => {
-                if &entry.value == expected {
+                let current_matches = if let Some(blob) = &entry.spilled {
+                    blob.read_value().ok().as_ref() == Some(expected)
+                } else {
+                    &entry.value == expected
+                };
+                if current_matches {
+                    entry.spilled = None;
                     entry.value = new_value;
                     entry.version += 1;
+                    entry.touch();
                     if let Some(d) = ttl {
                         entry.expires_at = Some(Instant::now() + d);
                     }
+                    self.refresh_entry_ram(key.len(), entry);
                     Ok(true)
                 } else {
-                    Ok(false) // Value didn't match
+                    Ok(false)
                 }
             }
             _ => Err(KvError::KeyNotFound(key.to_string())),
@@ -184,23 +374,37 @@ impl Shard {
     pub fn cleanup_expired(&self) -> usize {
         let mut guard = self.data.write();
         let before = guard.len();
-        guard.retain(|_, entry| !entry.is_expired());
+        let mut freed_ram = 0usize;
+        guard.retain(|_, entry| {
+            if entry.is_expired() {
+                freed_ram += entry.ram_bytes;
+                false
+            } else {
+                true
+            }
+        });
+        if freed_ram > 0 {
+            self.sub_mem(freed_ram);
+        }
         before - guard.len()
     }
 
     /// Set if not exists (atomic)
     pub fn setnx(&self, key: String, value: KvValue, ttl: Option<Duration>) -> bool {
+        self.setnx_entry(key, Entry::new(value, ttl))
+    }
+
+    /// Set pre-constructed entry if key does not exist
+    pub fn setnx_entry(&self, key: String, entry: Entry) -> bool {
         let mut guard = self.data.write();
 
-        // Check if key exists and not expired
-        if let Some(entry) = guard.get(&key) {
-            if !entry.is_expired() {
-                return false; // Key exists, operation fails
+        if let Some(existing) = guard.get(&key) {
+            if !existing.is_expired() {
+                return false;
             }
         }
 
-        // Key doesn't exist or expired - set it
-        guard.insert(key, Entry::new(value, ttl));
+        self.insert_entry(&mut guard, key, entry);
         true
     }
 
@@ -216,7 +420,7 @@ impl Shard {
         match guard.get(key) {
             Some(entry) if !entry.is_expired() => match &entry.value {
                 KvValue::String(stored_owner) if stored_owner == owner => {
-                    guard.remove(key);
+                    self.remove_entry(&mut guard, key);
                     Ok(true)
                 }
                 KvValue::String(stored_owner) => Err(KvError::LockOwnerMismatch {
@@ -228,7 +432,7 @@ impl Shard {
                     actual: "other type".to_string(),
                 }),
             },
-            _ => Ok(false), // Lock not held or expired
+            _ => Ok(false),
         }
     }
 
@@ -241,6 +445,7 @@ impl Shard {
                 KvValue::String(stored_owner) if stored_owner == owner => {
                     entry.expires_at = Some(Instant::now() + ttl);
                     entry.version += 1;
+                    entry.touch();
                     Ok(true)
                 }
                 KvValue::String(stored_owner) => Err(KvError::LockOwnerMismatch {
@@ -252,24 +457,19 @@ impl Shard {
                     actual: "other type".to_string(),
                 }),
             },
-            _ => Ok(false), // Lock not held or expired
+            _ => Ok(false),
         }
     }
 
     /// Scan keys with optional prefix filter
-    ///
-    /// Returns up to `limit` keys that start with the given prefix.
-    /// If prefix is None, returns all keys up to limit.
     pub fn scan(&self, prefix: Option<&str>, limit: usize) -> Vec<String> {
         let guard = self.data.read();
         guard
             .iter()
             .filter(|(key, entry)| {
-                // Filter expired entries
                 if entry.is_expired() {
                     return false;
                 }
-                // Filter by prefix if specified
                 match prefix {
                     Some(p) => key.starts_with(p),
                     None => true,
@@ -301,20 +501,18 @@ impl Shard {
     pub fn ttl(&self, key: &str) -> i64 {
         let guard = self.data.read();
         match guard.get(key) {
-            Some(entry) if !entry.is_expired() => {
-                match entry.expires_at {
-                    Some(exp) => {
-                        let now = Instant::now();
-                        if exp > now {
-                            (exp - now).as_secs() as i64
-                        } else {
-                            0
-                        }
+            Some(entry) if !entry.is_expired() => match entry.expires_at {
+                Some(exp) => {
+                    let now = Instant::now();
+                    if exp > now {
+                        (exp - now).as_secs() as i64
+                    } else {
+                        0
                     }
-                    None => -1, // No TTL set
                 }
-            }
-            _ => -2, // Key doesn't exist
+                None => -1,
+            },
+            _ => -2,
         }
     }
 
@@ -323,20 +521,18 @@ impl Shard {
     pub fn pttl(&self, key: &str) -> i64 {
         let guard = self.data.read();
         match guard.get(key) {
-            Some(entry) if !entry.is_expired() => {
-                match entry.expires_at {
-                    Some(exp) => {
-                        let now = Instant::now();
-                        if exp > now {
-                            (exp - now).as_millis() as i64
-                        } else {
-                            0
-                        }
+            Some(entry) if !entry.is_expired() => match entry.expires_at {
+                Some(exp) => {
+                    let now = Instant::now();
+                    if exp > now {
+                        (exp - now).as_millis() as i64
+                    } else {
+                        0
                     }
-                    None => -1, // No TTL set
                 }
-            }
-            _ => -2, // Key doesn't exist
+                None => -1,
+            },
+            _ => -2,
         }
     }
 
@@ -351,31 +547,43 @@ impl Shard {
                     entry.version += 1;
                     1
                 } else {
-                    0 // No TTL to remove
+                    0
                 }
             }
-            _ => 0, // Key doesn't exist
+            _ => 0,
         }
     }
 
     /// Get value and optionally update TTL (GETEX)
-    /// Returns value and updates TTL if specified, or removes TTL if persist=true
     pub fn getex(&self, key: &str, ttl: Option<Duration>, persist: bool) -> Option<Entry> {
-        let mut guard = self.data.write();
-        match guard.get_mut(key) {
-            Some(entry) if !entry.is_expired() => {
-                self.track_access(key);
-                if persist {
-                    entry.expires_at = None;
-                    entry.version += 1;
-                } else if let Some(d) = ttl {
-                    entry.expires_at = Some(Instant::now() + d);
-                    entry.version += 1;
+        let cloned = if ttl.is_none() && !persist {
+            let guard = self.data.read();
+            guard.get(key).and_then(|entry| {
+                if entry.is_expired() {
+                    None
+                } else {
+                    entry.touch();
+                    Some(entry.clone())
                 }
-                Some(entry.clone())
+            })
+        } else {
+            let mut guard = self.data.write();
+            match guard.get_mut(key) {
+                Some(entry) if !entry.is_expired() => {
+                    entry.touch();
+                    if persist {
+                        entry.expires_at = None;
+                        entry.version += 1;
+                    } else if let Some(d) = ttl {
+                        entry.expires_at = Some(Instant::now() + d);
+                        entry.version += 1;
+                    }
+                    Some(entry.clone())
+                }
+                _ => None,
             }
-            _ => None,
-        }
+        };
+        cloned.and_then(Entry::materialize_into)
     }
 
     // ==================== Hash Operations ====================
@@ -384,47 +592,51 @@ impl Shard {
     /// Returns number of new fields added (not updated)
     pub fn hset(&self, key: &str, fields: Vec<(String, KvValue)>) -> Result<usize, KvError> {
         let mut guard = self.data.write();
-        self.track_access(key);
 
         match guard.get_mut(key) {
-            Some(entry) if !entry.is_expired() => match &mut entry.value {
-                KvValue::Map(map) => {
-                    let mut added = 0;
-                    for (field, value) in fields {
-                        if !map.contains_key(&field) {
-                            added += 1;
+            Some(entry) if !entry.is_expired() => {
+                entry.touch();
+                match &mut entry.value {
+                    KvValue::Map(map) => {
+                        let mut added = 0;
+                        for (field, value) in fields {
+                            if !map.contains_key(&field) {
+                                added += 1;
+                            }
+                            map.insert(field, value);
                         }
-                        map.insert(field, value);
+                        entry.version += 1;
+                        self.refresh_entry_ram(key.len(), entry);
+                        Ok(added)
                     }
-                    entry.version += 1;
-                    Ok(added)
+                    other => Err(KvError::TypeMismatch {
+                        expected: "Map".to_string(),
+                        actual: format!("{:?}", std::mem::discriminant(other)),
+                    }),
                 }
-                other => Err(KvError::TypeMismatch {
-                    expected: "Map".to_string(),
-                    actual: format!("{:?}", std::mem::discriminant(other)),
-                }),
-            },
+            }
             _ => {
-                // Create new hash
                 let mut map = std::collections::HashMap::new();
                 let count = fields.len();
                 for (field, value) in fields {
                     map.insert(field, value);
                 }
-                guard.insert(key.to_string(), Entry::new(KvValue::Map(map), None));
+                self.insert_entry(
+                    &mut guard,
+                    key.to_string(),
+                    Entry::new(KvValue::Map(map), None),
+                );
                 Ok(count)
             }
         }
     }
 
     /// Get a field from a hash (HGET)
-    /// Returns None if key doesn't exist or field doesn't exist
-    /// Returns WRONGTYPE error if key holds wrong type
     pub fn hget(&self, key: &str, field: &str) -> Result<Option<KvValue>, KvError> {
         let guard = self.data.read();
         match guard.get(key) {
             Some(entry) if !entry.is_expired() => {
-                self.track_access(key);
+                entry.touch();
                 match &entry.value {
                     KvValue::Map(map) => Ok(map.get(field).cloned()),
                     other => Err(KvError::TypeMismatch {
@@ -433,17 +645,16 @@ impl Shard {
                     }),
                 }
             }
-            _ => Ok(None), // Key doesn't exist
+            _ => Ok(None),
         }
     }
 
     /// Get multiple fields from a hash (HMGET)
-    /// Returns WRONGTYPE error if key holds wrong type
     pub fn hmget(&self, key: &str, fields: &[&str]) -> Result<Vec<Option<KvValue>>, KvError> {
         let guard = self.data.read();
         match guard.get(key) {
             Some(entry) if !entry.is_expired() => {
-                self.track_access(key);
+                entry.touch();
                 match &entry.value {
                     KvValue::Map(map) => Ok(fields.iter().map(|f| map.get(*f).cloned()).collect()),
                     other => Err(KvError::TypeMismatch {
@@ -452,13 +663,11 @@ impl Shard {
                     }),
                 }
             }
-            _ => Ok(fields.iter().map(|_| None).collect()), // Key doesn't exist
+            _ => Ok(fields.iter().map(|_| None).collect()),
         }
     }
 
     /// Get all fields and values from a hash (HGETALL)
-    /// Returns empty HashMap for non-existent keys (Redis compatible)
-    /// Returns WRONGTYPE error if key holds wrong type
     pub fn hgetall(
         &self,
         key: &str,
@@ -466,7 +675,7 @@ impl Shard {
         let guard = self.data.read();
         match guard.get(key) {
             Some(entry) if !entry.is_expired() => {
-                self.track_access(key);
+                entry.touch();
                 match &entry.value {
                     KvValue::Map(map) => Ok(map.clone()),
                     other => Err(KvError::TypeMismatch {
@@ -475,37 +684,39 @@ impl Shard {
                     }),
                 }
             }
-            _ => Ok(std::collections::HashMap::new()), // Non-existent key returns empty map
+            _ => Ok(std::collections::HashMap::new()),
         }
     }
 
     /// Delete fields from a hash (HDEL)
-    /// Returns number of fields removed
     pub fn hdel(&self, key: &str, fields: &[&str]) -> Result<usize, KvError> {
         let mut guard = self.data.write();
         match guard.get_mut(key) {
-            Some(entry) if !entry.is_expired() => match &mut entry.value {
-                KvValue::Map(map) => {
-                    let mut removed = 0;
-                    for field in fields {
-                        if map.remove(*field).is_some() {
-                            removed += 1;
+            Some(entry) if !entry.is_expired() => {
+                entry.touch();
+                match &mut entry.value {
+                    KvValue::Map(map) => {
+                        let mut removed = 0;
+                        for field in fields {
+                            if map.remove(*field).is_some() {
+                                removed += 1;
+                            }
                         }
+                        entry.version += 1;
+                        self.refresh_entry_ram(key.len(), entry);
+                        Ok(removed)
                     }
-                    entry.version += 1;
-                    Ok(removed)
+                    other => Err(KvError::TypeMismatch {
+                        expected: "Map".to_string(),
+                        actual: format!("{:?}", std::mem::discriminant(other)),
+                    }),
                 }
-                other => Err(KvError::TypeMismatch {
-                    expected: "Map".to_string(),
-                    actual: format!("{:?}", std::mem::discriminant(other)),
-                }),
-            },
+            }
             _ => Ok(0),
         }
     }
 
     /// Check if a field exists in a hash (HEXISTS)
-    /// Returns WRONGTYPE error if key holds wrong type
     pub fn hexists(&self, key: &str, field: &str) -> Result<bool, KvError> {
         let guard = self.data.read();
         match guard.get(key) {
@@ -516,12 +727,11 @@ impl Shard {
                     actual: format!("{:?}", std::mem::discriminant(other)),
                 }),
             },
-            _ => Ok(false), // Non-existent key returns false
+            _ => Ok(false),
         }
     }
 
     /// Get number of fields in a hash (HLEN)
-    /// Returns WRONGTYPE error if key holds wrong type
     pub fn hlen(&self, key: &str) -> Result<usize, KvError> {
         let guard = self.data.read();
         match guard.get(key) {
@@ -532,86 +742,98 @@ impl Shard {
                     actual: format!("{:?}", std::mem::discriminant(other)),
                 }),
             },
-            _ => Ok(0), // Non-existent key returns 0
+            _ => Ok(0),
         }
     }
 
     /// Increment integer value of a hash field (HINCRBY)
-    /// Creates hash/field if not exists. Returns new value.
     pub fn hincrby(&self, key: &str, field: &str, increment: i64) -> Result<i64, KvError> {
         let mut guard = self.data.write();
-        self.track_access(key);
 
         match guard.get_mut(key) {
-            Some(entry) if !entry.is_expired() => match &mut entry.value {
-                KvValue::Map(map) => {
-                    let new_val = match map.get(field) {
-                        Some(KvValue::Int(n)) => n.checked_add(increment).ok_or_else(|| {
-                            KvError::Storage("increment would overflow".to_string())
-                        })?,
-                        Some(_) => {
-                            return Err(KvError::Storage(
-                                "hash value is not an integer".to_string(),
-                            ));
-                        }
-                        None => increment,
-                    };
-                    map.insert(field.to_string(), KvValue::Int(new_val));
-                    entry.version += 1;
-                    Ok(new_val)
+            Some(entry) if !entry.is_expired() => {
+                entry.touch();
+                match &mut entry.value {
+                    KvValue::Map(map) => {
+                        let new_val = match map.get(field) {
+                            Some(KvValue::Int(n)) => n.checked_add(increment).ok_or_else(|| {
+                                KvError::Storage("increment would overflow".to_string())
+                            })?,
+                            Some(_) => {
+                                return Err(KvError::Storage(
+                                    "hash value is not an integer".to_string(),
+                                ));
+                            }
+                            None => increment,
+                        };
+                        map.insert(field.to_string(), KvValue::Int(new_val));
+                        entry.version += 1;
+                        self.refresh_entry_ram(key.len(), entry);
+                        Ok(new_val)
+                    }
+                    other => Err(KvError::TypeMismatch {
+                        expected: "Map".to_string(),
+                        actual: format!("{:?}", std::mem::discriminant(other)),
+                    }),
                 }
-                other => Err(KvError::TypeMismatch {
-                    expected: "Map".to_string(),
-                    actual: format!("{:?}", std::mem::discriminant(other)),
-                }),
-            },
+            }
             _ => {
-                // Create new hash with field = increment
                 let mut map = std::collections::HashMap::new();
                 map.insert(field.to_string(), KvValue::Int(increment));
-                guard.insert(key.to_string(), Entry::new(KvValue::Map(map), None));
+                self.insert_entry(
+                    &mut guard,
+                    key.to_string(),
+                    Entry::new(KvValue::Map(map), None),
+                );
                 Ok(increment)
             }
         }
     }
 
     /// Increment float value of a hash field (HINCRBYFLOAT)
-    /// Creates hash/field if not exists. Converts integers to floats. Returns new value.
     pub fn hincrbyfloat(&self, key: &str, field: &str, increment: f64) -> Result<f64, KvError> {
         let mut guard = self.data.write();
-        self.track_access(key);
 
         match guard.get_mut(key) {
-            Some(entry) if !entry.is_expired() => match &mut entry.value {
-                KvValue::Map(map) => {
-                    let current = match map.get(field) {
-                        Some(KvValue::Float(f)) => *f,
-                        Some(KvValue::Int(n)) => *n as f64,
-                        Some(_) => {
-                            return Err(KvError::Storage("hash value is not a number".to_string()));
+            Some(entry) if !entry.is_expired() => {
+                entry.touch();
+                match &mut entry.value {
+                    KvValue::Map(map) => {
+                        let current = match map.get(field) {
+                            Some(KvValue::Float(f)) => *f,
+                            Some(KvValue::Int(n)) => *n as f64,
+                            Some(_) => {
+                                return Err(KvError::Storage(
+                                    "hash value is not a number".to_string(),
+                                ));
+                            }
+                            None => 0.0,
+                        };
+                        let new_val = current + increment;
+                        if new_val.is_nan() || new_val.is_infinite() {
+                            return Err(KvError::Storage(
+                                "increment would produce infinity or NaN".to_string(),
+                            ));
                         }
-                        None => 0.0,
-                    };
-                    let new_val = current + increment;
-                    if new_val.is_nan() || new_val.is_infinite() {
-                        return Err(KvError::Storage(
-                            "increment would produce infinity or NaN".to_string(),
-                        ));
+                        map.insert(field.to_string(), KvValue::Float(new_val));
+                        entry.version += 1;
+                        self.refresh_entry_ram(key.len(), entry);
+                        Ok(new_val)
                     }
-                    map.insert(field.to_string(), KvValue::Float(new_val));
-                    entry.version += 1;
-                    Ok(new_val)
+                    other => Err(KvError::TypeMismatch {
+                        expected: "Map".to_string(),
+                        actual: format!("{:?}", std::mem::discriminant(other)),
+                    }),
                 }
-                other => Err(KvError::TypeMismatch {
-                    expected: "Map".to_string(),
-                    actual: format!("{:?}", std::mem::discriminant(other)),
-                }),
-            },
+            }
             _ => {
-                // Create new hash with field = increment
                 let mut map = std::collections::HashMap::new();
                 map.insert(field.to_string(), KvValue::Float(increment));
-                guard.insert(key.to_string(), Entry::new(KvValue::Map(map), None));
+                self.insert_entry(
+                    &mut guard,
+                    key.to_string(),
+                    Entry::new(KvValue::Map(map), None),
+                );
                 Ok(increment)
             }
         }
@@ -620,23 +842,21 @@ impl Shard {
     // ==================== List Operations ====================
 
     /// Push elements to head of list (LPUSH)
-    /// Redis: LPUSH key a b c results in [c, b, a] (last arg at head)
-    /// Returns new length of list
     pub fn lpush(&self, key: &str, values: Vec<KvValue>) -> Result<usize, KvError> {
         let mut guard = self.data.write();
-        self.track_access(key);
 
         match guard.get_mut(key) {
             Some(entry) if !entry.is_expired() => {
+                entry.touch();
                 match &mut entry.value {
                     KvValue::List(list) => {
-                        // Redis: each value is pushed to head in order, so last value ends at head
-                        // LPUSH key a b c -> [c, b, a, ...existing...]
                         for value in values {
                             list.insert(0, value);
                         }
                         entry.version += 1;
-                        Ok(list.len())
+                        let len = list.len();
+                        self.refresh_entry_ram(key.len(), entry);
+                        Ok(len)
                     }
                     other => Err(KvError::TypeMismatch {
                         expected: "List".to_string(),
@@ -645,92 +865,92 @@ impl Shard {
                 }
             }
             _ => {
-                // Create new list - push each to head in order
                 let mut list = Vec::new();
                 for value in values {
                     list.insert(0, value);
                 }
                 let len = list.len();
-                guard.insert(key.to_string(), Entry::new(KvValue::List(list), None));
+                self.insert_entry(
+                    &mut guard,
+                    key.to_string(),
+                    Entry::new(KvValue::List(list), None),
+                );
                 Ok(len)
             }
         }
     }
 
     /// Push elements to tail of list (RPUSH)
-    /// Returns new length of list
     pub fn rpush(&self, key: &str, values: Vec<KvValue>) -> Result<usize, KvError> {
         let mut guard = self.data.write();
-        self.track_access(key);
 
         match guard.get_mut(key) {
-            Some(entry) if !entry.is_expired() => match &mut entry.value {
-                KvValue::List(list) => {
-                    list.extend(values);
-                    entry.version += 1;
-                    Ok(list.len())
+            Some(entry) if !entry.is_expired() => {
+                entry.touch();
+                match &mut entry.value {
+                    KvValue::List(list) => {
+                        list.extend(values);
+                        entry.version += 1;
+                        let len = list.len();
+                        self.refresh_entry_ram(key.len(), entry);
+                        Ok(len)
+                    }
+                    other => Err(KvError::TypeMismatch {
+                        expected: "List".to_string(),
+                        actual: format!("{:?}", std::mem::discriminant(other)),
+                    }),
                 }
-                other => Err(KvError::TypeMismatch {
-                    expected: "List".to_string(),
-                    actual: format!("{:?}", std::mem::discriminant(other)),
-                }),
-            },
+            }
             _ => {
                 let len = values.len();
-                guard.insert(key.to_string(), Entry::new(KvValue::List(values), None));
+                self.insert_entry(
+                    &mut guard,
+                    key.to_string(),
+                    Entry::new(KvValue::List(values), None),
+                );
                 Ok(len)
             }
         }
     }
 
     /// Pop element from head of list (LPOP)
-    /// Returns None if key doesn't exist. Deletes key when list becomes empty.
     pub fn lpop(&self, key: &str) -> Option<KvValue> {
         let mut guard = self.data.write();
-        let should_delete = match guard.get_mut(key) {
+        match guard.get_mut(key) {
             Some(entry) if !entry.is_expired() => {
-                self.track_access(key);
+                entry.touch();
                 match &mut entry.value {
                     KvValue::List(list) if !list.is_empty() => {
                         entry.version += 1;
                         let value = list.remove(0);
-                        // Check if list is now empty - Redis deletes empty lists
-                        let is_empty = list.is_empty();
-                        return if is_empty {
-                            guard.remove(key);
-                            self.remove_tracking(key);
-                            Some(value)
+                        if list.is_empty() {
+                            self.remove_entry(&mut guard, key);
                         } else {
-                            Some(value)
-                        };
+                            self.refresh_entry_ram(key.len(), entry);
+                        }
+                        Some(value)
                     }
-                    _ => false,
+                    _ => None,
                 }
             }
-            _ => false,
-        };
-        if should_delete {
-            guard.remove(key);
-            self.remove_tracking(key);
+            _ => None,
         }
-        None
     }
 
     /// Pop element from tail of list (RPOP)
-    /// Returns None if key doesn't exist. Deletes key when list becomes empty.
     pub fn rpop(&self, key: &str) -> Option<KvValue> {
         let mut guard = self.data.write();
         match guard.get_mut(key) {
             Some(entry) if !entry.is_expired() => {
-                self.track_access(key);
+                entry.touch();
                 match &mut entry.value {
                     KvValue::List(list) if !list.is_empty() => {
                         entry.version += 1;
                         let value = list.pop();
-                        // Redis deletes empty lists
                         if list.is_empty() {
-                            guard.remove(key);
-                            self.remove_tracking(key);
+                            self.remove_entry(&mut guard, key);
+                        } else {
+                            self.refresh_entry_ram(key.len(), entry);
                         }
                         value
                     }
@@ -742,13 +962,11 @@ impl Shard {
     }
 
     /// Get range of elements from list (LRANGE)
-    /// Supports negative indices (-1 = last element)
-    /// Returns empty vec for non-existent keys (Redis compatible)
     pub fn lrange(&self, key: &str, start: i64, stop: i64) -> Result<Vec<KvValue>, KvError> {
         let guard = self.data.read();
         match guard.get(key) {
             Some(entry) if !entry.is_expired() => {
-                self.track_access(key);
+                entry.touch();
                 match &entry.value {
                     KvValue::List(list) => {
                         let len = list.len() as i64;
@@ -756,7 +974,6 @@ impl Shard {
                             return Ok(Vec::new());
                         }
 
-                        // Normalize negative indices
                         let start_idx = if start < 0 {
                             (len + start).max(0)
                         } else {
@@ -780,12 +997,11 @@ impl Shard {
                     }),
                 }
             }
-            _ => Ok(Vec::new()), // Non-existent key returns empty list
+            _ => Ok(Vec::new()),
         }
     }
 
     /// Get length of list (LLEN)
-    /// Returns 0 for non-existent keys, error for wrong type
     pub fn llen(&self, key: &str) -> Result<usize, KvError> {
         let guard = self.data.read();
         match guard.get(key) {
@@ -796,86 +1012,102 @@ impl Shard {
                     actual: format!("{:?}", std::mem::discriminant(other)),
                 }),
             },
-            _ => Ok(0), // Non-existent key returns 0
+            _ => Ok(0),
         }
     }
 
     // ==================== Set Operations ====================
 
     /// Add members to a set (SADD)
-    /// Returns number of new members added (not already in set)
     pub fn sadd(&self, key: &str, members: Vec<String>) -> Result<usize, KvError> {
         let mut guard = self.data.write();
-        self.track_access(key);
 
-        let entry = guard.entry(key.to_string()).or_insert_with(|| Entry {
-            value: KvValue::Set(std::collections::HashSet::new()),
-            created_at: Instant::now(),
-            expires_at: None,
-            version: 1,
-        });
-
-        match &mut entry.value {
-            KvValue::Set(set) => {
+        match guard.get_mut(key) {
+            Some(entry) if !entry.is_expired() => {
+                entry.touch();
+                match &mut entry.value {
+                    KvValue::Set(set) => {
+                        let mut added = 0;
+                        for member in members {
+                            if set.insert(member) {
+                                added += 1;
+                            }
+                        }
+                        entry.version += 1;
+                        self.refresh_entry_ram(key.len(), entry);
+                        Ok(added)
+                    }
+                    other => Err(KvError::TypeMismatch {
+                        expected: "Set".to_string(),
+                        actual: format!("{:?}", std::mem::discriminant(other)),
+                    }),
+                }
+            }
+            _ => {
+                let mut set = std::collections::HashSet::new();
                 let mut added = 0;
                 for member in members {
                     if set.insert(member) {
                         added += 1;
                     }
                 }
+                self.insert_entry(
+                    &mut guard,
+                    key.to_string(),
+                    Entry::new(KvValue::Set(set), None),
+                );
                 Ok(added)
             }
-            other => Err(KvError::TypeMismatch {
-                expected: "Set".to_string(),
-                actual: format!("{:?}", std::mem::discriminant(other)),
-            }),
         }
     }
 
     /// Remove members from a set (SREM)
-    /// Returns number of members actually removed
     pub fn srem(&self, key: &str, members: Vec<String>) -> Result<usize, KvError> {
         let mut guard = self.data.write();
-        self.track_access(key);
 
         match guard.get_mut(key) {
-            Some(entry) if !entry.is_expired() => match &mut entry.value {
-                KvValue::Set(set) => {
-                    let mut removed = 0;
-                    for member in members {
-                        if set.remove(&member) {
-                            removed += 1;
+            Some(entry) if !entry.is_expired() => {
+                entry.touch();
+                match &mut entry.value {
+                    KvValue::Set(set) => {
+                        let mut removed = 0;
+                        for member in members {
+                            if set.remove(&member) {
+                                removed += 1;
+                            }
                         }
+                        if set.is_empty() {
+                            self.remove_entry(&mut guard, key);
+                        } else {
+                            self.refresh_entry_ram(key.len(), entry);
+                        }
+                        Ok(removed)
                     }
-                    // Delete key if set becomes empty (Redis semantics)
-                    if set.is_empty() {
-                        guard.remove(key);
-                        self.remove_tracking(key);
-                    }
-                    Ok(removed)
+                    other => Err(KvError::TypeMismatch {
+                        expected: "Set".to_string(),
+                        actual: format!("{:?}", std::mem::discriminant(other)),
+                    }),
                 }
-                other => Err(KvError::TypeMismatch {
-                    expected: "Set".to_string(),
-                    actual: format!("{:?}", std::mem::discriminant(other)),
-                }),
-            },
-            _ => Ok(0), // Non-existent key returns 0
+            }
+            _ => Ok(0),
         }
     }
 
     /// Get all members of a set (SMEMBERS)
     pub fn smembers(&self, key: &str) -> Result<Vec<String>, KvError> {
         let guard = self.data.read();
-        self.track_access(key);
 
         match guard.get(key) {
-            Some(entry) if !entry.is_expired() => match &entry.value {
-                KvValue::Set(set) => Ok(set.iter().cloned().collect()),
-                other => Err(KvError::TypeMismatch {
-                    expected: "Set".to_string(),
-                    actual: format!("{:?}", std::mem::discriminant(other)),
-                }),
-            },
+            Some(entry) if !entry.is_expired() => {
+                entry.touch();
+                match &entry.value {
+                    KvValue::Set(set) => Ok(set.iter().cloned().collect()),
+                    other => Err(KvError::TypeMismatch {
+                        expected: "Set".to_string(),
+                        actual: format!("{:?}", std::mem::discriminant(other)),
+                    }),
+                }
+            }
             _ => Ok(Vec::new()),
         }
     }
@@ -883,16 +1115,18 @@ impl Shard {
     /// Check if member exists in set (SISMEMBER)
     pub fn sismember(&self, key: &str, member: &str) -> Result<bool, KvError> {
         let guard = self.data.read();
-        self.track_access(key);
 
         match guard.get(key) {
-            Some(entry) if !entry.is_expired() => match &entry.value {
-                KvValue::Set(set) => Ok(set.contains(member)),
-                other => Err(KvError::TypeMismatch {
-                    expected: "Set".to_string(),
-                    actual: format!("{:?}", std::mem::discriminant(other)),
-                }),
-            },
+            Some(entry) if !entry.is_expired() => {
+                entry.touch();
+                match &entry.value {
+                    KvValue::Set(set) => Ok(set.contains(member)),
+                    other => Err(KvError::TypeMismatch {
+                        expected: "Set".to_string(),
+                        actual: format!("{:?}", std::mem::discriminant(other)),
+                    }),
+                }
+            }
             _ => Ok(false),
         }
     }
@@ -915,20 +1149,33 @@ impl Shard {
     // ==================== Sorted Set Operations ====================
 
     /// Add members with scores to sorted set (ZADD)
-    /// Returns number of new members added
     pub fn zadd(&self, key: &str, members: Vec<(String, f64)>) -> Result<usize, KvError> {
         let mut guard = self.data.write();
-        self.track_access(key);
 
-        let entry = guard.entry(key.to_string()).or_insert_with(|| Entry {
-            value: KvValue::SortedSet(std::collections::BTreeMap::new()),
-            created_at: Instant::now(),
-            expires_at: None,
-            version: 1,
-        });
-
-        match &mut entry.value {
-            KvValue::SortedSet(ss) => {
+        match guard.get_mut(key) {
+            Some(entry) if !entry.is_expired() => {
+                entry.touch();
+                match &mut entry.value {
+                    KvValue::SortedSet(ss) => {
+                        let mut added = 0;
+                        for (member, score) in members {
+                            if !ss.contains_key(&member) {
+                                added += 1;
+                            }
+                            ss.insert(member, score);
+                        }
+                        entry.version += 1;
+                        self.refresh_entry_ram(key.len(), entry);
+                        Ok(added)
+                    }
+                    other => Err(KvError::TypeMismatch {
+                        expected: "SortedSet".to_string(),
+                        actual: format!("{:?}", std::mem::discriminant(other)),
+                    }),
+                }
+            }
+            _ => {
+                let mut ss = std::collections::BTreeMap::new();
                 let mut added = 0;
                 for (member, score) in members {
                     if !ss.contains_key(&member) {
@@ -936,41 +1183,44 @@ impl Shard {
                     }
                     ss.insert(member, score);
                 }
+                self.insert_entry(
+                    &mut guard,
+                    key.to_string(),
+                    Entry::new(KvValue::SortedSet(ss), None),
+                );
                 Ok(added)
             }
-            other => Err(KvError::TypeMismatch {
-                expected: "SortedSet".to_string(),
-                actual: format!("{:?}", std::mem::discriminant(other)),
-            }),
         }
     }
 
     /// Remove members from sorted set (ZREM)
     pub fn zrem(&self, key: &str, members: Vec<String>) -> Result<usize, KvError> {
         let mut guard = self.data.write();
-        self.track_access(key);
 
         match guard.get_mut(key) {
-            Some(entry) if !entry.is_expired() => match &mut entry.value {
-                KvValue::SortedSet(ss) => {
-                    let mut removed = 0;
-                    for member in members {
-                        if ss.remove(&member).is_some() {
-                            removed += 1;
+            Some(entry) if !entry.is_expired() => {
+                entry.touch();
+                match &mut entry.value {
+                    KvValue::SortedSet(ss) => {
+                        let mut removed = 0;
+                        for member in members {
+                            if ss.remove(&member).is_some() {
+                                removed += 1;
+                            }
                         }
+                        if ss.is_empty() {
+                            self.remove_entry(&mut guard, key);
+                        } else {
+                            self.refresh_entry_ram(key.len(), entry);
+                        }
+                        Ok(removed)
                     }
-                    // Delete key if sorted set becomes empty
-                    if ss.is_empty() {
-                        guard.remove(key);
-                        self.remove_tracking(key);
-                    }
-                    Ok(removed)
+                    other => Err(KvError::TypeMismatch {
+                        expected: "SortedSet".to_string(),
+                        actual: format!("{:?}", std::mem::discriminant(other)),
+                    }),
                 }
-                other => Err(KvError::TypeMismatch {
-                    expected: "SortedSet".to_string(),
-                    actual: format!("{:?}", std::mem::discriminant(other)),
-                }),
-            },
+            }
             _ => Ok(0),
         }
     }
@@ -978,16 +1228,18 @@ impl Shard {
     /// Get score of member (ZSCORE)
     pub fn zscore(&self, key: &str, member: &str) -> Result<Option<f64>, KvError> {
         let guard = self.data.read();
-        self.track_access(key);
 
         match guard.get(key) {
-            Some(entry) if !entry.is_expired() => match &entry.value {
-                KvValue::SortedSet(ss) => Ok(ss.get(member).copied()),
-                other => Err(KvError::TypeMismatch {
-                    expected: "SortedSet".to_string(),
-                    actual: format!("{:?}", std::mem::discriminant(other)),
-                }),
-            },
+            Some(entry) if !entry.is_expired() => {
+                entry.touch();
+                match &entry.value {
+                    KvValue::SortedSet(ss) => Ok(ss.get(member).copied()),
+                    other => Err(KvError::TypeMismatch {
+                        expected: "SortedSet".to_string(),
+                        actual: format!("{:?}", std::mem::discriminant(other)),
+                    }),
+                }
+            }
             _ => Ok(None),
         }
     }
@@ -995,87 +1247,100 @@ impl Shard {
     /// Increment score of member (ZINCRBY)
     pub fn zincrby(&self, key: &str, member: &str, increment: f64) -> Result<f64, KvError> {
         let mut guard = self.data.write();
-        self.track_access(key);
 
-        let entry = guard.entry(key.to_string()).or_insert_with(|| Entry {
-            value: KvValue::SortedSet(std::collections::BTreeMap::new()),
-            created_at: Instant::now(),
-            expires_at: None,
-            version: 1,
-        });
-
-        match &mut entry.value {
-            KvValue::SortedSet(ss) => {
-                let new_score = ss.get(member).unwrap_or(&0.0) + increment;
-                ss.insert(member.to_string(), new_score);
-                Ok(new_score)
+        match guard.get_mut(key) {
+            Some(entry) if !entry.is_expired() => {
+                entry.touch();
+                match &mut entry.value {
+                    KvValue::SortedSet(ss) => {
+                        let new_score = ss.get(member).unwrap_or(&0.0) + increment;
+                        ss.insert(member.to_string(), new_score);
+                        entry.version += 1;
+                        self.refresh_entry_ram(key.len(), entry);
+                        Ok(new_score)
+                    }
+                    other => Err(KvError::TypeMismatch {
+                        expected: "SortedSet".to_string(),
+                        actual: format!("{:?}", std::mem::discriminant(other)),
+                    }),
+                }
             }
-            other => Err(KvError::TypeMismatch {
-                expected: "SortedSet".to_string(),
-                actual: format!("{:?}", std::mem::discriminant(other)),
-            }),
+            _ => {
+                let mut ss = std::collections::BTreeMap::new();
+                ss.insert(member.to_string(), increment);
+                self.insert_entry(
+                    &mut guard,
+                    key.to_string(),
+                    Entry::new(KvValue::SortedSet(ss), None),
+                );
+                Ok(increment)
+            }
         }
     }
 
     /// Get rank of member (0-based, ascending by score) (ZRANK)
     pub fn zrank(&self, key: &str, member: &str) -> Result<Option<usize>, KvError> {
         let guard = self.data.read();
-        self.track_access(key);
 
         match guard.get(key) {
-            Some(entry) if !entry.is_expired() => match &entry.value {
-                KvValue::SortedSet(ss) => {
-                    // Sort by score ascending
-                    let mut items: Vec<_> = ss.iter().collect();
-                    items.sort_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal));
-                    Ok(items.iter().position(|(m, _)| *m == member))
+            Some(entry) if !entry.is_expired() => {
+                entry.touch();
+                match &entry.value {
+                    KvValue::SortedSet(ss) => {
+                        let mut items: Vec<_> = ss.iter().collect();
+                        items.sort_by(|a, b| {
+                            a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal)
+                        });
+                        Ok(items.iter().position(|(m, _)| *m == member))
+                    }
+                    other => Err(KvError::TypeMismatch {
+                        expected: "SortedSet".to_string(),
+                        actual: format!("{:?}", std::mem::discriminant(other)),
+                    }),
                 }
-                other => Err(KvError::TypeMismatch {
-                    expected: "SortedSet".to_string(),
-                    actual: format!("{:?}", std::mem::discriminant(other)),
-                }),
-            },
+            }
             _ => Ok(None),
         }
     }
 
     /// Get range by rank (ZRANGE)
-    /// start and stop are 0-based indices, negative means from end
     pub fn zrange(&self, key: &str, start: i64, stop: i64) -> Result<Vec<(String, f64)>, KvError> {
         let guard = self.data.read();
-        self.track_access(key);
 
         match guard.get(key) {
-            Some(entry) if !entry.is_expired() => match &entry.value {
-                KvValue::SortedSet(ss) => {
-                    // Sort by score ascending
-                    let mut items: Vec<_> = ss.iter().map(|(m, s)| (m.clone(), *s)).collect();
-                    items
-                        .sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+            Some(entry) if !entry.is_expired() => {
+                entry.touch();
+                match &entry.value {
+                    KvValue::SortedSet(ss) => {
+                        let mut items: Vec<_> = ss.iter().map(|(m, s)| (m.clone(), *s)).collect();
+                        items.sort_by(|a, b| {
+                            a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
+                        });
 
-                    let len = items.len() as i64;
-                    let start_idx = if start < 0 {
-                        (len + start).max(0)
-                    } else {
-                        start.min(len)
-                    } as usize;
-                    let stop_idx = if stop < 0 {
-                        (len + stop + 1).max(0)
-                    } else {
-                        (stop + 1).min(len)
-                    } as usize;
+                        let len = items.len() as i64;
+                        let start_idx = if start < 0 {
+                            (len + start).max(0)
+                        } else {
+                            start.min(len)
+                        } as usize;
+                        let stop_idx = if stop < 0 {
+                            (len + stop + 1).max(0)
+                        } else {
+                            (stop + 1).min(len)
+                        } as usize;
 
-                    if start_idx >= stop_idx {
-                        return Ok(Vec::new());
+                        if start_idx >= stop_idx {
+                            return Ok(Vec::new());
+                        }
+
+                        Ok(items[start_idx..stop_idx].to_vec())
                     }
-
-                    Ok(items[start_idx..stop_idx].to_vec())
+                    other => Err(KvError::TypeMismatch {
+                        expected: "SortedSet".to_string(),
+                        actual: format!("{:?}", std::mem::discriminant(other)),
+                    }),
                 }
-                other => Err(KvError::TypeMismatch {
-                    expected: "SortedSet".to_string(),
-                    actual: format!("{:?}", std::mem::discriminant(other)),
-                }),
-            },
+            }
             _ => Ok(Vec::new()),
         }
     }
@@ -1095,21 +1360,16 @@ impl Shard {
         }
     }
 
-    // ==================== Memory Eviction ====================
+    // ==================== Memory & Eviction ====================
 
-    /// Estimate memory usage for this shard
+    /// O(1) resident memory usage for this shard
+    #[inline]
     pub fn estimate_memory(&self) -> usize {
-        let guard = self.data.read();
-        guard
-            .iter()
-            .map(|(k, e)| {
-                k.len() + Self::estimate_value_size(&e.value) + 64 // 64 for Entry overhead
-            })
-            .sum()
+        self.used_memory_bytes.load(Ordering::Relaxed)
     }
 
-    /// Estimate size of a KvValue
-    fn estimate_value_size(value: &KvValue) -> usize {
+    /// Estimate size of a KvValue in RAM
+    pub fn estimate_value_size(value: &KvValue) -> usize {
         match value {
             KvValue::Int(_) => 8,
             KvValue::Float(_) => 8,
@@ -1129,14 +1389,22 @@ impl Shard {
         }
     }
 
-    /// Get the least recently used key (for LRU eviction)
-    pub fn get_lru_key(&self, volatile_only: bool) -> Option<String> {
-        let data_guard = self.data.read();
-        let lru_guard = self.lru_times.read();
+    /// Sample up to `sample_limit` entries from this shard and return the best
+    /// eviction candidate according to `use_lfu` and `volatile_only`.
+    pub fn sample_eviction_candidate(
+        &self,
+        volatile_only: bool,
+        use_lfu: bool,
+        sample_limit: usize,
+    ) -> Option<EvictionCandidate> {
+        let guard = self.data.read();
+        if guard.is_empty() {
+            return None;
+        }
 
-        let mut oldest: Option<(&String, &Instant)> = None;
+        let mut best: Option<EvictionCandidate> = None;
 
-        for (key, entry) in data_guard.iter() {
+        for (key, entry) in guard.iter().take(sample_limit) {
             if entry.is_expired() {
                 continue;
             }
@@ -1144,63 +1412,124 @@ impl Shard {
                 continue;
             }
 
-            let access_time = lru_guard.get(key).unwrap_or(&entry.created_at);
-            match oldest {
-                None => oldest = Some((key, access_time)),
-                Some((_, t)) if access_time < t => oldest = Some((key, access_time)),
-                _ => {}
+            let last_accessed = entry.last_accessed.load(Ordering::Relaxed);
+            let access_count = entry.access_count.load(Ordering::Relaxed);
+            let can_spill = entry.spilled.is_none()
+                && matches!(
+                    &entry.value,
+                    KvValue::Bytes(b) if b.len() >= 128
+                )
+                || (entry.spilled.is_none()
+                    && matches!(
+                        &entry.value,
+                        KvValue::String(s) if s.len() >= 128
+                    ));
+
+            let candidate = EvictionCandidate {
+                key: key.clone(),
+                last_accessed,
+                access_count,
+                can_spill,
+            };
+
+            match &best {
+                None => best = Some(candidate),
+                Some(cur) => {
+                    let is_better = if use_lfu {
+                        (candidate.access_count, candidate.last_accessed)
+                            < (cur.access_count, cur.last_accessed)
+                    } else {
+                        candidate.last_accessed < cur.last_accessed
+                    };
+                    if is_better {
+                        best = Some(candidate);
+                    }
+                }
             }
         }
 
-        oldest.map(|(k, _)| k.clone())
+        best
+    }
+
+    /// Get the least recently used key (for LRU eviction)
+    pub fn get_lru_key(&self, volatile_only: bool) -> Option<String> {
+        self.sample_eviction_candidate(volatile_only, false, usize::MAX)
+            .map(|c| c.key)
     }
 
     /// Get the least frequently used key (for LFU eviction)
     pub fn get_lfu_key(&self, volatile_only: bool) -> Option<String> {
-        let data_guard = self.data.read();
-        let lfu_guard = self.lfu_counts.read();
-
-        let mut least_used: Option<(&String, u64)> = None;
-
-        for (key, entry) in data_guard.iter() {
-            if entry.is_expired() {
-                continue;
-            }
-            if volatile_only && entry.expires_at.is_none() {
-                continue;
-            }
-
-            let count = *lfu_guard.get(key).unwrap_or(&0);
-            match least_used {
-                None => least_used = Some((key, count)),
-                Some((_, c)) if count < c => least_used = Some((key, count)),
-                _ => {}
-            }
-        }
-
-        least_used.map(|(k, _)| k.clone())
+        self.sample_eviction_candidate(volatile_only, true, usize::MAX)
+            .map(|c| c.key)
     }
 
-    /// Export all entries (for persistence/snapshots)
+    /// Attempt to spill an in-memory `Bytes` or `String` entry to `blob_store`,
+    /// freeing its RAM while keeping the key alive.
+    pub fn try_spill_key(
+        &self,
+        key: &str,
+        blob_store: &crate::persistence::blob_store::BlobStore,
+    ) -> bool {
+        let value_to_spill = {
+            let guard = self.data.read();
+            match guard.get(key) {
+                Some(entry) if !entry.is_expired() && entry.spilled.is_none() => match &entry.value
+                {
+                    KvValue::Bytes(_) | KvValue::String(_) => {
+                        Some((entry.value.clone(), entry.version))
+                    }
+                    _ => None,
+                },
+                _ => None,
+            }
+        };
+
+        let Some((val, expected_version)) = value_to_spill else {
+            return false;
+        };
+
+        let Ok(Some(blob)) = blob_store.store_value(&val) else {
+            return false;
+        };
+
+        let mut guard = self.data.write();
+        if let Some(entry) = guard.get_mut(key) {
+            if !entry.is_expired() && entry.version == expected_version && entry.spilled.is_none() {
+                entry.value = KvValue::Null;
+                entry.spilled = Some(blob);
+                self.refresh_entry_ram(key.len(), entry);
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Export all entries (for persistence/snapshots), materializing any spilled blobs
     pub fn export_all(&self) -> HashMap<String, Entry> {
-        let guard = self.data.read();
-        guard.clone()
+        let cloned = {
+            let guard = self.data.read();
+            guard.clone()
+        };
+        cloned
+            .into_iter()
+            .filter_map(|(k, e)| e.materialize_into().map(|mat| (k, mat)))
+            .collect()
     }
 
     /// Import entries (for recovery from snapshots)
     pub fn import_all(&self, entries: HashMap<String, Entry>) {
         let mut guard = self.data.write();
-        guard.extend(entries);
+        for (key, entry) in entries {
+            if !entry.is_expired() {
+                self.insert_entry(&mut guard, key, entry);
+            }
+        }
     }
 }
 
 impl Default for Shard {
     fn default() -> Self {
-        Self {
-            data: RwLock::new(HashMap::new()),
-            lru_times: RwLock::new(HashMap::new()),
-            lfu_counts: RwLock::new(HashMap::new()),
-        }
+        Self::new()
     }
 }
 
@@ -1217,6 +1546,29 @@ pub enum EvictionPolicy {
     NoEviction,
 }
 
+impl EvictionPolicy {
+    /// Parse eviction policy from string (`allkeys-lru`, `volatile-lru`, `allkeys-lfu`, `noeviction`)
+    pub fn from_str_name(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "allkeys-lru" | "lru" => Some(Self::AllKeysLru),
+            "volatile-lru" => Some(Self::VolatileLru),
+            "allkeys-lfu" | "lfu" => Some(Self::AllKeysLfu),
+            "noeviction" | "none" => Some(Self::NoEviction),
+            _ => None,
+        }
+    }
+
+    /// Canonical policy name
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::AllKeysLru => "allkeys-lru",
+            Self::VolatileLru => "volatile-lru",
+            Self::AllKeysLfu => "allkeys-lfu",
+            Self::NoEviction => "noeviction",
+        }
+    }
+}
+
 impl Default for EvictionPolicy {
     fn default() -> Self {
         Self::AllKeysLru
@@ -1227,20 +1579,24 @@ impl Default for EvictionPolicy {
 pub struct KvEngine {
     shards: Vec<Shard>,
     num_shards: usize,
-    /// Optional persistence handle for WAL and snapshots. ArcSwapOption gives a
-    /// lock-free `load()` (hazard pointers, no refcount RMW) on the write hot
-    /// path — a RwLock read here serialized concurrent SETs across cores.
+    /// Optional persistence handle for WAL and snapshots.
     persistence: arc_swap::ArcSwapOption<crate::persistence::handle::PersistenceHandle>,
-    /// Lock-free fast-path gate for the write hot path: when false, `log_wal`
-    /// skips the `persistence` RwLock entirely (a per-op RwLock read is a shared
-    /// atomic RMW that serializes SET across cores — this load shares the
-    /// cacheline instead). Set once by `enable_persistence`.
+    /// Lock-free fast-path gate for the write hot path.
     persistence_enabled: AtomicBool,
-    /// Maximum memory limit (0 = unlimited). Atomic so the per-SET limit check
-    /// is a shared-cacheline load, not a contended RwLock read.
+    /// Optional disk blob store for tiered storage (`/data/blobs/`).
+    blob_store: arc_swap::ArcSwapOption<crate::persistence::blob_store::BlobStore>,
+    /// Lock-free fast-path gate for blob tiering.
+    blob_store_enabled: AtomicBool,
+    /// Maximum memory limit (0 = unlimited).
     maxmemory: AtomicUsize,
     /// Eviction policy when maxmemory is reached
     eviction_policy: RwLock<EvictionPolicy>,
+    /// Rotating shard cursor for O(1) approximated eviction sampling
+    eviction_cursor: AtomicUsize,
+    /// Total number of keys evicted due to memory pressure
+    evicted_keys: AtomicU64,
+    /// Total number of keys spilled to disk
+    spilled_keys: AtomicU64,
 }
 
 impl KvEngine {
@@ -1251,15 +1607,49 @@ impl KvEngine {
 
     /// Create a new KV engine with specified number of shards
     pub fn with_shards(num_shards: usize) -> Self {
+        let num_shards = num_shards.max(1);
         let shards = (0..num_shards).map(|_| Shard::new()).collect();
         Self {
             shards,
             num_shards,
             persistence: arc_swap::ArcSwapOption::empty(),
             persistence_enabled: AtomicBool::new(false),
+            blob_store: arc_swap::ArcSwapOption::empty(),
+            blob_store_enabled: AtomicBool::new(false),
             maxmemory: AtomicUsize::new(0),
             eviction_policy: RwLock::new(EvictionPolicy::default()),
+            eviction_cursor: AtomicUsize::new(0),
+            evicted_keys: AtomicU64::new(0),
+            spilled_keys: AtomicU64::new(0),
         }
+    }
+
+    /// Enable disk blob tiering (`/data/blobs/`) on this engine
+    pub fn enable_blob_store(&self, store: Arc<crate::persistence::blob_store::BlobStore>) {
+        self.blob_store.store(Some(store));
+        self.blob_store_enabled.store(true, Ordering::Release);
+    }
+
+    /// Return current disk bytes used by tiered blobs (0 if disabled)
+    pub fn used_disk_bytes(&self) -> usize {
+        if !self.blob_store_enabled.load(Ordering::Acquire) {
+            return 0;
+        }
+        self.blob_store
+            .load()
+            .as_ref()
+            .map(|b| b.used_disk_bytes())
+            .unwrap_or(0)
+    }
+
+    /// Return total number of keys evicted
+    pub fn evicted_keys(&self) -> u64 {
+        self.evicted_keys.load(Ordering::Relaxed)
+    }
+
+    /// Return total number of keys spilled to disk
+    pub fn spilled_keys(&self) -> u64 {
+        self.spilled_keys.load(Ordering::Relaxed)
     }
 
     /// Set maximum memory limit (bytes). 0 = unlimited.
@@ -1282,22 +1672,38 @@ impl KvEngine {
         *self.eviction_policy.read()
     }
 
-    /// Estimate total memory usage across all shards
+    /// O(1) total resident RAM usage across all shards
     pub fn estimate_memory(&self) -> usize {
         self.shards.iter().map(|s| s.estimate_memory()).sum()
     }
 
-    /// Check if memory limit is exceeded and try to evict
-    /// Returns Ok(()) if within limit or eviction succeeded, Err if OOM
+    /// Build an `Entry` for `value`, automatically spilling to `/data/blobs/` if
+    /// `value` exceeds `spill_threshold_bytes`.
+    #[inline]
+    fn prepare_entry(&self, value: KvValue, ttl: Option<Duration>) -> Entry {
+        if self.blob_store_enabled.load(Ordering::Acquire) {
+            if let Some(store) = &*self.blob_store.load() {
+                if store.should_spill_on_write(&value) {
+                    if let Ok(Some(blob)) = store.store_value(&value) {
+                        self.spilled_keys.fetch_add(1, Ordering::Relaxed);
+                        return Entry::new_spilled(blob, ttl);
+                    }
+                }
+            }
+        }
+        Entry::new(value, ttl)
+    }
+
+    /// Check if memory limit is exceeded and try to spill cold blobs or evict keys.
+    /// Returns Ok(()) if within limit or eviction succeeded, Err if OOM.
     fn check_memory_and_evict(&self) -> Result<(), KvError> {
         let maxmem = self.maxmemory.load(Ordering::Relaxed);
         if maxmem == 0 {
-            return Ok(()); // No limit
+            return Ok(());
         }
 
-        let current = self.estimate_memory();
-        if current < maxmem {
-            return Ok(()); // Within limit
+        if self.estimate_memory() < maxmem {
+            return Ok(());
         }
 
         let policy = *self.eviction_policy.read();
@@ -1305,20 +1711,39 @@ impl KvEngine {
             return Err(KvError::OutOfMemory);
         }
 
-        // Try to evict until we're under the limit
         let volatile_only = matches!(policy, EvictionPolicy::VolatileLru);
         let use_lfu = matches!(policy, EvictionPolicy::AllKeysLfu);
+        let blob_store = if self.blob_store_enabled.load(Ordering::Acquire) {
+            self.blob_store.load_full()
+        } else {
+            None
+        };
 
-        for _ in 0..10 {
-            // Try up to 10 evictions per check
-            let to_evict = self.find_eviction_candidate(volatile_only, use_lfu);
-            match to_evict {
-                Some(key) => {
-                    if let Ok(kv_key) = KvKey::new(key) {
-                        self.delete(&kv_key);
+        for _ in 0..16 {
+            let Some(candidate) = self.find_eviction_candidate(volatile_only, use_lfu) else {
+                return Err(KvError::OutOfMemory);
+            };
+
+            // Spill-before-evict: if blob store is enabled and candidate has a
+            // spillable in-memory payload, spill it to disk to free RAM without losing data.
+            let mut spilled = false;
+            if candidate.can_spill {
+                if let Some(ref store) = blob_store {
+                    if self
+                        .shard_for_key(&candidate.key)
+                        .try_spill_key(&candidate.key, store)
+                    {
+                        self.spilled_keys.fetch_add(1, Ordering::Relaxed);
+                        spilled = true;
                     }
                 }
-                None => return Err(KvError::OutOfMemory), // No candidates
+            }
+
+            if !spilled {
+                if let Ok(kv_key) = KvKey::new(candidate.key) {
+                    self.delete(&kv_key);
+                    self.evicted_keys.fetch_add(1, Ordering::Relaxed);
+                }
             }
 
             if self.estimate_memory() < maxmem {
@@ -1329,61 +1754,60 @@ impl KvEngine {
         Err(KvError::OutOfMemory)
     }
 
-    /// Find a key to evict based on policy
-    fn find_eviction_candidate(&self, volatile_only: bool, use_lfu: bool) -> Option<String> {
-        // Sample from each shard and pick the best candidate
-        let mut best: Option<(String, Instant, u64)> = None;
+    /// Find a key to evict based on approximated sampling across shards
+    fn find_eviction_candidate(
+        &self,
+        volatile_only: bool,
+        use_lfu: bool,
+    ) -> Option<EvictionCandidate> {
+        const MAX_NON_EMPTY_SHARDS_TO_PROBE: usize = 16;
+        const KEYS_PER_SHARD_SAMPLE: usize = 8;
 
-        for shard in &self.shards {
-            let candidate = if use_lfu {
-                shard.get_lfu_key(volatile_only)
-            } else {
-                shard.get_lru_key(volatile_only)
-            };
+        let start_idx = self.eviction_cursor.fetch_add(1, Ordering::Relaxed) % self.num_shards;
+        let mut probed_non_empty = 0usize;
+        let mut best: Option<EvictionCandidate> = None;
 
-            if let Some(key) = candidate {
-                // Get the tracking data for comparison
-                let lru = *shard.lru_times.read().get(&key).unwrap_or(&Instant::now());
-                let lfu = *shard.lfu_counts.read().get(&key).unwrap_or(&0);
+        for offset in 0..self.num_shards {
+            let shard_idx = (start_idx + offset) % self.num_shards;
+            let shard = &self.shards[shard_idx];
 
+            if let Some(candidate) =
+                shard.sample_eviction_candidate(volatile_only, use_lfu, KEYS_PER_SHARD_SAMPLE)
+            {
+                probed_non_empty += 1;
                 match &best {
-                    None => best = Some((key, lru, lfu)),
-                    Some((_, best_lru, best_lfu)) => {
-                        if use_lfu {
-                            if lfu < *best_lfu {
-                                best = Some((key, lru, lfu));
-                            }
-                        } else if lru < *best_lru {
-                            best = Some((key, lru, lfu));
+                    None => best = Some(candidate),
+                    Some(cur) => {
+                        let is_better = if use_lfu {
+                            (candidate.access_count, candidate.last_accessed)
+                                < (cur.access_count, cur.last_accessed)
+                        } else {
+                            candidate.last_accessed < cur.last_accessed
+                        };
+                        if is_better {
+                            best = Some(candidate);
                         }
                     }
+                }
+                if probed_non_empty >= MAX_NON_EMPTY_SHARDS_TO_PROBE {
+                    break;
                 }
             }
         }
 
-        best.map(|(k, _, _)| k)
+        best
     }
 
     /// Enable persistence on this engine
-    ///
-    /// Can be called after wrapping in Arc - uses interior mutability.
-    /// Sets up WAL logging and periodic snapshots.
     pub fn enable_persistence(
         &self,
         persistence_handle: std::sync::Arc<crate::persistence::handle::PersistenceHandle>,
     ) {
-        // Publish the handle first, then flip the gate with Release so any
-        // thread that later observes the flag (Acquire) also sees the handle.
         self.persistence.store(Some(persistence_handle));
         self.persistence_enabled.store(true, Ordering::Release);
     }
 
     /// Log an operation to WAL (if persistence is enabled).
-    ///
-    /// Fast path when persistence is off: a single relaxed/acquire atomic load
-    /// (shared cacheline, no contention) instead of acquiring the `persistence`
-    /// RwLock on every write — the latter is a shared atomic RMW that serializes
-    /// concurrent SETs across cores.
     #[inline]
     fn log_wal(&self, op: crate::persistence::format::WalOp) {
         if !self.persistence_enabled.load(Ordering::Acquire) {
@@ -1394,10 +1818,7 @@ impl KvEngine {
         }
     }
 
-    /// Durability barrier for durable-before-ack writes: returns a receiver that
-    /// fires once every WAL op logged so far has been fsynced to disk. Returns
-    /// `None` when persistence is disabled (nothing to wait for). Concurrent
-    /// callers are batched into a single fsync (group commit) by the writer.
+    /// Durability barrier for durable-before-ack writes.
     #[inline]
     pub fn durability_barrier(&self) -> Option<tokio::sync::oneshot::Receiver<()>> {
         if !self.persistence_enabled.load(Ordering::Acquire) {
@@ -1433,37 +1854,32 @@ impl KvEngine {
     /// Set a value with optional TTL
     /// Returns Ok(()) on success, Err(OutOfMemory) if maxmemory exceeded with noeviction policy
     pub fn set(&self, key: &KvKey, value: KvValue, ttl: Option<Duration>) -> Result<(), KvError> {
-        // Check memory limit first
         self.check_memory_and_evict()?;
 
-        // Log to WAL first (non-blocking)
         self.log_wal(crate::persistence::format::WalOp::Set {
             key: key.as_str().to_string(),
             value: value.clone(),
             ttl,
         });
 
-        // Apply to in-memory store
+        let entry = self.prepare_entry(value, ttl);
         self.shard_for_key(key.as_str())
-            .set(key.as_str().to_string(), value, ttl);
+            .set_entry(key.as_str().to_string(), entry);
         Ok(())
     }
 
     /// Set key with expiry in seconds (SETEX)
-    /// Convenience wrapper over set() with TTL
     pub fn setex(&self, key: &KvKey, seconds: u64, value: KvValue) -> Result<(), KvError> {
         self.set(key, value, Some(Duration::from_secs(seconds)))
     }
 
     /// Set key with expiry in milliseconds (PSETEX)
-    /// Convenience wrapper over set() with TTL
     pub fn psetex(&self, key: &KvKey, milliseconds: u64, value: KvValue) -> Result<(), KvError> {
         self.set(key, value, Some(Duration::from_millis(milliseconds)))
     }
 
     /// Delete a key
     pub fn delete(&self, key: &KvKey) -> bool {
-        // Log to WAL
         self.log_wal(crate::persistence::format::WalOp::Delete {
             key: key.as_str().to_string(),
         });
@@ -1479,12 +1895,9 @@ impl KvEngine {
     }
 
     /// Atomic increment
-    /// May create new key if not exists - enforces memory limit
     pub fn incr(&self, key: &KvKey, delta: i64) -> Result<i64, KvError> {
-        // Check memory limit (may create new key)
         self.check_memory_and_evict()?;
 
-        // Log to WAL
         self.log_wal(crate::persistence::format::WalOp::Incr {
             key: key.as_str().to_string(),
             delta,
@@ -1493,23 +1906,19 @@ impl KvEngine {
         self.shard_for_key(key.as_str()).incr(key.as_str(), delta)
     }
 
-    /// Atomic decrement (convenience wrapper)
+    /// Atomic decrement
     pub fn decr(&self, key: &KvKey, delta: i64) -> Result<i64, KvError> {
-        // Check memory limit (may create new key)
         self.check_memory_and_evict()?;
 
-        // Log to WAL
         self.log_wal(crate::persistence::format::WalOp::Decr {
             key: key.as_str().to_string(),
             delta,
         });
 
-        // Call shard directly to avoid double-logging
         self.shard_for_key(key.as_str()).incr(key.as_str(), -delta)
     }
 
     /// Compare-And-Swap
-    /// Enforces memory limit since value may grow
     pub fn cas(
         &self,
         key: &KvKey,
@@ -1517,7 +1926,6 @@ impl KvEngine {
         new_value: KvValue,
         ttl: Option<Duration>,
     ) -> Result<bool, KvError> {
-        // Check memory limit
         self.check_memory_and_evict()?;
 
         self.log_wal(crate::persistence::format::WalOp::Cas {
@@ -1552,31 +1960,29 @@ impl KvEngine {
     }
 
     /// Set if not exists
-    /// Returns Ok(true) if set, Ok(false) if key exists, Err on OOM
     pub fn setnx(
         &self,
         key: &KvKey,
         value: KvValue,
         ttl: Option<Duration>,
     ) -> Result<bool, KvError> {
-        // Check memory limit first
         self.check_memory_and_evict()?;
 
-        // Log to WAL
         self.log_wal(crate::persistence::format::WalOp::SetNx {
             key: key.as_str().to_string(),
             value: value.clone(),
             ttl,
         });
 
+        let entry = self.prepare_entry(value, ttl);
         Ok(self
             .shard_for_key(key.as_str())
-            .setnx(key.as_str().to_string(), value, ttl))
+            .setnx_entry(key.as_str().to_string(), entry))
     }
 
     /// Acquire a lock
     pub fn lock(&self, key: &KvKey, owner: &str, ttl: Duration) -> bool {
-        // Log to WAL
+        let _ = self.check_memory_and_evict();
         self.log_wal(crate::persistence::format::WalOp::Lock {
             key: key.as_str().to_string(),
             owner: owner.to_string(),
@@ -1589,7 +1995,6 @@ impl KvEngine {
 
     /// Release a lock
     pub fn unlock(&self, key: &KvKey, owner: &str) -> Result<bool, KvError> {
-        // Log to WAL
         self.log_wal(crate::persistence::format::WalOp::Unlock {
             key: key.as_str().to_string(),
             owner: owner.to_string(),
@@ -1600,7 +2005,6 @@ impl KvEngine {
 
     /// Extend lock TTL
     pub fn extend_lock(&self, key: &KvKey, owner: &str, ttl: Duration) -> Result<bool, KvError> {
-        // Log to WAL
         self.log_wal(crate::persistence::format::WalOp::ExtendLock {
             key: key.as_str().to_string(),
             owner: owner.to_string(),
@@ -1614,71 +2018,14 @@ impl KvEngine {
     // ==================== Batch Operations ====================
 
     /// Get multiple values by keys (MGET)
-    ///
-    /// Returns a vector of Option<KvValue> in the same order as the input keys.
-    /// Missing or expired keys return None.
-    ///
-    /// # Performance
-    /// This is more efficient than multiple GET calls as it:
-    /// - Reduces function call overhead
-    /// - Allows better CPU cache utilization
-    /// - Can be optimized by the compiler
-    ///
-    /// # Example
-    /// ```
-    /// use keep_engine::engine::KvEngine;
-    /// use keep_engine::types::{KvKey, KvValue};
-    ///
-    /// let engine = KvEngine::new();
-    /// let key1 = KvKey::new("key1").unwrap();
-    /// let key2 = KvKey::new("key2").unwrap();
-    /// let key3 = KvKey::new("key3").unwrap();
-    ///
-    /// engine.set(&key1, KvValue::String("value1".to_string()), None);
-    /// engine.set(&key2, KvValue::String("value2".to_string()), None);
-    ///
-    /// let keys = vec![&key1, &key2, &key3];
-    /// let values = engine.mget(&keys);
-    /// assert_eq!(values.len(), 3);
-    /// assert!(values[0].is_some());
-    /// assert!(values[1].is_some());
-    /// assert!(values[2].is_none()); // key3 doesn't exist
-    /// ```
     pub fn mget(&self, keys: &[&KvKey]) -> Vec<Option<KvValue>> {
         keys.iter().map(|key| self.get(key)).collect()
     }
 
     /// Set multiple key-value pairs (MSET)
-    ///
-    /// Sets multiple keys in a single operation. All keys will have the same TTL.
-    ///
-    /// # Performance
-    /// This is more efficient than multiple SET calls for the same reasons as MGET.
-    ///
-    /// # Example
-    /// ```
-    /// use keep_engine::engine::KvEngine;
-    /// use keep_engine::types::{KvKey, KvValue};
-    ///
-    /// let engine = KvEngine::new();
-    /// let key1 = KvKey::new("key1").unwrap();
-    /// let key2 = KvKey::new("key2").unwrap();
-    ///
-    /// let pairs = vec![
-    ///     (&key1, KvValue::String("value1".to_string())),
-    ///     (&key2, KvValue::Int(42)),
-    /// ];
-    ///
-    /// engine.mset(&pairs, None);
-    ///
-    /// assert_eq!(engine.get(&key1), Some(KvValue::String("value1".to_string())));
-    /// assert_eq!(engine.get(&key2), Some(KvValue::Int(42)));
-    /// ```
     pub fn mset(&self, pairs: &[(&KvKey, KvValue)], ttl: Option<Duration>) -> Result<(), KvError> {
-        // Check memory limit first
         self.check_memory_and_evict()?;
 
-        // Log single batch operation to WAL
         let wal_pairs: Vec<(String, KvValue)> = pairs
             .iter()
             .map(|(key, value)| (key.as_str().to_string(), value.clone()))
@@ -1689,10 +2036,10 @@ impl KvEngine {
             ttl,
         });
 
-        // Apply to in-memory shards
         for (key, value) in pairs {
+            let entry = self.prepare_entry(value.clone(), ttl);
             self.shard_for_key(key.as_str())
-                .set(key.as_str().to_string(), value.clone(), ttl);
+                .set_entry(key.as_str().to_string(), entry);
         }
         Ok(())
     }
@@ -2131,9 +2478,25 @@ impl KvEngine {
     }
 
     /// Import entries into a specific shard (for recovery from snapshots)
-    pub fn import_shard(&self, shard_id: usize, entries: HashMap<String, Entry>) -> bool {
+    pub fn import_shard(&self, shard_id: usize, mut entries: HashMap<String, Entry>) -> bool {
         if shard_id >= self.num_shards {
             return false;
+        }
+        if self.blob_store_enabled.load(Ordering::Acquire) {
+            if let Some(store) = &*self.blob_store.load() {
+                for entry in entries.values_mut() {
+                    if !entry.is_expired()
+                        && entry.spilled.is_none()
+                        && store.should_spill_on_write(&entry.value)
+                    {
+                        if let Ok(Some(blob)) = store.store_value(&entry.value) {
+                            entry.value = KvValue::Null;
+                            entry.spilled = Some(blob);
+                            self.spilled_keys.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                }
+            }
         }
         self.shards[shard_id].import_all(entries);
         true
@@ -3044,5 +3407,87 @@ mod tests {
         );
 
         assert!(matches!(result, Err(KvError::OutOfMemory)));
+    }
+
+    #[test]
+    fn test_incremental_memory_accounting_accuracy() {
+        let engine = KvEngine::new();
+        assert_eq!(engine.estimate_memory(), 0);
+
+        let k1 = KvKey::new("k1").unwrap();
+        let k2 = KvKey::new("k2").unwrap();
+
+        engine
+            .set(&k1, KvValue::String("hello".repeat(100)), None)
+            .unwrap();
+        let mem1 = engine.estimate_memory();
+        assert!(mem1 > 500);
+
+        // Overwrite with smaller value -> memory must decrease
+        engine.set(&k1, KvValue::Int(1), None).unwrap();
+        let mem2 = engine.estimate_memory();
+        assert!(mem2 < mem1);
+
+        // Add collection and then delete -> memory must return to 0
+        engine
+            .sadd(&k2, vec!["m1".to_string(), "m2".to_string()])
+            .unwrap();
+        assert!(engine.estimate_memory() > mem2);
+
+        engine.delete(&k1);
+        engine
+            .srem(&k2, vec!["m1".to_string(), "m2".to_string()])
+            .unwrap();
+        assert_eq!(engine.estimate_memory(), 0);
+    }
+
+    #[test]
+    fn test_tiered_blob_spill_on_write_and_memory_pressure() {
+        use crate::persistence::blob_store::BlobStore;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let engine = KvEngine::with_shards(16);
+        let store = Arc::new(BlobStore::new(temp_dir.path(), 1024, 0).unwrap());
+        engine.enable_blob_store(store);
+
+        // 1. Write a 4 KiB payload (>= 1024 spill threshold)
+        let big_key = KvKey::new("big_blob").unwrap();
+        let payload = vec![7u8; 4096];
+        engine
+            .set(&big_key, KvValue::Bytes(payload.clone()), None)
+            .unwrap();
+
+        assert_eq!(engine.used_disk_bytes(), 4096);
+        assert_eq!(engine.spilled_keys(), 1);
+        // RAM footprint of the spilled entry should be tiny (< 256 bytes)
+        assert!(engine.estimate_memory() < 256);
+        assert_eq!(engine.get(&big_key), Some(KvValue::Bytes(payload)));
+
+        // Deleting the key must unlink the blob and drop disk bytes to 0
+        assert!(engine.delete(&big_key));
+        assert_eq!(engine.used_disk_bytes(), 0);
+        assert_eq!(engine.estimate_memory(), 0);
+
+        // 2. Write smaller keys (< 1024) in RAM, then trigger memory-pressure spill-before-evict
+        let k1 = KvKey::new("ram_blob_1").unwrap();
+        let k2 = KvKey::new("ram_blob_2").unwrap();
+        engine
+            .set(&k1, KvValue::Bytes(vec![1u8; 512]), None)
+            .unwrap();
+        assert_eq!(engine.used_disk_bytes(), 0);
+
+        // Set maxmemory below current RAM so next write triggers spill-before-evict on k1
+        let ram_used = engine.estimate_memory();
+        engine.set_maxmemory(ram_used);
+
+        engine
+            .set(&k2, KvValue::Bytes(vec![2u8; 256]), None)
+            .unwrap();
+
+        // k1 was spilled to disk rather than deleted, so BOTH k1 and k2 are still readable!
+        assert_eq!(engine.used_disk_bytes(), 512);
+        assert_eq!(engine.get(&k1), Some(KvValue::Bytes(vec![1u8; 512])));
+        assert_eq!(engine.get(&k2), Some(KvValue::Bytes(vec![2u8; 256])));
     }
 }

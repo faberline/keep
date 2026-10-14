@@ -872,3 +872,130 @@ fn default_body_limit_is_16_mib_and_env_overrides() {
         "AppState.with_body_limit() must override the default"
     );
 }
+
+#[tokio::test]
+async fn token_secret_blocks_kv_bypass_of_claim_check_keys() {
+    let secret = b"test-secret".to_vec();
+    let state =
+        AppState::new(Arc::new(KvEngine::with_shards(16))).with_token_secret(secret.clone());
+    let app = router(state);
+
+    // Producer seeds an input via /inputs/job-sec (open to producer).
+    let (st, _) = send(&app, claim_put_req("/inputs/job-sec", None, "SECRET_INPUT")).await;
+    assert_eq!(st, StatusCode::OK);
+
+    // Regular KV keys work normally.
+    let (st, _) = send_json(&app, "PUT", "/kv/regular:key", json!({"value": "ok"})).await;
+    assert_eq!(st, StatusCode::OK);
+
+    // Attempting to read or overwrite claim-check keys via /kv/* is 403 Forbidden.
+    for path in [
+        "/kv/input:job-sec",
+        "/kv/result:job-sec",
+        "/kv/tenant-a::input:job-sec",
+        "/kv/tenant-a::result:job-sec",
+    ] {
+        let (st, _) = send_json(&app, "GET", path, Value::Null).await;
+        assert_eq!(st, StatusCode::FORBIDDEN, "GET {path} must be forbidden");
+
+        let (st, _) = send_json(&app, "PUT", path, json!({"value": "forged"})).await;
+        assert_eq!(st, StatusCode::FORBIDDEN, "PUT {path} must be forbidden");
+
+        let (st, _) = send_json(&app, "DELETE", path, Value::Null).await;
+        assert_eq!(st, StatusCode::FORBIDDEN, "DELETE {path} must be forbidden");
+    }
+
+    // Batch mget / mset / mdel touching claim-check keys are also forbidden.
+    let (st, _) = send_json(
+        &app,
+        "POST",
+        "/kv:mget",
+        json!({"keys": ["regular:key", "input:job-sec"]}),
+    )
+    .await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+
+    // Scan (/kv) hides reserved claim-check keys when token enforcement is enabled.
+    let (st, body) = send_json(&app, "GET", "/kv", Value::Null).await;
+    assert_eq!(st, StatusCode::OK);
+    let keys = body["keys"].as_array().unwrap();
+    assert!(keys.contains(&json!("regular:key")));
+    assert!(!keys.contains(&json!("input:job-sec")));
+}
+
+#[tokio::test]
+async fn blanket_api_token_gates_data_plane_and_leaves_probes_open() {
+    let state = AppState::new(Arc::new(KvEngine::with_shards(16))).with_api_token("top-secret-api");
+    let app = router(state);
+
+    // Unauthenticated data-plane write is rejected with 401.
+    let (st, _) = send_json(&app, "PUT", "/kv/k1", json!({"value": 1})).await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+
+    // Authenticated data-plane write succeeds.
+    let req = Request::builder()
+        .method("PUT")
+        .uri("/kv/k1")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, "Bearer top-secret-api")
+        .body(Body::from(
+            serde_json::to_vec(&json!({"value": 42})).unwrap(),
+        ))
+        .unwrap();
+    let (st, _) = send(&app, req).await;
+    assert_eq!(st, StatusCode::OK);
+
+    // Probes and metrics remain accessible without auth for K8s kubelet/Prometheus.
+    let req = Request::builder()
+        .method("GET")
+        .uri("/healthz")
+        .body(Body::empty())
+        .unwrap();
+    let (st, _) = send(&app, req).await;
+    assert_eq!(st, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn info_and_metrics_expose_resource_utilization_fields() {
+    let dir = tempfile::tempdir().unwrap();
+    let blob_store =
+        Arc::new(keep::persistence::BlobStore::new(dir.path(), 128, 1024 * 1024).unwrap());
+    let engine = KvEngine::with_shards(4);
+    engine.set_maxmemory(4096);
+    engine.set_eviction_policy(keep::EvictionPolicy::AllKeysLru);
+    engine.enable_blob_store(blob_store);
+    let state = AppState::new(Arc::new(engine));
+    let app = router(state);
+
+    // Write a 512-byte blob so it spills to disk.
+    let req = Request::builder()
+        .method("PUT")
+        .uri("/kv/big-blob")
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .body(Body::from(vec![b'x'; 512]))
+        .unwrap();
+    let (st, _) = send(&app, req).await;
+    assert_eq!(st, StatusCode::OK);
+
+    // Check /info
+    let (st, info) = send_json(&app, "GET", "/info", Value::Null).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(info["maxmemory_bytes"], json!(4096));
+    assert_eq!(info["disk_blob_bytes"], json!(512));
+    assert_eq!(info["spilled_keys"], json!(1));
+    assert_eq!(info["eviction_policy"], json!("allkeys-lru"));
+
+    // Check /metrics
+    let req = Request::builder()
+        .method("GET")
+        .uri("/metrics")
+        .body(Body::empty())
+        .unwrap();
+    let (st, bytes) = send(&app, req).await;
+    assert_eq!(st, StatusCode::OK);
+    let text = String::from_utf8(bytes).unwrap();
+    assert!(text.contains("keep_maxmemory_bytes 4096"));
+    assert!(text.contains("keep_disk_blob_bytes 512"));
+    assert!(text.contains("keep_spilled_keys_total 1"));
+    assert!(text.contains("keep_evicted_keys_total 0"));
+}

@@ -143,7 +143,7 @@ fn backup_cron_job(keep: &Keep, cx: &RenderCtx) -> Option<Value> {
 /// env instead.
 fn configmap(keep: &Keep, cx: &RenderCtx) -> Value {
     let name = format!("{}-config", cx.name);
-    let data = json!({
+    let mut data = json!({
         "KEEP_PORT": CLIENT_PORT.to_string(),
         "KEEP_SHARDS": keep.spec.engine_shards.to_string(),
         "KEEP_LOG_LEVEL": keep.spec.log_level.clone().unwrap_or_else(|| "info".to_string()),
@@ -152,6 +152,23 @@ fn configmap(keep: &Keep, cx: &RenderCtx) -> Value {
         "KEEP_LOG_FORMAT": "json",
         "KEEP_BODY_LIMIT": keep.spec.body_limit_bytes.to_string(),
     });
+    if let Some(obj) = data.as_object_mut() {
+        if let Some(maxmem) = &keep.spec.maxmemory {
+            obj.insert("KEEP_MAXMEMORY".into(), json!(maxmem));
+        }
+        if let Some(policy) = &keep.spec.eviction_policy {
+            obj.insert("KEEP_EVICTION_POLICY".into(), json!(policy));
+        }
+        if let Some(thresh) = keep.spec.spill_threshold_bytes {
+            obj.insert(
+                "KEEP_SPILL_THRESHOLD_BYTES".into(),
+                json!(thresh.to_string()),
+            );
+        }
+        if let Some(max_disk) = &keep.spec.max_disk_bytes {
+            obj.insert("KEEP_MAX_DISK_BYTES".into(), json!(max_disk));
+        }
+    }
     json!({
         "apiVersion": "v1",
         "kind": "ConfigMap",

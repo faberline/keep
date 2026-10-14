@@ -105,6 +105,7 @@ pub fn router(state: AppState) -> Router {
         .route("/zsets/{key}/members/{member}/rank", get(zsets::zrank))
         // Per-route request metrics (counts + latency). route_layer => only for
         // matched data-plane routes, and MatchedPath is populated.
+        .route_layer(from_fn_with_state(state.clone(), enforce_api_token))
         .route_layer(from_fn_with_state(req_metrics, metrics::track))
         .layer(service_http::body_limit_layer(body_limit));
 
@@ -131,4 +132,39 @@ pub fn router(state: AppState) -> Router {
         .layer(axum::middleware::from_fn(
             service_http::server_timing_middleware,
         ))
+}
+
+async fn enforce_api_token(
+    axum::extract::State(st): axum::extract::State<AppState>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Result<axum::response::Response, crate::http::error::ApiErr> {
+    if let Some(expected) = &st.api_token {
+        let headers = req.headers();
+        let bearer = service_auth::bearer_token(headers).unwrap_or("");
+        let api_ok = !bearer.is_empty() && bearer == expected.as_str();
+        // Also allow a valid scoped claim-check token when verifier is active
+        // on worker claim-check endpoints (/inputs/* or /results/*).
+        let claim_ok = if !api_ok {
+            use service_auth::Verifier;
+            let path = req.uri().path();
+            let is_claim_route = path.starts_with("/inputs/") || path.starts_with("/results/");
+            is_claim_route
+                && st
+                    .verifier
+                    .as_ref()
+                    .map(|v| v.authenticate(headers).is_ok())
+                    .unwrap_or(false)
+        } else {
+            false
+        };
+        if !api_ok && !claim_ok {
+            return Err(crate::http::error::ApiErr::new(
+                axum::http::StatusCode::UNAUTHORIZED,
+                "unauthorized",
+                "missing or invalid API token",
+            ));
+        }
+    }
+    Ok(next.run(req).await)
 }

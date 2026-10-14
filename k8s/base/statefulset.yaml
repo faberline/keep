@@ -88,6 +88,48 @@ spec:
                 configMapKeyRef:
                   name: keep-config
                   key: KEEP_LOG_FORMAT
+            - name: KEEP_WORKER_THREADS
+              valueFrom:
+                configMapKeyRef:
+                  name: keep-config
+                  key: KEEP_WORKER_THREADS
+                  optional: true
+            - name: KEEP_MAXMEMORY_RATIO
+              valueFrom:
+                configMapKeyRef:
+                  name: keep-config
+                  key: KEEP_MAXMEMORY_RATIO
+                  optional: true
+            - name: KEEP_EVICTION_POLICY
+              valueFrom:
+                configMapKeyRef:
+                  name: keep-config
+                  key: KEEP_EVICTION_POLICY
+                  optional: true
+            - name: KEEP_SPILL_THRESHOLD_BYTES
+              valueFrom:
+                configMapKeyRef:
+                  name: keep-config
+                  key: KEEP_SPILL_THRESHOLD_BYTES
+                  optional: true
+            - name: KEEP_EXPIRY_INTERVAL_MS
+              valueFrom:
+                configMapKeyRef:
+                  name: keep-config
+                  key: KEEP_EXPIRY_INTERVAL_MS
+                  optional: true
+            - name: KEEP_MAXMEMORY
+              valueFrom:
+                configMapKeyRef:
+                  name: keep-config
+                  key: KEEP_MAXMEMORY
+                  optional: true
+            - name: KEEP_MAX_DISK_BYTES
+              valueFrom:
+                configMapKeyRef:
+                  name: keep-config
+                  key: KEEP_MAX_DISK_BYTES
+                  optional: true
           # QoS Guaranteed: requests == limits.
           resources:
             requests:

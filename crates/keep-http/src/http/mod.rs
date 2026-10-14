@@ -43,6 +43,8 @@ pub struct AppState {
     /// `Some`, worker ops (GET input / PUT result) require a valid in-scope
     /// token; when `None`, claim-check is open (backward compatible).
     pub verifier: Option<Arc<auth::KeepVerifier>>,
+    /// Optional blanket API token (`KEEP_API_TOKEN`) for data-plane endpoints.
+    pub api_token: Option<Arc<String>>,
     /// Per-shard raft hosts used by replica-mode write handlers. Absent in the
     /// default/single-node fast path.
     #[cfg(feature = "raft")]
@@ -59,6 +61,7 @@ impl AppState {
             waiters: Arc::new(waiters::ListWaiters::default()),
             cluster: Arc::new(crate::cluster::ClusterConfig::default()),
             verifier: None,
+            api_token: None,
             #[cfg(feature = "raft")]
             raft_hosts: None,
             draining: Arc::new(AtomicBool::new(false)),
@@ -76,6 +79,15 @@ impl AppState {
     /// keep (#746).
     pub fn with_token_secret(mut self, secret: Vec<u8>) -> Self {
         self.verifier = Some(Arc::new(auth::KeepVerifier::new(Arc::new(secret))));
+        self
+    }
+
+    /// Enable blanket API token enforcement on data-plane routes.
+    pub fn with_api_token(mut self, token: impl Into<String>) -> Self {
+        let token = token.into();
+        if !token.is_empty() {
+            self.api_token = Some(Arc::new(token));
+        }
         self
     }
 
@@ -116,6 +128,10 @@ impl service_http::MetricsProvider for AppState {
         let keys = self.engine.len();
         let shards = self.engine.num_shards();
         let mem = self.engine.estimate_memory();
+        let maxmem = self.engine.get_maxmemory();
+        let disk_bytes = self.engine.used_disk_bytes();
+        let evicted = self.engine.evicted_keys();
+        let spilled = self.engine.spilled_keys();
         format!(
             "# HELP keep_keys_total Number of keys across all shards.\n\
              # TYPE keep_keys_total gauge\n\
@@ -125,7 +141,19 @@ impl service_http::MetricsProvider for AppState {
              keep_shards {shards}\n\
              # HELP keep_memory_bytes Estimated resident bytes of stored data.\n\
              # TYPE keep_memory_bytes gauge\n\
-             keep_memory_bytes {mem}\n{}",
+             keep_memory_bytes {mem}\n\
+             # HELP keep_maxmemory_bytes Configured maximum memory limit in bytes (0 = unlimited).\n\
+             # TYPE keep_maxmemory_bytes gauge\n\
+             keep_maxmemory_bytes {maxmem}\n\
+             # HELP keep_disk_blob_bytes Bytes stored in tiered disk blob spill files.\n\
+             # TYPE keep_disk_blob_bytes gauge\n\
+             keep_disk_blob_bytes {disk_bytes}\n\
+             # HELP keep_evicted_keys_total Total keys evicted due to memory pressure.\n\
+             # TYPE keep_evicted_keys_total counter\n\
+             keep_evicted_keys_total {evicted}\n\
+             # HELP keep_spilled_keys_total Total keys spilled to disk blob storage.\n\
+             # TYPE keep_spilled_keys_total counter\n\
+             keep_spilled_keys_total {spilled}\n{}",
             self.metrics.render()
         )
     }

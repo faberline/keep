@@ -422,9 +422,38 @@ struct ServeArgs {
     /// HTTP port (HTTP/1.1 + HTTP/2 cleartext on the same port).
     #[arg(long, env = "KEEP_PORT", default_value_t = 7117)]
     port: u16,
-    /// Engine shard count (multi-core scaling).
+    /// Tokio worker thread count (0 = auto-detect from CPU cores / cgroup quota).
+    #[arg(long, env = "KEEP_WORKER_THREADS", default_value_t = 0)]
+    worker_threads: usize,
+    /// Engine shard count (multi-core scaling; 0 = auto-scale from worker threads).
     #[arg(long, env = "KEEP_SHARDS", default_value_t = 256)]
     shards: usize,
+    /// Maximum resident memory for engine entries (e.g. `512Mi`, `4Gi`, or bytes;
+    /// `0` = unlimited). When unset, defaults to `maxmemory_ratio` of detected
+    /// cgroup memory limit if running inside a memory-limited container.
+    #[arg(long, env = "KEEP_MAXMEMORY")]
+    maxmemory: Option<String>,
+    /// Fraction of container cgroup memory limit to use when `--maxmemory` is unset.
+    #[arg(long, env = "KEEP_MAXMEMORY_RATIO", default_value_t = 0.80)]
+    maxmemory_ratio: f64,
+    /// Memory eviction policy (`noeviction`, `allkeys-lru`, `volatile-lru`,
+    /// `allkeys-lfu`, `allkeys-random`).
+    #[arg(long, env = "KEEP_EVICTION_POLICY", default_value = "allkeys-lru")]
+    eviction_policy: String,
+    /// Byte size threshold above which `Bytes` payloads spill to `/data/blobs/`
+    /// when persistence is enabled (`0` disables disk blob tiering).
+    #[arg(long, env = "KEEP_SPILL_THRESHOLD_BYTES", default_value_t = 65_536)]
+    spill_threshold_bytes: usize,
+    /// Maximum disk usage for tiered blob storage (e.g. `10Gi`, `50Gi`, or bytes;
+    /// unset or `0` = unlimited).
+    #[arg(long, env = "KEEP_MAX_DISK_BYTES")]
+    max_disk_bytes: Option<String>,
+    /// Background active TTL expiry sweep interval in milliseconds (`0` disables).
+    #[arg(long, env = "KEEP_EXPIRY_INTERVAL_MS", default_value_t = 1000)]
+    expiry_interval_ms: u64,
+    /// Optional blanket Bearer API token required on data-plane routes.
+    #[arg(long, env = "KEEP_API_TOKEN")]
+    api_token: Option<String>,
     /// `trace|debug|info|warn|error` (RUST_LOG overrides this).
     #[arg(long, env = "KEEP_LOG_LEVEL", default_value = "info")]
     log_level: String,
@@ -440,7 +469,7 @@ struct ServeArgs {
     /// remains entirely deployment-owned.
     #[arg(long, env = "KEEP_OTLP_ENDPOINT")]
     otlp_endpoint: Option<String>,
-    /// Data directory for WAL + snapshots (the disk tier).
+    /// Data directory for WAL + snapshots + tiered blobs (the disk tier).
     #[arg(long, env = "KEEP_DATA_DIR", default_value = "./data")]
     data_dir: PathBuf,
     /// Run in-memory only (no durability).
@@ -534,19 +563,30 @@ const TOPICS: &[cli_std::llm::Topic] = &[
     },
 ];
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     // Install the process-level rustls crypto provider before anything parses or
     // dials TLS (the operator/kube, raft-runtime peer, and online CLI paths all link
     // rustls, which panics without a default provider). A no-op in the default,
     // rustls-free build. See `keep::tls`.
     keep::tls::install_default_crypto_provider();
     let cli = Cli::parse();
-    match cli.cmd {
-        // Default (no subcommand): run the server.
-        None => serve_main(cli.serve).await,
-        Some(cmd) => dispatch(cmd).await,
-    }
+    let worker_threads = if cli.cmd.is_none() && cli.serve.worker_threads > 0 {
+        cli.serve.worker_threads
+    } else {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+    };
+    let mut rt_builder = tokio::runtime::Builder::new_multi_thread();
+    rt_builder.worker_threads(worker_threads).enable_all();
+    let rt = rt_builder.build()?;
+    rt.block_on(async move {
+        match cli.cmd {
+            // Default (no subcommand): run the server.
+            None => serve_main(cli.serve, worker_threads).await,
+            Some(cmd) => dispatch(cmd).await,
+        }
+    })
 }
 
 async fn dispatch(cmd: Command) -> Result<()> {
@@ -795,9 +835,7 @@ fn crd_yaml() -> String {
 
 #[cfg(not(feature = "operator"))]
 fn crd_yaml() -> String {
-    cli_std::artifact::ensure_trailing_newline(include_str!(
-        "../../../../k8s/operator/crd.yaml"
-    ))
+    cli_std::artifact::ensure_trailing_newline(include_str!("../../../../k8s/operator/crd.yaml"))
 }
 
 /// Render the operator control-plane manifests (RBAC + Deployment) with the
@@ -948,7 +986,7 @@ async fn dispatch_issue(args: IssueArgs) -> Result<()> {
 
 // <HANDWRITE gap="missing-generator:logic" tracker="#2414" reason="logic section in keep.rs is hand-written pending codegen support">
 /// Run the keep server (the default, no-subcommand path).
-async fn serve_main(args: ServeArgs) -> Result<()> {
+async fn serve_main(args: ServeArgs, worker_threads: usize) -> Result<()> {
     // Stdout is the telemetry boundary: the shared observability shell owns the
     // schema, resource attributes, and RUST_LOG precedence so every service
     // emits the one record shape sift ingests.
@@ -969,16 +1007,70 @@ async fn serve_main(args: ServeArgs) -> Result<()> {
     let identity = service_http::ServiceIdentity::new("keep", env!("CARGO_PKG_VERSION"))?;
     service_http::init_tracing_with_identity(&config, &identity)?;
 
+    let shards = if args.shards == 0 {
+        (worker_threads.saturating_mul(16))
+            .next_power_of_two()
+            .clamp(16, 1024)
+    } else {
+        args.shards
+    };
+    let eviction_policy =
+        keep::EvictionPolicy::from_str_name(&args.eviction_policy).ok_or_else(|| {
+            anyhow::anyhow!(
+                "invalid --eviction-policy `{}`; expected one of: noeviction, allkeys-lru, volatile-lru, allkeys-lfu, allkeys-random",
+                args.eviction_policy
+            )
+        })?;
+    let max_memory = resolve_maxmemory(
+        args.maxmemory.as_deref(),
+        args.maxmemory_ratio,
+        detect_cgroup_memory_limit(),
+    )?;
+    let max_disk_bytes = match args.max_disk_bytes.as_deref() {
+        Some(raw) if !raw.trim().is_empty() => {
+            let parsed = parse_byte_size(raw)?;
+            (parsed > 0).then_some(parsed)
+        }
+        _ => None,
+    };
+
     let addr: SocketAddr = format!("{}:{}", args.host, args.port).parse()?;
-    info!(%addr, shards = args.shards, "starting keep");
+    info!(
+        %addr,
+        worker_threads,
+        shards,
+        max_memory = ?max_memory,
+        eviction_policy = eviction_policy.as_str(),
+        spill_threshold_bytes = args.spill_threshold_bytes,
+        max_disk_bytes = ?max_disk_bytes,
+        "starting keep"
+    );
 
     // Engine + persistence: recover from disk on a cold start.
     let (engine, persistence) = if args.disable_persistence {
         info!("persistence disabled — in-memory only");
-        (Arc::new(KvEngine::with_shards(args.shards)), None)
+        let engine = KvEngine::with_shards(shards);
+        if let Some(limit) = max_memory {
+            engine.set_maxmemory(limit);
+        }
+        engine.set_eviction_policy(eviction_policy);
+        (Arc::new(engine), None)
     } else {
         info!(data_dir = %args.data_dir.display(), "recovering engine");
-        let (recovered, stats) = RecoveryManager::recover(&args.data_dir, args.shards)?;
+        let recovered = KvEngine::with_shards(shards);
+        recovered.set_eviction_policy(eviction_policy);
+        if let Some(limit) = max_memory {
+            recovered.set_maxmemory(limit);
+        }
+        if args.spill_threshold_bytes > 0 {
+            let blob_store = Arc::new(keep::persistence::BlobStore::new(
+                &args.data_dir,
+                args.spill_threshold_bytes,
+                max_disk_bytes.unwrap_or(0),
+            )?);
+            recovered.enable_blob_store(blob_store);
+        }
+        let stats = RecoveryManager::recover_into(&recovered, &args.data_dir)?;
         info!(
             snapshot_entries = stats.snapshot_entries,
             wal_replayed = stats.wal_entries_replayed,
@@ -995,6 +1087,23 @@ async fn serve_main(args: ServeArgs) -> Result<()> {
         (engine, Some(persistence))
     };
 
+    // Background active TTL expiration reaper task so expired keys (and their
+    // spilled disk blobs) are reclaimed promptly without waiting for reads.
+    let expiry_task = if args.expiry_interval_ms > 0 {
+        let reaper_engine = engine.clone();
+        let interval = Duration::from_millis(args.expiry_interval_ms);
+        Some(tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                ticker.tick().await;
+                let _ = reaper_engine.cleanup_expired();
+            }
+        }))
+    } else {
+        None
+    };
+
     let cluster = derive_cluster_config(&args)?;
     info!(
         node_id = cluster.node_id,
@@ -1006,6 +1115,12 @@ async fn serve_main(args: ServeArgs) -> Result<()> {
     let mut state = AppState::new(engine)
         .with_body_limit(args.body_limit)
         .with_cluster(cluster);
+    if let Some(token) = args.api_token.as_deref() {
+        if !token.is_empty() {
+            state = state.with_api_token(token);
+            tracing::info!("blanket API token enforcement ON");
+        }
+    }
     // Scoped claim-check tokens (#446): enforce when KEEP_TOKEN_SECRET is set.
     if let Ok(secret) = std::env::var("KEEP_TOKEN_SECRET") {
         if !secret.is_empty() {
@@ -1068,6 +1183,10 @@ async fn serve_main(args: ServeArgs) -> Result<()> {
     )
     .await;
 
+    if let Some(handle) = expiry_task {
+        handle.abort();
+    }
+
     // Post-drain: flush WAL/snapshot to disk so the result store is durable.
     if let Some(p) = persistence {
         info!("flushing persistence");
@@ -1084,6 +1203,88 @@ async fn serve_main(args: ServeArgs) -> Result<()> {
     Ok(())
 }
 // </HANDWRITE>
+
+/// Parse a byte size string with optional binary/decimal suffixes (`Ki`, `Mi`,
+/// `Gi`, `Ti`, `KB`, `MB`, `GB`, `TB`, `K`, `M`, `G`, `T`) or raw integer bytes.
+fn parse_byte_size(raw: &str) -> Result<usize> {
+    let s = raw.trim();
+    if s.is_empty() {
+        anyhow::bail!("empty byte size");
+    }
+    let split_idx = s
+        .find(|c: char| !c.is_ascii_digit() && c != '_')
+        .unwrap_or(s.len());
+    let num_part = s[..split_idx].replace('_', "");
+    let unit_part = s[split_idx..].trim().to_ascii_lowercase();
+    let value: u64 = num_part
+        .parse()
+        .map_err(|_| anyhow::anyhow!("invalid byte size `{raw}`"))?;
+    let multiplier: u64 = match unit_part.as_str() {
+        "" | "b" => 1,
+        "k" | "ki" | "kib" => 1024,
+        "kb" => 1_000,
+        "m" | "mi" | "mib" => 1024 * 1024,
+        "mb" => 1_000_000,
+        "g" | "gi" | "gib" => 1024 * 1024 * 1024,
+        "gb" => 1_000_000_000,
+        "t" | "ti" | "tib" => 1024_u64.pow(4),
+        "tb" => 1_000_000_000_000,
+        _ => anyhow::bail!("unsupported byte size suffix in `{raw}`"),
+    };
+    let bytes = value
+        .checked_mul(multiplier)
+        .ok_or_else(|| anyhow::anyhow!("byte size overflow in `{raw}`"))?;
+    usize::try_from(bytes).map_err(|_| anyhow::anyhow!("byte size exceeds usize in `{raw}`"))
+}
+
+/// Detect container memory limit (bytes) from Linux cgroup v2 or cgroup v1.
+/// Returns `None` when not running in a memory-constrained cgroup.
+fn detect_cgroup_memory_limit() -> Option<usize> {
+    for path in [
+        "/sys/fs/cgroup/memory.max",
+        "/sys/fs/cgroup/memory/memory.limit_in_bytes",
+    ] {
+        if let Ok(raw) = std::fs::read_to_string(path) {
+            let trimmed = raw.trim();
+            if trimmed == "max" || trimmed.is_empty() {
+                continue;
+            }
+            if let Ok(bytes) = trimmed.parse::<u64>() {
+                // Ignore "unlimited" sentinel values (>= 1 EiB / PAGE_COUNTER_MAX).
+                if bytes > 0 && bytes < (1u64 << 56) {
+                    if let Ok(val) = usize::try_from(bytes) {
+                        return Some(val);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Resolve the effective `max_memory` budget in bytes from an explicit CLI/env
+/// override or a ratio of the detected cgroup memory limit.
+fn resolve_maxmemory(
+    explicit: Option<&str>,
+    ratio: f64,
+    cgroup_limit: Option<usize>,
+) -> Result<Option<usize>> {
+    if let Some(raw) = explicit {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            let bytes = parse_byte_size(trimmed)?;
+            return Ok((bytes > 0).then_some(bytes));
+        }
+    }
+    if let Some(limit) = cgroup_limit {
+        let clamped_ratio = ratio.clamp(0.10, 0.98);
+        let budget = ((limit as f64) * clamped_ratio) as usize;
+        if budget > 0 {
+            return Ok(Some(budget));
+        }
+    }
+    Ok(None)
+}
 
 fn derive_cluster_config(args: &ServeArgs) -> Result<keep::ClusterConfig> {
     if let Some(cluster) = local_topology_override(args) {
@@ -1445,5 +1646,29 @@ mod tests {
             }
             other => panic!("expected dockerfile render, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn byte_size_and_maxmemory_resolution_work() {
+        assert_eq!(parse_byte_size("1024").unwrap(), 1024);
+        assert_eq!(parse_byte_size("512Ki").unwrap(), 512 * 1024);
+        assert_eq!(parse_byte_size("256Mi").unwrap(), 256 * 1024 * 1024);
+        assert_eq!(parse_byte_size("4Gi").unwrap(), 4 * 1024 * 1024 * 1024);
+
+        // Explicit maxmemory takes precedence over cgroup limit.
+        assert_eq!(
+            resolve_maxmemory(Some("128Mi"), 0.80, Some(1024 * 1024 * 1024)).unwrap(),
+            Some(128 * 1024 * 1024)
+        );
+        // "0" disables memory limit even if cgroup limit exists.
+        assert_eq!(
+            resolve_maxmemory(Some("0"), 0.80, Some(1024 * 1024 * 1024)).unwrap(),
+            None
+        );
+        // Unset maxmemory uses cgroup limit * ratio.
+        assert_eq!(
+            resolve_maxmemory(None, 0.80, Some(1_000_000_000)).unwrap(),
+            Some(800_000_000)
+        );
     }
 }

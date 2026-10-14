@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::http::error::ApiErr;
-use crate::http::handlers::{ack_durable, key_of, propose_write};
+use crate::http::handlers::{ack_durable, check_kv_claim_isolation, key_of, propose_write};
 use crate::http::models::kv_to_json;
 use crate::http::AppState;
 use crate::persistence::format::WalOp;
@@ -53,6 +53,7 @@ pub async fn expire(
     Path(key): Path<String>,
     Json(req): Json<ExpireRequest>,
 ) -> Result<Json<AppliedResponse>, ApiErr> {
+    check_kv_claim_isolation(&st, &key)?;
     let k = key_of(&key)?;
     let applied = st.engine.exists(&k);
     let proposed = match req.ms {
@@ -99,6 +100,7 @@ pub async fn ttl(
     State(st): State<AppState>,
     Path(key): Path<String>,
 ) -> Result<Json<TtlResponse>, ApiErr> {
+    check_kv_claim_isolation(&st, &key)?;
     let k = key_of(&key)?;
     Ok(Json(TtlResponse {
         ttl_secs: st.engine.ttl(&k),
@@ -114,6 +116,7 @@ pub async fn persist(
     State(st): State<AppState>,
     Path(key): Path<String>,
 ) -> Result<Json<AppliedResponse>, ApiErr> {
+    check_kv_claim_isolation(&st, &key)?;
     let k = key_of(&key)?;
     let applied = st.engine.pttl(&k) >= 0;
     let proposed = propose_write(
@@ -159,6 +162,7 @@ pub async fn getex(
     Path(key): Path<String>,
     Json(req): Json<GetExRequest>,
 ) -> Result<Json<GetExResponse>, ApiErr> {
+    check_kv_claim_isolation(&st, &key)?;
     let k = key_of(&key)?;
     let ttl = req.ttl_ms.map(Duration::from_millis);
     let mutates = ttl.is_some() || req.persist;

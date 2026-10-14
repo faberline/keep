@@ -128,26 +128,32 @@ pub struct SerializableEntry {
 impl SerializableEntry {
     /// Convert from runtime Entry to serializable format
     pub fn from_entry(entry: &Entry, base_instant: Instant) -> Self {
-        let created_offset = entry.created_at.duration_since(base_instant);
-        let created_at_nanos = SystemTime::now()
+        let now_sys = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .checked_sub(created_offset)
-            .unwrap_or_else(|| Duration::from_secs(0))
+            .unwrap_or_default();
+
+        let created_age = base_instant.saturating_duration_since(entry.created_at);
+        let created_at_nanos = now_sys
+            .checked_sub(created_age)
+            .unwrap_or_default()
             .as_nanos() as i64;
 
         let expires_at_nanos = entry.expires_at.map(|exp| {
-            let expires_offset = exp.duration_since(base_instant);
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .checked_sub(expires_offset)
-                .unwrap_or_else(|| Duration::from_secs(0))
-                .as_nanos() as i64
+            if exp >= base_instant {
+                let remaining = exp.saturating_duration_since(base_instant);
+                now_sys.checked_add(remaining).unwrap_or(now_sys).as_nanos() as i64
+            } else {
+                let elapsed = base_instant.saturating_duration_since(exp);
+                now_sys.checked_sub(elapsed).unwrap_or_default().as_nanos() as i64
+            }
         });
 
+        let value = entry
+            .materialize_value()
+            .unwrap_or_else(|| entry.value.clone());
+
         Self {
-            value: entry.value.clone(),
+            value,
             created_at_nanos,
             expires_at_nanos,
             version: entry.version,
@@ -156,11 +162,10 @@ impl SerializableEntry {
 
     /// Convert to runtime Entry
     pub fn to_entry(&self) -> Entry {
-        // Convert absolute timestamps back to Instant
         let now = Instant::now();
         let now_absolute = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .unwrap_or_default()
             .as_nanos() as i64;
 
         let created_offset =
@@ -168,16 +173,16 @@ impl SerializableEntry {
         let created_at = now.checked_sub(created_offset).unwrap_or(now);
 
         let expires_at = self.expires_at_nanos.map(|exp_nanos| {
-            let expires_offset = Duration::from_nanos((now_absolute - exp_nanos).max(0) as u64);
-            now.checked_sub(expires_offset).unwrap_or(now)
+            if exp_nanos > now_absolute {
+                let remaining = Duration::from_nanos((exp_nanos - now_absolute) as u64);
+                now.checked_add(remaining).unwrap_or(now)
+            } else {
+                let expired_ago = Duration::from_nanos((now_absolute - exp_nanos).max(1) as u64);
+                now.checked_sub(expired_ago).unwrap_or(now)
+            }
         });
 
-        Entry {
-            value: self.value.clone(),
-            created_at,
-            expires_at,
-            version: self.version,
-        }
+        Entry::with_timestamps(self.value.clone(), created_at, expires_at, self.version)
     }
 }
 
@@ -212,7 +217,7 @@ impl SnapshotWriter {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
-            .as_secs();
+            .as_millis();
         let temp_path = data_dir.join(format!("snapshot-{}.tmp", timestamp));
         let final_path = data_dir.join(format!("snapshot-{}.snap", timestamp));
 
@@ -267,8 +272,9 @@ impl SnapshotWriter {
             total_entries, num_shards
         );
 
-        // Cleanup old snapshots
+        // Cleanup old snapshots and rotated WAL segments superseded by this snapshot
         self.cleanup_old_snapshots(data_dir)?;
+        let _ = super::wal::cleanup_old_wal_files(data_dir, 0);
 
         Ok(final_path)
     }
@@ -284,9 +290,10 @@ impl SnapshotWriter {
             PersistenceError::DataDirectory(format!("Invalid shard_id: {}", shard_id))
         })?;
 
-        // Convert entries to serializable format
+        // Convert live (non-expired) entries to serializable format
         let serializable_entries = entries
             .into_iter()
+            .filter(|(_, entry)| !entry.is_expired())
             .map(|(key, entry)| {
                 let serializable_entry = SerializableEntry::from_entry(&entry, base_instant);
                 (key, serializable_entry)
@@ -447,12 +454,12 @@ mod tests {
         use crate::types::KvValue;
 
         let base = Instant::now();
-        let original = Entry {
-            value: KvValue::String("test".to_string()),
-            created_at: base,
-            expires_at: Some(base + Duration::from_secs(60)),
-            version: 42,
-        };
+        let original = Entry::with_timestamps(
+            KvValue::String("test".to_string()),
+            base,
+            Some(base + Duration::from_secs(60)),
+            42,
+        );
 
         let serializable = SerializableEntry::from_entry(&original, base);
         let restored = serializable.to_entry();
@@ -461,9 +468,21 @@ mod tests {
         assert_eq!(restored.value, original.value);
         assert_eq!(restored.version, original.version);
 
-        // Timestamps may have slight differences due to conversion, but should be close
+        // Restored entry must not be expired and must retain ~60s TTL
         assert!(restored.created_at <= Instant::now());
-        assert!(restored.expires_at.is_some());
+        assert!(
+            !restored.is_expired(),
+            "Restored entry with future TTL must not be expired"
+        );
+        let remaining = restored
+            .expires_at
+            .expect("expires_at should be present")
+            .saturating_duration_since(Instant::now());
+        assert!(
+            remaining >= Duration::from_secs(55) && remaining <= Duration::from_secs(61),
+            "Expected ~60s remaining TTL, got {:?}",
+            remaining
+        );
     }
 
     #[test]

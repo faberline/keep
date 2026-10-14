@@ -126,12 +126,16 @@ impl WalWriter {
         // Flush and close current file
         self.flush()?;
 
-        // Get timestamp for rotated file
-        let timestamp = SystemTime::now()
+        // Get millisecond timestamp for rotated file (with monotonic suffix if same ms)
+        static ROTATE_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let timestamp_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
-            .as_secs();
-        let rotated_path = self.data_dir.join(format!("wal-{}.log", timestamp));
+            .as_millis();
+        let seq = ROTATE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let rotated_path =
+            self.data_dir
+                .join(format!("wal-{:015}-{:04}.log", timestamp_ms, seq % 10000));
 
         // Create new WAL file first (before renaming old one)
         let new_path = self.data_dir.join("wal-current-new.log");

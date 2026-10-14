@@ -74,6 +74,26 @@ pub struct KeepSpec {
     /// integer.
     #[serde(default = "default_body_limit_bytes")]
     pub body_limit_bytes: u64,
+
+    /// Optional explicit memory cap (`KEEP_MAXMEMORY`, e.g. `4Gi` or bytes).
+    /// When unset, the pod auto-detects its cgroup memory limit and applies
+    /// `KEEP_MAXMEMORY_RATIO` (default 0.80).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maxmemory: Option<String>,
+
+    /// Memory eviction policy (`KEEP_EVICTION_POLICY`, default `allkeys-lru`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eviction_policy: Option<String>,
+
+    /// Byte size threshold above which `Bytes` payloads spill to `/data/blobs/`
+    /// (`KEEP_SPILL_THRESHOLD_BYTES`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spill_threshold_bytes: Option<u64>,
+
+    /// Optional maximum disk quota for `/data/blobs/` (`KEEP_MAX_DISK_BYTES`,
+    /// e.g. `8Gi`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_disk_bytes: Option<String>,
 }
 
 /// Declarative backup policy carried on a `Keep` CR (#776).

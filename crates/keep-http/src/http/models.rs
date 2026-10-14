@@ -291,6 +291,11 @@ pub struct InfoResponse {
     pub keys: usize,
     pub shards: usize,
     pub memory_bytes: usize,
+    pub maxmemory_bytes: usize,
+    pub disk_blob_bytes: usize,
+    pub evicted_keys: u64,
+    pub spilled_keys: u64,
+    pub eviction_policy: String,
     pub version: String,
 }
 
@@ -299,4 +304,3 @@ pub struct InfoResponse {
 // ---------------------------------------------------------------------------
 
 pub use keep_core::types::{json_to_kv, kv_to_json};
-

@@ -9,8 +9,18 @@ metadata:
 data:
   # HTTP API listener port (HTTP/1.1 + HTTP/2 cleartext).
   KEEP_PORT: "7117"
-  # Engine shard count for multi-core scaling. Tune to the CPU limit.
+  # Engine shard count for multi-core scaling. Tune to the CPU limit (0 = auto).
   KEEP_SHARDS: "256"
+  # Tokio worker thread count (0 = auto-detect from CPU cores / cgroup quota).
+  KEEP_WORKER_THREADS: "0"
+  # Fraction of container cgroup memory limit to use before eviction/spill.
+  KEEP_MAXMEMORY_RATIO: "0.80"
+  # Memory eviction policy: allkeys-lru | volatile-lru | allkeys-lfu | allkeys-random | noeviction.
+  KEEP_EVICTION_POLICY: "allkeys-lru"
+  # Byte size threshold above which Bytes payloads spill to /data/blobs/ (0 = disabled).
+  KEEP_SPILL_THRESHOLD_BYTES: "65536"
+  # Active TTL expiration sweep interval in milliseconds.
+  KEEP_EXPIRY_INTERVAL_MS: "1000"
   # trace|debug|info|warn|error (RUST_LOG overrides). Overridden per overlay.
   KEEP_LOG_LEVEL: "info"
   # JSONL is the cluster default; local development can select pretty output.

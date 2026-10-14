@@ -28,13 +28,18 @@ impl RecoveryManager {
         data_dir: impl AsRef<Path>,
         num_shards: usize,
     ) -> Result<(KvEngine, RecoveryStats)> {
+        let engine = KvEngine::with_shards(num_shards);
+        let stats = Self::recover_into(&engine, data_dir)?;
+        Ok((engine, stats))
+    }
+
+    /// Recover state from snapshot and WAL files into an existing configured `KvEngine`.
+    pub fn recover_into(engine: &KvEngine, data_dir: impl AsRef<Path>) -> Result<RecoveryStats> {
         let data_dir = data_dir.as_ref();
         let start = Instant::now();
+        let num_shards = engine.num_shards();
 
         info!("Starting recovery from {}", data_dir.display());
-
-        // Create empty engine
-        let engine = KvEngine::with_shards(num_shards);
 
         let mut snapshot_entries = 0;
         let mut wal_entries_replayed = 0;
@@ -90,10 +95,15 @@ impl RecoveryManager {
         } else {
             info!("Found {} WAL file(s) to replay", wal_files.len());
 
-            for wal_path in wal_files {
+            for (idx, wal_path) in wal_files.into_iter().enumerate() {
                 debug!("Replaying WAL: {}", wal_path.display());
 
-                match Self::replay_wal(&engine, &wal_path, wal_position_start) {
+                // Only the WAL segment that was active when the snapshot was taken
+                // starts at `wal_position_start`; any segments rotated after that
+                // must be replayed from their beginning (offset 0).
+                let skip_before = if idx == 0 { wal_position_start } else { 0 };
+
+                match Self::replay_wal(engine, &wal_path, skip_before) {
                     Ok((replayed, corrupted)) => {
                         wal_entries_replayed += replayed;
                         corrupted_entries += corrupted;
@@ -128,7 +138,7 @@ impl RecoveryManager {
             wal_entries_replayed
         );
 
-        Ok((engine, stats))
+        Ok(stats)
     }
 
     /// Replay a single WAL file
@@ -494,5 +504,156 @@ mod tests {
 
         assert_eq!(engine.get(&k1), None);
         assert_eq!(engine.get(&k2), Some(KvValue::String("v2".to_string())));
+    }
+
+    #[test]
+    fn test_recovery_snapshot_preserves_ttl() {
+        use crate::persistence::snapshot::SnapshotWriter;
+        use crate::persistence::SnapshotConfig;
+        use std::time::Duration;
+
+        let temp_dir = TempDir::new().unwrap();
+        let data_dir = temp_dir.path();
+
+        let engine = KvEngine::with_shards(16);
+        let ttl_key = KvKey::new("session_token").unwrap();
+        let permanent_key = KvKey::new("config_key").unwrap();
+
+        engine
+            .set(
+                &ttl_key,
+                KvValue::String("secret".to_string()),
+                Some(Duration::from_secs(120)),
+            )
+            .unwrap();
+        engine.set(&permanent_key, KvValue::Int(99), None).unwrap();
+
+        let snap_writer = SnapshotWriter::new(SnapshotConfig::default());
+        snap_writer.create_snapshot(&engine, data_dir, 0).unwrap();
+
+        let (recovered, stats) = RecoveryManager::recover(data_dir, 16).unwrap();
+        assert!(stats.snapshot_loaded);
+        assert_eq!(stats.snapshot_entries, 2);
+
+        // Both keys must be live after recovery, and ttl_key must have ~120s remaining TTL
+        assert_eq!(
+            recovered.get(&ttl_key),
+            Some(KvValue::String("secret".to_string()))
+        );
+        let remaining_ttl = recovered.ttl(&ttl_key);
+        assert!(
+            remaining_ttl >= 110 && remaining_ttl <= 120,
+            "Expected ~120s TTL after snapshot recovery, got {}",
+            remaining_ttl
+        );
+        assert_eq!(recovered.get(&permanent_key), Some(KvValue::Int(99)));
+        assert_eq!(recovered.ttl(&permanent_key), -1);
+    }
+
+    #[test]
+    fn test_recovery_snapshot_plus_rotated_wals() {
+        use super::super::format::WalOp;
+        use crate::persistence::snapshot::SnapshotWriter;
+        use crate::persistence::wal::find_wal_files;
+        use crate::persistence::SnapshotConfig;
+
+        let temp_dir = TempDir::new().unwrap();
+        let data_dir = temp_dir.path();
+
+        let engine = KvEngine::with_shards(16);
+        let mut wal_writer = WalWriter::new(data_dir.to_path_buf(), WalConfig::default()).unwrap();
+
+        // 1. Pre-snapshot writes + pre-snapshot WAL rotation
+        for i in 0..5 {
+            let k = format!("pre_snap_{}", i);
+            let kv_k = KvKey::new(&k).unwrap();
+            engine.set(&kv_k, KvValue::Int(i), None).unwrap();
+            wal_writer
+                .append(WalOp::Set {
+                    key: k,
+                    value: KvValue::Int(i),
+                    ttl: None,
+                })
+                .unwrap();
+        }
+        wal_writer.rotate().unwrap();
+
+        // Write one more key to wal-current.log before taking snapshot
+        let k_active = KvKey::new("in_current_before_snap").unwrap();
+        engine
+            .set(&k_active, KvValue::String("snap_val".repeat(20)), None)
+            .unwrap();
+        wal_writer
+            .append(WalOp::Set {
+                key: "in_current_before_snap".to_string(),
+                value: KvValue::String("snap_val".repeat(20)),
+                ttl: None,
+            })
+            .unwrap();
+        wal_writer.flush().unwrap();
+
+        // 2. Take snapshot at current wal_writer.position() (which is > 200 bytes)
+        let snap_pos = wal_writer.position();
+        assert!(snap_pos > 150);
+        let snap_writer = SnapshotWriter::new(SnapshotConfig::default());
+        snap_writer
+            .create_snapshot(&engine, data_dir, snap_pos)
+            .unwrap();
+
+        // Pre-snapshot rotated WAL must have been cleaned up by create_snapshot
+        assert_eq!(find_wal_files(data_dir).unwrap().len(), 1);
+
+        // 3. Post-snapshot writes across multiple WAL rotations (where new WAL files
+        // have entries at byte offsets < snap_pos!)
+        wal_writer
+            .append(WalOp::Set {
+                key: "post_snap_before_rotate".to_string(),
+                value: KvValue::Int(100),
+                ttl: None,
+            })
+            .unwrap();
+        wal_writer.rotate().unwrap();
+
+        wal_writer
+            .append(WalOp::Set {
+                key: "post_rotate_1".to_string(),
+                value: KvValue::Int(200),
+                ttl: None,
+            })
+            .unwrap();
+        wal_writer.rotate().unwrap();
+
+        wal_writer
+            .append(WalOp::Set {
+                key: "post_rotate_2".to_string(),
+                value: KvValue::Int(300),
+                ttl: None,
+            })
+            .unwrap();
+        wal_writer.flush().unwrap();
+        drop(wal_writer);
+
+        // 4. Recover and verify all pre-snapshot and post-rotation keys are intact!
+        let (recovered, stats) = RecoveryManager::recover(data_dir, 16).unwrap();
+        assert!(stats.snapshot_loaded);
+        assert_eq!(stats.snapshot_entries, 6);
+        assert_eq!(stats.wal_entries_replayed, 3);
+
+        for i in 0..5 {
+            let k = KvKey::new(format!("pre_snap_{}", i)).unwrap();
+            assert_eq!(recovered.get(&k), Some(KvValue::Int(i)));
+        }
+        assert_eq!(
+            recovered.get(&KvKey::new("post_snap_before_rotate").unwrap()),
+            Some(KvValue::Int(100))
+        );
+        assert_eq!(
+            recovered.get(&KvKey::new("post_rotate_1").unwrap()),
+            Some(KvValue::Int(200))
+        );
+        assert_eq!(
+            recovered.get(&KvKey::new("post_rotate_2").unwrap()),
+            Some(KvValue::Int(300))
+        );
     }
 }

@@ -35,6 +35,10 @@ fn spec(shard_count: u32, replicas: u32) -> KeepSpec {
         storage: "10Gi".into(),
         storage_class: None,
         body_limit_bytes: 16 * 1024 * 1024,
+        maxmemory: None,
+        eviction_policy: None,
+        spill_threshold_bytes: None,
+        max_disk_bytes: None,
         backup: None,
     }
 }
