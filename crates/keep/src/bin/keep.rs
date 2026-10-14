@@ -617,7 +617,7 @@ fn spec_gen(args: GenArgs) -> Result<()> {
         generate_for_target, GenOptions, HttpClient, Lang, TargetPolicy, MANIFEST_FILE,
     };
 
-    const TARGET_POLICY: &str = include_str!("../../clients/codegen.toml");
+    const TARGET_POLICY: &str = include_str!("../../../../clients/codegen.toml");
 
     let lang = match args.lang {
         GenLang::Ts => Lang::Ts,
@@ -685,14 +685,15 @@ fn dockerfile(args: DockerfileArgs) -> Result<()> {
 }
 
 fn render_source_dockerfile() -> String {
-    cli_std::artifact::strip_source_ownership_markers(include_str!("../../Dockerfile"))
+    cli_std::artifact::strip_source_ownership_markers(include_str!("../../../../Dockerfile"))
 }
 
 fn render_release_dockerfile(version: Option<&str>) -> String {
     let tag = cli_std::artifact::release_tag("keep", version, env!("CARGO_PKG_VERSION"));
     let version = tag.trim_start_matches("keep@");
-    let template =
-        cli_std::artifact::strip_source_ownership_markers(include_str!("../../Dockerfile.release"));
+    let template = cli_std::artifact::strip_source_ownership_markers(include_str!(
+        "../../../../Dockerfile.release"
+    ));
     let mut out = String::new();
     for line in template.lines() {
         if line.starts_with("#   docker build -f Dockerfile.release -t keep:") {
@@ -794,7 +795,9 @@ fn crd_yaml() -> String {
 
 #[cfg(not(feature = "operator"))]
 fn crd_yaml() -> String {
-    cli_std::artifact::ensure_trailing_newline(include_str!("../../k8s/operator/crd.yaml"))
+    cli_std::artifact::ensure_trailing_newline(include_str!(
+        "../../../../k8s/operator/crd.yaml"
+    ))
 }
 
 /// Render the operator control-plane manifests (RBAC + Deployment) with the
@@ -802,13 +805,13 @@ fn crd_yaml() -> String {
 fn render_operator_yaml(namespace: &str) -> String {
     let mut out = String::new();
     out.push_str(&cli_std::artifact::replace_kubernetes_namespace(
-        include_str!("../../k8s/operator/rbac.yaml"),
+        include_str!("../../../../k8s/operator/rbac.yaml"),
         "keep-system",
         namespace,
     ));
     out.push_str("\n---\n");
     out.push_str(&cli_std::artifact::replace_kubernetes_namespace(
-        include_str!("../../k8s/operator/deployment.yaml"),
+        include_str!("../../../../k8s/operator/deployment.yaml"),
         "keep-system",
         namespace,
     ));

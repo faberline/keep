@@ -139,12 +139,13 @@ async fn shard_state_machine_snapshot_round_trips() {
     .unwrap();
     sm.apply(7, &cmd).unwrap();
     assert_eq!(sm.applied_index(), 7);
-    let snap = sm.snapshot().unwrap();
+    let mut snap = Vec::new();
+    sm.snapshot(&mut snap).unwrap();
 
     // Restore into a fresh engine through a fresh state machine.
     let dst = Arc::new(KvEngine::with_shards(4));
     let sm2 = KvStateMachine::new(dst.clone(), cluster.clone(), 0);
-    sm2.restore(&snap).unwrap();
+    sm2.restore(&mut std::io::Cursor::new(&snap)).unwrap();
     assert_eq!(
         sm2.applied_index(),
         7,

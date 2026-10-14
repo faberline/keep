@@ -18,9 +18,9 @@ command = "vat run guard-security"
 
 [[workspaces]]
 name = "keep"
-paths = ["**"]
+paths = ["crates/**"]
 target = "rust"
-test_cmd = "cargo test -p keep"
+test_cmd = "cargo test --workspace"
 codegen.profile = "rust/score-crate"
 
 # AW-EC-BEGIN
@@ -36,7 +36,7 @@ claim_id = "vat-meter-runtime-gate"
 contract_id = "keep-meter-performance-report"
 category = "efficiency"
 td_ref = "external-contracts/competitor-performance/efficiency/perf-gate.md#keep-competitor-performance-meter-gate"
-test_path = "tests/benchmark_keep_competitor_performance_meter_gate.rs"
+test_path = "crates/keep/tests/benchmark_keep_competitor_performance_meter_gate.rs"
 command = "vat run meter-efficiency"
 required_for_production = true
 assertions = [
@@ -52,7 +52,7 @@ claim_id = "guard-static-runtime-evidence"
 contract_id = "keep-guard-security-report"
 category = "security"
 td_ref = "external-contracts/security-hardening/security/security-evidence.md#keep-security-hardening-guard-scan"
-test_path = "tests/security_keep_security_hardening_guard_scan.rs"
+test_path = "crates/keep/tests/security_keep_security_hardening_guard_scan.rs"
 command = "vat run guard-security"
 required_for_production = false
 assertions = [

@@ -1,0 +1,77 @@
+[package]
+name = "keep"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "keep — cloud-native, multi-core key-value / claim-check store (HTTP/2 + OpenAPI)"
+
+[lib]
+name = "keep"
+path = "src/lib.rs"
+crate-type = ["rlib"]
+
+[[bin]]
+name = "keep"
+path = "src/bin/keep.rs"
+
+[dependencies]
+keep-core.workspace = true
+keep-engine.workspace = true
+keep-http.workspace = true
+keep-client = { workspace = true, optional = true }
+keep-operator = { workspace = true, optional = true }
+
+# faberline/core shared crates
+cli-std.workspace = true
+openapi-codegen.workspace = true
+raft-runtime.workspace = true
+service-http.workspace = true
+
+# Runtime & CLI
+anyhow.workspace = true
+axum.workspace = true
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[features]
+default = []
+# keep::client — HTTP/2 client for Rust callers.
+client = ["dep:keep-client", "rustls-provider"]
+# raft — raft-runtime-backed consensus (HA phase C; per-shard hosts + h2c peer transport).
+raft = ["keep-engine/raft", "keep-http/raft", "rustls-provider"]
+# Online (HTTPS) paths of the standard CLI ops: `upgrade` + `issue`.
+self-update = ["cli-std/online", "rustls-provider"]
+issue = ["cli-std/online", "rustls-provider"]
+# Deprecated build-feature alias kept for compatibility.
+report-issue = ["issue"]
+# operator — Kubernetes KeepSpec CRD + ManagedService reconcile controller.
+operator = ["dep:keep-operator", "rustls-provider"]
+# Private: link rustls + install its process-level crypto provider at startup.
+rustls-provider = ["keep-core/rustls-provider"]
+
+[dev-dependencies]
+claim-token.workspace = true
+criterion.workspace = true
+futures.workspace = true
+kube.workspace = true
+redis.workspace = true
+reqwest.workspace = true
+service-k8s.workspace = true
+tempfile.workspace = true
+tokio-test.workspace = true
+tower.workspace = true
+transport-h2c.workspace = true
+
+[[example]]
+name = "bench_compare"
+path = "examples/bench_compare.rs"
+
+[[bench]]
+name = "engine_bench"
+harness = false

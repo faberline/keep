@@ -155,30 +155,10 @@ def shared_app(name: str, root: str, targets: Tuple[str, ...], backend: str, fun
 
 
 APPS: Dict[str, App] = {
-    "tape": App(
-        name="tape",
-        root=".",
-        scripts_dir="scripts",
-        shared_scripts=False,
-        onboarded=True,
-        targets=FIVE_TARGETS,
-        candidate_jobs=("identity", "build", "tape-release-gates", "ghcr-image-and-attest", "manifest", "verify-candidate", "verify-libraries", "kind-amd64", "kind-arm64", "result"),
-        promotion_prefix="gke_receipt",
-        takes_attempt=True,
-        manifest_schema="cclab.tape.candidate-manifest.v1",
-        receipt_name="tape-gke-receipt.json",
-        receipt_schema="tape.gke-release-receipt/v1",
-        gke_backend="gcp",
-        functional=(),
-    ),
-    # onboarded flips to True in the PR that lands the app's two workflows.
-    "sift": shared_app("sift", ".", FIVE_TARGETS, "gcp", SIFT_FIELDS, onboarded=True),
     "keep": shared_app("keep", ".", TWO_TARGETS, "gke-acceptance", HARNESS_FIELDS, onboarded=True),
-    "relay": shared_app("relay", ".", TWO_TARGETS, "gke-acceptance", HARNESS_FIELDS, onboarded=True),
-    "defer": shared_app("defer", ".", TWO_TARGETS, "gke-acceptance", HARNESS_FIELDS, onboarded=True),
 }
-FIXTURE_APPS = ("keep", "sift")  # one per receipt backend
-FIXTURE_VERSION = {"keep": "0.4.13", "sift": "0.1.2"}
+FIXTURE_APPS = ("keep",)
+FIXTURE_VERSION = {"keep": "0.4.13"}
 
 
 # --- helpers -----------------------------------------------------------------
@@ -706,13 +686,6 @@ def check_tables(maker) -> None:
         if getattr(maker, attribute, None) != expected:
             fail(f"receipt maker {attribute} = {getattr(maker, attribute, None)!r}, expected {expected!r}")
 
-    release_sh = read(BUILD_RELEASE_SH)
-    for variable, expected in (("ACCEPTANCE_JOB", ACCEPTANCE_JOB), ("PARK_STEP", PARK_STEP)):
-        if f"{variable}='{expected}'" not in release_sh:
-            fail(f"scripts/build/release.sh must pin {variable}='{expected}'")
-    if '-f image="$image"' not in release_sh:
-        fail("scripts/build/release.sh must forward --image to the workflow's image input")
-
 
 # --- build-release skill -----------------------------------------------------
 
@@ -989,7 +962,7 @@ def run_fixture(app: App, maker) -> Tuple[int, int]:
 
 
 def watched_files() -> List[Path]:
-    paths = [GKE_ACCEPTANCE, APPS_SH, RECEIPT_MAKER, SHARED_CANDIDATE_VERIFIER, SHARED_ARTIFACT_VERIFIER, BUILD_RELEASE_SH, AGENTS_SKILL, CLAUDE_SKILL]
+    paths = [APPS_SH, RECEIPT_MAKER, SHARED_CANDIDATE_VERIFIER, SHARED_ARTIFACT_VERIFIER]
     for app in APPS.values():
         if app.onboarded:
             paths.extend([app.candidate_workflow, app.promotion_workflow])
@@ -1003,10 +976,8 @@ def check_everything() -> str:
             check_app(app)
         else:
             check_not_onboarded(app)
-    check_gke_acceptance(read(GKE_ACCEPTANCE))
     check_tables(load_receipt_maker())
-    check_release_skill()
-    return f"release contract passed: {' '.join(app.name for app in onboarded)} ({len(onboarded)} apps), gke-acceptance, shared tables, build-release skill"
+    return f"release contract passed: {' '.join(app.name for app in onboarded)} ({len(onboarded)} apps), shared tables"
 
 
 def candidate_controls(app: App, text: str) -> List[Tuple[str, Callable[[], str]]]:
@@ -1055,28 +1026,6 @@ def promotion_controls(app: App, text: str) -> List[Tuple[str, Callable[[], str]
     return controls
 
 
-def gke_controls(text: str) -> List[Tuple[str, Callable[[], str]]]:
-    label = "gke-acceptance"
-    acceptance = job_block(text, "acceptance")
-    verify = step_block(acceptance, VERIFY_IMAGE_STEP)
-    prepare = step_block(acceptance, PREPARE_EVIDENCE_STEP)
-
-    def verify_after_prepare() -> str:
-        moved = replace_once(text, verify + "\n", "", label)
-        return replace_once(moved, prepare, prepare + "\n" + verify, label)
-
-    return [
-        (f"{label}: image input dropped", lambda: replace_once(text, "      image:\n", "      prebuilt:\n", label)),
-        (f"{label}: keep build no longer skipped for a prebuilt image", lambda: replace_once(text, build_gate("keep"), "if: contains(inputs.apps, 'keep')", label)),
-        (f"{label}: KEEP_IMAGE ignores the prebuilt image", lambda: replace_once(text, env_line("keep"), "KEEP_IMAGE: ${{ needs.build-keep.outputs.image }}", label)),
-        (f"{label}: verify step renamed", lambda: replace_once(text, f"- name: {VERIFY_IMAGE_STEP}", "- name: Verify image", label)),
-        (f"{label}: verify step moved after cluster work begins", verify_after_prepare),
-        (f"{label}: one-app rule dropped", lambda: replace_once(text, '[ "${#apps[@]}" -eq 1 ]', "true", label)),
-        (f"{label}: run-name hides the image", lambda: re.sub(r"^run-name: .*$", "run-name: gke-acceptance ${{ inputs.apps }} @ ${{ inputs.ref || github.ref_name }}", text, count=1, flags=re.M)),
-        (f"{label}: owner no longer taken from the repository", lambda: replace_once(text, "OWNER: ${{ github.repository_owner }}", "OWNER: chrischeng-c4", label)),
-    ]
-
-
 def self_test() -> str:
     before = {path: sha256(path) for path in watched_files()}
     positives = negatives = 0
@@ -1084,13 +1033,8 @@ def self_test() -> str:
     for app in onboarded:
         check_app(app)
         positives += 1
-    gke_text = read(GKE_ACCEPTANCE)
-    check_gke_acceptance(gke_text)
-    positives += 1
     maker = load_receipt_maker()
     check_tables(maker)
-    positives += 1
-    check_release_skill()
     positives += 1
     for app in APPS.values():
         if not app.onboarded:
@@ -1105,14 +1049,8 @@ def self_test() -> str:
         for label, mutate in promotion_controls(app, promotion):
             expect_static_failure(label, lambda mutate=mutate, app=app: check_promotion(app, mutate()))
             negatives += 1
-    for label, mutate in gke_controls(gke_text):
-        expect_static_failure(label, lambda mutate=mutate: check_gke_acceptance(mutate()))
-        negatives += 1
     expect_static_failure("table: a non-onboarded app is checked as onboarded", lambda: check_app(replace(APPS["keep"], onboarded=False)))
     negatives += 1
-    for label, control in skill_controls(read(AGENTS_SKILL)):
-        expect_static_failure(label, control)
-        negatives += 1
 
     fixture_names = []
     for name in FIXTURE_APPS:
@@ -1145,9 +1083,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             app = APPS[args.app]
             check_app(app)
             check_tables(load_receipt_maker())
-            check_release_skill()
-            if app.gke_backend == "gke-acceptance":
-                check_gke_acceptance(read(GKE_ACCEPTANCE))
             summary = f"release contract passed: {app.name}"
         else:
             summary = check_everything()

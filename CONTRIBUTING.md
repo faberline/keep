@@ -15,4 +15,6 @@ and acceptance. Legacy AW use is explicit-only.
 
 | Gate | Command |
 |---|---|
-| unit + colocated tests | `cargo test -p keep` |
+| workspace unit + integration tests | `cargo test --workspace` |
+| top-level package tests | `cargo test -p keep` |
+

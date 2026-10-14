@@ -316,11 +316,14 @@ worker contract.
 
 ## Architecture
 
-| Layer | Module | Notes |
-|-------|--------|-------|
-| Transport | `src/http/` | axum over hyper — HTTP/1.1 + HTTP/2 cleartext on one port. OpenAPI at `/openapi.json`. |
-| Engine | `src/engine.rs` | Sharded, multi-core. Strings/scalars, CAS, leased locks, TTL, lists, hashes, sets, sorted sets. |
-| Durability | `src/persistence/` | WAL + snapshot + crash recovery (the disk tier). |
+| Crate | Path | Notes |
+|-------|------|-------|
+| `keep` | `crates/keep/` | Top-level facade library (`keep::*`), CLI/server binary (`src/bin/keep.rs`), integration tests, benchmarks, and examples. |
+| `keep-core` | `crates/keep-core/` | Core value types (`KvValue`, `SetOptions`, JSON conversion), error model (`KvError`), shard cluster topology, Prometheus metrics, and TLS helpers. |
+| `keep-engine` | `crates/keep-engine/` | Sharded multi-core KV engine (`KvEngine`), durable WAL + snapshot persistence (`persistence/`), backup/restore, and optional `raft` state machine. |
+| `keep-http` | `crates/keep-http/` | Axum over hyper HTTP/1.1 + HTTP/2 cleartext server, routes, handlers, request/response models, and OpenAPI spec generation (`/openapi.json`). |
+| `keep-operator` | `crates/keep-operator/` | Kubernetes `KeepCluster` CRD, manifest renderer, and reconciliation loop. |
+| `keep-client` | `crates/keep-client/` | In-tree async HTTP/2 client (`KvClient`) for scalar KV, batch, lock, and claim-check operations. |
 
 The engine and persistence layers are transport-agnostic. Polyglot workers
 integrate against the generated OpenAPI document — there is no language-specific

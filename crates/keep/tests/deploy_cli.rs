@@ -140,7 +140,7 @@ fn dockerfile_render_source_reproduces_committed_dockerfile() {
     let rendered = stdout(&["dockerfile", "render", "--variant", "source"]);
     assert_eq!(
         rendered,
-        include_str!("../Dockerfile"),
+        include_str!("../../../Dockerfile"),
         "keep dockerfile render --variant source == committed Dockerfile"
     );
 }
@@ -152,7 +152,7 @@ fn dockerfile_render_release_reproduces_committed_and_substitutes_version() {
     let rendered = stdout(&["dockerfile", "render", "--variant", "release"]);
     assert_eq!(
         rendered,
-        include_str!("../Dockerfile.release"),
+        include_str!("../../../Dockerfile.release"),
         "keep dockerfile render --variant release == committed Dockerfile.release"
     );
 

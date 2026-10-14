@@ -25,7 +25,7 @@ e2e_tests:
     claim_id: vat-meter-runtime-gate
     contract_id: keep-meter-performance-report
     category: efficiency
-    test_path: tests/benchmark_keep_competitor_performance_meter_gate.rs
+    test_path: crates/keep/tests/benchmark_keep_competitor_performance_meter_gate.rs
     command: "vat run meter-efficiency"
     assertions:
       - "meter owns the pass/fail evidence for Keep's performance-relevant API and engine gate."

@@ -20,7 +20,7 @@ e2e_tests:
     claim_id: guard-static-runtime-evidence
     contract_id: keep-guard-security-report
     category: security
-    test_path: tests/security_keep_security_hardening_guard_scan.rs
+    test_path: crates/keep/tests/security_keep_security_hardening_guard_scan.rs
     command: "vat run guard-security"
     required_for_production: false
     assertions:

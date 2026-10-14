@@ -1,0 +1,24 @@
+[package]
+name = "keep-operator"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "keep-operator — Kubernetes CRD, manifest renderer, and reconcile controller for keep"
+
+[dependencies]
+keep-core = { workspace = true, features = ["rustls-provider"] }
+
+# faberline/core shared crates
+service-backup.workspace = true
+service-k8s.workspace = true
+
+# Kubernetes & schema
+anyhow.workspace = true
+k8s-openapi.workspace = true
+kube.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true

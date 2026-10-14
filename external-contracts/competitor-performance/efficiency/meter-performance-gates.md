@@ -11,7 +11,7 @@ measurement tool). One guards **engine throughput** (regressions in the store
 itself), the other guards the **server's resource footprint** (memory bloat /
 gross CPU regressions). Neither needs a competitor process.
 
-## 1. Engine throughput ratchet — `benches/engine_bench.rs`
+## 1. Engine throughput ratchet — `crates/keep/benches/engine_bench.rs`
 
 Deterministic, network-free criterion microbenchmarks of the sharded engine.
 Run them through meter (which delegates `cargo bench` and, with a baseline,
@@ -55,12 +55,11 @@ enforced against the live keep server under a FIXED load. A breach is a `high`
 finding and a non-zero exit.
 
 ```bash
-cd .
 KEEP_DISABLE_PERSISTENCE=true meter measure \
-  --exec ../../target/release/keep --level vitals --duration-cap 30 \
+  --exec ./target/release/keep --level vitals --duration-cap 30 \
   --drive 'for i in $(seq 1 15); do curl -sf -o /dev/null --max-time 1 \
       http://127.0.0.1:7117/healthz && break; sleep 1; done; \
-    ../../target/release/examples/bench_compare --backend keep --ops 200000 \
+    ./target/release/examples/bench_compare --backend keep --ops 200000 \
       --concurrency 1000 --batch 1 --keep-url http://127.0.0.1:7117 --keep-clients 10'
 ```
 

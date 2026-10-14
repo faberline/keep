@@ -1,24 +1,17 @@
 # Tool run caches and state written under the cwd; process output, never source.
 # Guard waivers (.guard/waivers.json) are source.
 .aw/
-.qc/
 .meter/
 .guard/*
 !.guard/waivers.json
 .vat/
-.rig/
-.arena/
 .local/
 .benchmarks/
 .baselines/
-.jet/
-.vite/
-.tdc/state.toml
 mutants.out
 mutants.out.old
 
-# Per-run scratch left by dispatched agents; only agents/, skills/ and plugins/
-# are source under .agents/.
+# Per-run scratch left by dispatched agents.
 .agents/*
 !.agents/agents/
 !.agents/skills/
@@ -27,14 +20,8 @@ mutants.out.old
 .claude/scheduled_tasks.lock
 .claude/worktrees/
 .mcp.json
-.playwright-mcp/
 
-# Python, Node and environment files.
-__pycache__/
-*.py[cod]
-.pytest_cache/
-.venv/
-node_modules/
+# Environment files.
 .env
 .env.*
 !.env.example
@@ -50,3 +37,5 @@ node_modules/
 
 # keep's default data dir when KEEP_DATA_DIR is unset.
 /data/
+__pycache__/
+

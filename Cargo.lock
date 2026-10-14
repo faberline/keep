@@ -1813,44 +1813,118 @@ name = "keep"
 version = "0.4.13"
 dependencies = [
  "anyhow",
- "arc-swap",
- "async-trait",
  "axum",
- "bincode",
  "claim-token",
  "clap",
  "cli-std",
- "crc32fast",
  "criterion",
- "crossbeam-channel",
  "futures",
- "k8s-openapi",
+ "keep-client",
+ "keep-core",
+ "keep-engine",
+ "keep-http",
+ "keep-operator",
  "kube",
  "openapi-codegen",
- "parking_lot",
  "raft-runtime",
  "redis",
  "reqwest",
- "rust_decimal",
- "rustls",
- "schemars",
  "serde",
  "serde_json",
  "serde_yaml",
- "service-auth",
- "service-backup",
  "service-http",
  "service-k8s",
+ "tempfile",
+ "tokio",
+ "tokio-test",
+ "tower",
+ "tracing",
+ "transport-h2c",
+]
+
+[[package]]
+name = "keep-client"
+version = "0.4.13"
+dependencies = [
+ "keep-core",
+ "reqwest",
+ "serde_json",
+ "thiserror 2.0.18",
+ "transport-h2c",
+]
+
+[[package]]
+name = "keep-core"
+version = "0.4.13"
+dependencies = [
+ "crc32fast",
+ "rust_decimal",
+ "rustls",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "utoipa",
+]
+
+[[package]]
+name = "keep-engine"
+version = "0.4.13"
+dependencies = [
+ "anyhow",
+ "arc-swap",
+ "axum",
+ "bincode",
+ "crc32fast",
+ "crossbeam-channel",
+ "keep-core",
+ "parking_lot",
+ "raft-runtime",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "service-backup",
  "sha2",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
- "tokio-test",
+ "tracing",
+]
+
+[[package]]
+name = "keep-http"
+version = "0.4.13"
+dependencies = [
+ "axum",
+ "claim-token",
+ "keep-core",
+ "keep-engine",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "service-auth",
+ "service-http",
+ "tokio",
  "tower",
  "tower-http 0.5.2",
  "tracing",
- "transport-h2c",
  "utoipa",
+]
+
+[[package]]
+name = "keep-operator"
+version = "0.4.13"
+dependencies = [
+ "anyhow",
+ "k8s-openapi",
+ "keep-core",
+ "kube",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "service-backup",
+ "service-k8s",
 ]
 
 [[package]]

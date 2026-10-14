@@ -1,0 +1,38 @@
+[package]
+name = "keep-engine"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "keep-engine — sharded multi-core KV engine, WAL/snapshot persistence, backup, and Raft state machine"
+
+[dependencies]
+keep-core.workspace = true
+
+# faberline/core shared crates
+raft-runtime = { workspace = true, optional = true }
+service-backup.workspace = true
+
+# Runtime & storage
+anyhow.workspace = true
+arc-swap.workspace = true
+axum = { workspace = true, optional = true }
+bincode.workspace = true
+crc32fast.workspace = true
+crossbeam-channel.workspace = true
+parking_lot.workspace = true
+rust_decimal.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[features]
+default = []
+raft = ["dep:raft-runtime", "dep:axum", "keep-core/rustls-provider"]

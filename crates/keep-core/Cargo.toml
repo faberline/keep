@@ -1,0 +1,21 @@
+[package]
+name = "keep-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "keep-core — core types, error definitions, cluster topology, and metrics for keep"
+
+[dependencies]
+crc32fast.workspace = true
+rust_decimal.workspace = true
+rustls = { workspace = true, optional = true }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+utoipa.workspace = true
+
+[features]
+default = []
+rustls-provider = ["dep:rustls"]

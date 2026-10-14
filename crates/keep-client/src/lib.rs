@@ -10,8 +10,7 @@
 
 use std::time::Duration;
 
-use crate::http::models::json_to_kv;
-use crate::types::KvValue;
+use keep_core::types::{json_to_kv, kv_to_json, KvValue};
 
 /// Errors from the HTTP KV client.
 #[derive(Debug, thiserror::Error)]
@@ -105,7 +104,7 @@ impl KvClient {
                 rb.body(b)
             }
             other => self.http.put(&url).json(&serde_json::json!({
-                "value": kv_to_json_value(other),
+                "value": kv_to_json(other),
                 "ttl_ms": ttl.map(|t| t.as_millis() as u64),
             })),
         };
@@ -155,7 +154,3 @@ impl KvClient {
     }
 }
 
-/// Map a non-byte KvValue to its native JSON form for the request body.
-fn kv_to_json_value(v: KvValue) -> serde_json::Value {
-    crate::http::models::kv_to_json(v)
-}

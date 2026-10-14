@@ -1,0 +1,19 @@
+[package]
+name = "keep-client"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "keep-client — HTTP/2 client for in-tree and Rust keep consumers"
+
+[dependencies]
+keep-core = { workspace = true, features = ["rustls-provider"] }
+
+# faberline/core shared crates
+transport-h2c.workspace = true
+
+# HTTP client
+reqwest.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

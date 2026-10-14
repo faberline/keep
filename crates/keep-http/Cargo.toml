@@ -1,0 +1,33 @@
+[package]
+name = "keep-http"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "keep-http — HTTP/2 + OpenAPI transport surface and offline spec emitters for keep"
+
+[dependencies]
+keep-core.workspace = true
+keep-engine.workspace = true
+
+# faberline/core shared crates
+claim-token.workspace = true
+service-auth.workspace = true
+service-http.workspace = true
+
+# HTTP/2 & OpenAPI
+axum.workspace = true
+parking_lot.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+tokio.workspace = true
+tower.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+utoipa.workspace = true
+
+[features]
+default = []
+raft = ["keep-engine/raft"]
