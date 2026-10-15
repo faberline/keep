@@ -1,8 +1,8 @@
-# Deploy keep to the shared faberline GKE test cluster and run
-# scripts/gke-test/verify.sh against it. faberline/aw owns the cluster, the
-# pool (pool-keep), and the reusable workflow; keep owns
-# k8s/overlays/gke-test/ and the test command. Rules: aw's
-# docs/standards/test-cluster.md.
+# Deploy keep to the shared faberline GKE test cluster and run the test Job
+# in k8s/gke-test-job/ against it. faberline/aw owns the cluster, the pools
+# (pool-keep-server for the server, pool-keep-client for the test Job), and the
+# reusable workflow; keep owns k8s/overlays/gke-test/ and k8s/gke-test-job/.
+# Rules: aw's docs/standards/test-cluster.md.
 #
 # Every pool is at 0 nodes between runs, so the first rollout waits a few
 # minutes for the autoscaler to add a node. The run always deletes the
@@ -13,7 +13,6 @@ on:
   pull_request:
     paths:
       - "k8s/**"
-      - "scripts/gke-test/**"
       - ".github/workflows/gke-test.yml"
       - ".github/workflows/keep-test-image.yml"
       - "Dockerfile"
@@ -38,4 +37,4 @@ jobs:
     uses: faberline/aw/.github/workflows/gke-test.yml@main
     with:
       image: ${{ needs.image.outputs.image }}
-      test-command: scripts/gke-test/verify.sh
+      test-job: k8s/gke-test-job

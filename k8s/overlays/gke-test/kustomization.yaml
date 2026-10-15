@@ -2,8 +2,12 @@
 # .github/workflows/gke-test.yml; the rules are in aw's
 # docs/standards/test-cluster.md.
 #
-# - nodeSelector + toleration: run only on pool-keep (aw's
+# - nodeSelector + toleration: run only on pool-keep-server (aw's
 #   infra/gke-test/pools.yaml: e2-standard-4, because keep requests 2 CPU).
+# - topologySpreadConstraints: one server replica per node, as on a real
+#   cluster. keep has 1 replica today; the rule holds when that grows, and
+#   pool-keep-server then needs max_nodes >= replicas.
+# - The test client is a Job in k8s/gke-test-job/ on pool-keep-client.
 # - ghcr-pull: the run creates this pull secret from its GITHUB_TOKEN.
 # - The run sets the image; a REPLACE_ME left here fails the run.
 apiVersion: kustomize.config.k8s.io/v1beta1
@@ -26,11 +30,19 @@ patches:
         template:
           spec:
             nodeSelector:
-              faberline.dev/pool: keep
+              faberline.dev/pool: keep-server
             tolerations:
               - key: faberline.dev/pool
                 operator: Equal
-                value: keep
+                value: keep-server
                 effect: NoSchedule
             imagePullSecrets:
               - name: ghcr-pull
+            topologySpreadConstraints:
+              - maxSkew: 1
+                topologyKey: kubernetes.io/hostname
+                whenUnsatisfiable: DoNotSchedule
+                labelSelector:
+                  matchLabels:
+                    app: keep
+                    role: server

@@ -1,0 +1,65 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: keep-test
+spec:
+  # A retry would hide a flaky failure. The run fails on the first one.
+  backoffLimit: 0
+  activeDeadlineSeconds: 1200
+  template:
+    spec:
+      serviceAccountName: keep-test
+      restartPolicy: Never
+      nodeSelector:
+        faberline.dev/pool: keep-client
+      tolerations:
+        - key: faberline.dev/pool
+          operator: Equal
+          value: keep-client
+          effect: NoSchedule
+      imagePullSecrets:
+        - name: ghcr-pull
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: verify
+          # kubectl, curl, jq, and bash. Match the minor version of the
+          # cluster (1.36).
+          image: alpine/k8s:1.36.4
+          command: ["bash", "/scripts/verify.sh"]
+          env:
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: KEEP_URL
+              value: http://keep:7117
+            # kubectl writes its cache under HOME.
+            - name: HOME
+              value: /tmp
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+      volumes:
+        - name: scripts
+          configMap:
+            name: keep-test-script
