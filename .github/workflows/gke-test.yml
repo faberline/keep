@@ -35,9 +35,7 @@ jobs:
       id-token: write
       contents: read
       packages: read
-    # TODO: switch both refs to main after faberline/aw#32 merges.
-    uses: faberline/aw/.github/workflows/gke-test.yml@claude/gke-test-cluster
+    uses: faberline/aw/.github/workflows/gke-test.yml@main
     with:
       image: ${{ needs.image.outputs.image }}
       test-command: scripts/gke-test/verify.sh
-      aw-ref: claude/gke-test-cluster
