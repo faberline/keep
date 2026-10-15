@@ -19,6 +19,12 @@ spec:
           effect: NoSchedule
       imagePullSecrets:
         - name: ghcr-pull
+      # One pod per node: no other pod of the namespace shares this node.
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector: {}
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
@@ -48,8 +54,6 @@ spec:
           resources:
             requests:
               cpu: 250m
-              memory: 256Mi
-            limits:
               memory: 256Mi
           securityContext:
             allowPrivilegeEscalation: false

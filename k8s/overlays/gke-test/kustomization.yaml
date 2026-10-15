@@ -4,9 +4,11 @@
 #
 # - nodeSelector + toleration: run only on pool-keep-server (aw's
 #   infra/gke-test/pools.yaml: e2-standard-4, because keep requests 2 CPU).
-# - topologySpreadConstraints: one server replica per node, as on a real
-#   cluster. keep has 1 replica today; the rule holds when that grows, and
-#   pool-keep-server then needs max_nodes >= replicas.
+# - One pod per node: a required pod anti-affinity that matches every pod of
+#   the namespace, so each replica has a node of its own. keep has 1 replica
+#   today; pool-keep-server needs max_nodes >= replicas when that grows.
+# - Requests without limits: the base sets limits for real clusters; the
+#   overlay removes them so the pod can use the whole node.
 # - The test client is a Job in k8s/gke-test-job/ on pool-keep-client.
 # - ghcr-pull: the run creates this pull secret from its GITHUB_TOKEN.
 # - The run sets the image; a REPLACE_ME left here fails the run.
@@ -38,11 +40,14 @@ patches:
                 effect: NoSchedule
             imagePullSecrets:
               - name: ghcr-pull
-            topologySpreadConstraints:
-              - maxSkew: 1
-                topologyKey: kubernetes.io/hostname
-                whenUnsatisfiable: DoNotSchedule
-                labelSelector:
-                  matchLabels:
-                    app: keep
-                    role: server
+            affinity:
+              podAntiAffinity:
+                requiredDuringSchedulingIgnoredDuringExecution:
+                  - topologyKey: kubernetes.io/hostname
+                    labelSelector: {}
+  - target:
+      kind: StatefulSet
+      name: keep
+    patch: |-
+      - op: remove
+        path: /spec/template/spec/containers/0/resources/limits
