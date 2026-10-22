@@ -1882,6 +1882,7 @@ dependencies = [
  "rust_decimal",
  "serde",
  "serde_json",
+ "server-lifecycle",
  "service-backup",
  "sha2",
  "tempfile",

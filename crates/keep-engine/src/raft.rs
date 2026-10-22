@@ -31,10 +31,11 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::Result;
 use axum::Router;
 use raft_runtime::{
-    AdmissionPermit, FsyncPolicy, GroupId, HostConfig, Index, Membership, NodeId, OutcomeWindow,
-    RaftHost, RaftStateMachine, RaftStore, SnapshotPolicy,
+    AdmissionPermit, FsyncPolicy, GroupId, HostConfig, HostShutdownReport, Index, Membership,
+    NodeId, OutcomeWindow, RaftHost, RaftStateMachine, RaftStore, SnapshotPolicy,
 };
 use serde::{Deserialize, Serialize};
+use server_lifecycle::ShutdownDeadline;
 use tokio::task::JoinHandle;
 
 use crate::apply::{execute, ApplyOutcome, ApplyResult};
@@ -474,6 +475,23 @@ impl ShardHosts {
             barrier_tasks,
             engine,
         })
+    }
+
+    /// Graceful stop for SIGTERM: every host stops admitting proposals, a
+    /// leader hands leadership to a caught-up voter, then its background tasks
+    /// and in-flight peer RPCs drain. All hosts share one `budget`; a host that
+    /// runs out of it reports the phase it stopped in.
+    pub async fn shutdown_within(&self, budget: Duration) -> Vec<(u32, HostShutdownReport)> {
+        for task in &self.barrier_tasks {
+            task.abort();
+        }
+        let deadline = ShutdownDeadline::from_now(budget, Duration::ZERO)
+            .expect("a zero reserve never exceeds the budget");
+        let mut reports = Vec::with_capacity(self.groups.len());
+        for (shard, group) in &self.groups {
+            reports.push((*shard, group.host.shutdown_within(deadline).await));
+        }
+        reports
     }
 
     /// Route `op` to the host owning `key`'s shard and propose it through Raft.

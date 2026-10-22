@@ -490,6 +490,15 @@ struct ServeArgs {
     /// Graceful drain window on SIGTERM (s).
     #[arg(long, env = "KEEP_GRACE_SECS", default_value_t = 30)]
     grace_secs: u64,
+    /// Raft replica mode: compact the log into a snapshot every N applied
+    /// entries (a lagging or wiped replica catches up via InstallSnapshot).
+    #[arg(long, env = "KEEP_RAFT_SNAPSHOT_EVERY", default_value_t = 1024)]
+    raft_snapshot_every: u64,
+    /// Raft replica mode: budget (s) after the HTTP drain for handing
+    /// leadership to a caught-up voter and stopping the raft host. Size
+    /// `terminationGracePeriodSeconds` to cover `grace_secs` plus this.
+    #[arg(long, env = "KEEP_RAFT_HANDOFF_SECS", default_value_t = 5)]
+    raft_handoff_secs: u64,
     /// This node's ordinal in the cluster (k8s StatefulSet pod index).
     #[arg(long, env = "KEEP_NODE_ID", default_value_t = 0)]
     node_id: usize,
@@ -1160,10 +1169,11 @@ async fn serve_main(args: ServeArgs, worker_threads: usize) -> Result<()> {
     #[cfg(feature = "raft")]
     let shard_hosts = if let Some(place) = state.cluster.replica {
         let hosts = Arc::new(
-            keep::raft::ShardHosts::new(
+            keep::raft::ShardHosts::with_snapshot_every(
                 (*state.cluster).clone(),
                 state.engine.clone(),
                 &args.data_dir,
+                args.raft_snapshot_every.max(1),
             )
             .await?,
         );
@@ -1207,6 +1217,24 @@ async fn serve_main(args: ServeArgs, worker_threads: usize) -> Result<()> {
 
     if let Some(handle) = expiry_task {
         handle.abort();
+    }
+
+    // Raft: stop admitting proposals and hand leadership to a caught-up voter
+    // so the group elects a successor without waiting out an election timeout.
+    #[cfg(feature = "raft")]
+    if let Some(hosts) = shard_hosts {
+        let budget = Duration::from_secs(args.raft_handoff_secs);
+        for (shard, report) in hosts.shutdown_within(budget).await {
+            match report.incomplete_phase {
+                None => info!(shard, handoff = ?report.handoff, "raft host stopped"),
+                Some(phase) => warn!(
+                    shard,
+                    handoff = ?report.handoff,
+                    ?phase,
+                    "raft host shutdown ran out of budget"
+                ),
+            }
+        }
     }
 
     // Post-drain: flush WAL/snapshot to disk so the result store is durable.
