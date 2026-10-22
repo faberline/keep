@@ -207,10 +207,30 @@ fn render_emits_backup_cronjob_when_configured() {
     assert!(args.contains(&"--retention-secs"));
     assert!(args.contains(&"604800"));
     // The runner runs under keep's ServiceAccount.
+    let pod = &cj["spec"]["jobTemplate"]["spec"]["template"]["spec"];
+    assert_eq!(pod["serviceAccountName"], "store");
+
+    // It reads pod 0's data PVC read-only at the `--data-dir` it passes...
+    assert_eq!(pod["volumes"][0]["name"], "data");
     assert_eq!(
-        cj["spec"]["jobTemplate"]["spec"]["template"]["spec"]["serviceAccountName"],
-        "store"
+        pod["volumes"][0]["persistentVolumeClaim"],
+        serde_json::json!({ "claimName": "data-store-0", "readOnly": true })
     );
+    assert_eq!(
+        container["volumeMounts"][0],
+        serde_json::json!({ "name": "data", "mountPath": "/data", "readOnly": true })
+    );
+    let data_dir = args.iter().position(|a| *a == "--data-dir").unwrap() + 1;
+    assert_eq!(args[data_dir], "/data");
+    // ...on pod 0's node (the claim is ReadWriteOnce), as keep's user.
+    let term = &pod["affinity"]["podAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"][0];
+    assert_eq!(
+        term["labelSelector"]["matchLabels"]["statefulset.kubernetes.io/pod-name"],
+        "store-0"
+    );
+    assert_eq!(term["topologyKey"], "kubernetes.io/hostname");
+    assert_eq!(pod["securityContext"]["runAsUser"], 65532);
+    assert_eq!(pod["securityContext"]["fsGroup"], 65532);
 }
 
 /// R4 — the generated CRD is Kubernetes-OpenAPI compatible.
