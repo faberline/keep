@@ -40,12 +40,16 @@ pub struct PersistenceHandle {
     /// Background thread handle
     thread_handle: Option<JoinHandle<()>>,
 
-    /// Configuration (kept for potential future use)
-    #[allow(dead_code)]
+    /// Configuration the background thread was started with.
     config: PersistenceConfig,
 }
 
 impl PersistenceHandle {
+    /// The configuration this handle was started with.
+    pub fn config(&self) -> &PersistenceConfig {
+        &self.config
+    }
+
     /// Create a new persistence handle with background thread
     ///
     /// This spawns a background thread that:

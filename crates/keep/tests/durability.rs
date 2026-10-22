@@ -166,3 +166,33 @@ async fn collections_survive_recovery() {
     assert_eq!(rec.llen(&KvKey::new("l").unwrap()).unwrap(), 3, "list lost");
     assert!(rec.ttl(&KvKey::new("scalar").unwrap()) > 0, "TTL lost");
 }
+
+async fn info(app: &Router) -> Value {
+    let req = Request::builder().uri("/info").body(Body::empty()).unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
+/// `/info` reports the storage mode so a benchmark can prove which tier it
+/// measured (RAM-only vs WAL-backed durable-before-ack).
+#[tokio::test]
+async fn info_reports_persistence_mode() {
+    let ram = router(AppState::new(Arc::new(KvEngine::with_shards(4))));
+    let body = info(&ram).await;
+    assert_eq!(body["persistence_enabled"], json!(false));
+    assert_eq!(body["fsync_interval_ms"], Value::Null);
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Arc::new(KvEngine::with_shards(4));
+    let cfg = PersistenceConfig::new(dir.path()).with_fsync_interval_ms(25);
+    engine.enable_persistence(Arc::new(
+        PersistenceHandle::new(cfg, engine.clone()).unwrap(),
+    ));
+    let body = info(&router(AppState::new(engine))).await;
+    assert_eq!(body["persistence_enabled"], json!(true));
+    assert_eq!(body["fsync_interval_ms"], json!(25));
+}
