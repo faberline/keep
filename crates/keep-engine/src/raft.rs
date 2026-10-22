@@ -600,10 +600,17 @@ impl ShardHosts {
             let Some(st) = local_status(&group.host).await else {
                 continue;
             };
+            // raft-core has no learner role: a learner runs as a follower
+            // that is never a candidate.
+            let role = if st.learners.contains(&st.id) {
+                "learner".to_string()
+            } else {
+                st.role.to_ascii_lowercase()
+            };
             out.push(ShardRaftState {
                 shard: *shard,
                 replica_id: st.id,
-                role: st.role.to_ascii_lowercase(),
+                role,
                 term: st.term,
                 leader: st.leader,
                 commit_index: st.commit_index,

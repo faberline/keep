@@ -53,6 +53,8 @@ struct Cluster {
     root: PathBuf,
     ports: Vec<u16>,
     snapshot_every: u64,
+    /// Replicas `0..voters` vote; the rest are learners.
+    voters: usize,
     nodes: Vec<Node>,
     http: reqwest::Client,
 }
@@ -67,6 +69,10 @@ fn free_port() -> u16 {
 
 impl Cluster {
     fn start(tag: &str, snapshot_every: u64) -> Self {
+        Self::start_with_voters(tag, snapshot_every, REPLICAS)
+    }
+
+    fn start_with_voters(tag: &str, snapshot_every: u64, voters: usize) -> Self {
         let root =
             std::env::temp_dir().join(format!("keep-raft-proc-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -76,6 +82,7 @@ impl Cluster {
             root,
             ports,
             snapshot_every,
+            voters,
             http: reqwest::Client::builder()
                 .timeout(Duration::from_secs(5))
                 .build()
@@ -117,7 +124,7 @@ impl Cluster {
             .env("POD_NAME", format!("keep-{i}"))
             .env("SHARD_COUNT", "1")
             .env("REPLICAS_PER_SHARD", REPLICAS.to_string())
-            .env("VOTER_COUNT", REPLICAS.to_string())
+            .env("VOTER_COUNT", self.voters.to_string())
             .env("KEEP_PEERS", &peers)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -522,6 +529,59 @@ async fn reads_fail_closed_without_quorum() {
             "reads never recovered: {status} {body}"
         );
     }
+}
+
+/// Phase B async replicas are raft learners (`VOTER_COUNT < REPLICAS_PER_SHARD`):
+/// a learner receives every committed entry and serves reads at any level, but
+/// never leads and never counts toward quorum — stopping it does not slow
+/// writes, while stopping the other voter fences reads even though the learner
+/// is up.
+#[tokio::test(flavor = "multi_thread")]
+async fn learner_replicates_without_joining_quorum() {
+    let _serial = SERIAL.lock().await;
+    let c = Cluster::start_with_voters("learner", 1024, 2);
+    let learner = 2;
+    let (leader, _) = c.leader(&[0, 1], 0).await;
+    let voter = 1 - leader;
+
+    // Writes through the learner are forwarded to the leader.
+    c.put_many(learner, "l", 10).await;
+    c.caught_up(learner, leader).await;
+    c.assert_has_many(learner, "l", 10).await;
+
+    let (status, _) = c.read(learner, "l3", "bounded(60000)").await;
+    assert_eq!(status, reqwest::StatusCode::OK);
+    let cluster: Value = c
+        .http
+        .get(c.url(learner, "/cluster"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let shard = &cluster["shards"][0];
+    assert_eq!(shard["role"], json!("learner"), "{cluster}");
+    assert_eq!(shard["voters"], json!([0, 1]));
+    assert_eq!(shard["learners"], json!([2]));
+    assert_eq!(shard["leader"], json!(leader));
+
+    // The voters alone are a quorum: a stopped learner does not block writes.
+    c.signal(learner, "STOP");
+    c.put_many(leader, "m", 5).await;
+    assert_eq!(c.get(leader, "m4").await, Some(json!(4)));
+    c.signal(learner, "CONT");
+    c.caught_up(learner, leader).await;
+    c.assert_has_many(learner, "m", 5).await;
+
+    // A learner is no substitute for a voter: without the other voter the
+    // leader cannot prove a read, and the learner never takes over.
+    c.signal(voter, "STOP");
+    let (status, body) = c.read(leader, "l0", "leader").await;
+    assert_eq!(status, reqwest::StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    let st = c.status(learner).await.expect("learner status");
+    assert_eq!(st["is_leader"], json!(false), "a learner must never lead");
+    c.signal(voter, "CONT");
 }
 
 /// SIGTERM on the leader hands leadership to a caught-up voter before the
