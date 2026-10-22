@@ -7,6 +7,7 @@ pub use keep_core::{
     KvValue,
 };
 
+pub mod apply;
 pub mod backup;
 pub mod engine;
 pub mod persistence;

@@ -8,7 +8,7 @@ pub use keep_core::{
 };
 #[cfg(feature = "raft")]
 pub use keep_engine::raft;
-pub use keep_engine::{backup, engine, persistence, EvictionPolicy, KvEngine};
+pub use keep_engine::{apply, backup, engine, persistence, EvictionPolicy, KvEngine};
 
 pub mod http;
 pub mod spec;

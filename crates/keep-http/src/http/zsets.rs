@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::http::error::ApiErr;
-use crate::http::handlers::{ack_durable, key_of, propose_write};
+use crate::http::handlers::{ack_durable, key_of, outcome_count, outcome_float, propose_write};
 use crate::http::models::CountResponse;
 use crate::http::AppState;
 use crate::persistence::format::WalOp;
@@ -85,11 +85,7 @@ pub async fn zadd(
         .into_iter()
         .map(|m| (m.member, m.score))
         .collect();
-    let existing = members
-        .iter()
-        .filter(|(member, _)| st.engine.zscore(&k, member).ok().flatten().is_some())
-        .count();
-    let count = if propose_write(
+    let count = match propose_write(
         &st,
         &k,
         WalOp::ZAdd {
@@ -99,9 +95,8 @@ pub async fn zadd(
     )
     .await?
     {
-        members.len().saturating_sub(existing)
-    } else {
-        st.engine.zadd(&k, members).map_err(ApiErr::from)?
+        Some(o) => outcome_count(o)?,
+        None => st.engine.zadd(&k, members).map_err(ApiErr::from)?,
     };
     ack_durable(&st).await;
     Ok(Json(CountResponse { count }))
@@ -140,12 +135,7 @@ pub async fn zrem(
     Json(req): Json<ZRemRequest>,
 ) -> Result<Json<CountResponse>, ApiErr> {
     let k = key_of(&key)?;
-    let existing = req
-        .members
-        .iter()
-        .filter(|member| st.engine.zscore(&k, member).ok().flatten().is_some())
-        .count();
-    let count = if propose_write(
+    let count = match propose_write(
         &st,
         &k,
         WalOp::ZRem {
@@ -155,9 +145,8 @@ pub async fn zrem(
     )
     .await?
     {
-        existing
-    } else {
-        st.engine.zrem(&k, req.members).map_err(ApiErr::from)?
+        Some(o) => outcome_count(o)?,
+        None => st.engine.zrem(&k, req.members).map_err(ApiErr::from)?,
     };
     ack_durable(&st).await;
     Ok(Json(CountResponse { count }))
@@ -187,7 +176,7 @@ pub async fn zincr(
     Json(req): Json<ZIncrRequest>,
 ) -> Result<Json<FloatValueResponse>, ApiErr> {
     let k = key_of(&key)?;
-    let value = if propose_write(
+    let value = match propose_write(
         &st,
         &k,
         WalOp::ZIncrBy {
@@ -198,14 +187,11 @@ pub async fn zincr(
     )
     .await?
     {
-        st.engine
-            .zscore(&k, &req.member)
-            .map_err(ApiErr::from)?
-            .unwrap_or(req.delta)
-    } else {
-        st.engine
+        Some(o) => outcome_float(o)?,
+        None => st
+            .engine
             .zincrby(&k, &req.member, req.delta)
-            .map_err(ApiErr::from)?
+            .map_err(ApiErr::from)?,
     };
     ack_durable(&st).await;
     Ok(Json(FloatValueResponse { value }))

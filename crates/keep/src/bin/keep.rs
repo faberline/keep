@@ -1046,14 +1046,38 @@ async fn serve_main(args: ServeArgs, worker_threads: usize) -> Result<()> {
         "starting keep"
     );
 
+    let cluster = derive_cluster_config(&args)?;
+    info!(
+        node_id = cluster.node_id,
+        node_count = cluster.node_count,
+        shard_count = cluster.shard_count,
+        owned_shards = cluster.owned_shards().len(),
+        "cluster topology"
+    );
+    // In raft replica mode the raft log (fsynced per append) + its snapshots are
+    // the only durable state: the host replays them into an empty engine. The
+    // engine's own WAL/snapshot would replay the same writes a second time.
+    let raft_owns_durability = cluster.replica.is_some();
+
     // Engine + persistence: recover from disk on a cold start.
-    let (engine, persistence) = if args.disable_persistence {
-        info!("persistence disabled — in-memory only");
+    let (engine, persistence) = if args.disable_persistence || raft_owns_durability {
         let engine = KvEngine::with_shards(shards);
         if let Some(limit) = max_memory {
             engine.set_maxmemory(limit);
         }
         engine.set_eviction_policy(eviction_policy);
+        if raft_owns_durability {
+            info!(data_dir = %args.data_dir.display(), "raft replica: engine rebuilt from the raft log");
+            if args.spill_threshold_bytes > 0 {
+                engine.enable_blob_store(Arc::new(keep::persistence::BlobStore::new(
+                    &args.data_dir,
+                    args.spill_threshold_bytes,
+                    max_disk_bytes.unwrap_or(0),
+                )?));
+            }
+        } else {
+            info!("persistence disabled — in-memory only");
+        }
         (Arc::new(engine), None)
     } else {
         info!(data_dir = %args.data_dir.display(), "recovering engine");
@@ -1104,14 +1128,6 @@ async fn serve_main(args: ServeArgs, worker_threads: usize) -> Result<()> {
         None
     };
 
-    let cluster = derive_cluster_config(&args)?;
-    info!(
-        node_id = cluster.node_id,
-        node_count = cluster.node_count,
-        shard_count = cluster.shard_count,
-        owned_shards = cluster.owned_shards().len(),
-        "cluster topology"
-    );
     let mut state = AppState::new(engine)
         .with_body_limit(args.body_limit)
         .with_cluster(cluster);

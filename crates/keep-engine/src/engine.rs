@@ -2528,6 +2528,49 @@ impl KvEngine {
             }
         }
     }
+
+    /// Dump every live key accepted by `keep` with its value (spilled payloads
+    /// materialized) and remaining TTL. Raft snapshot helper.
+    pub fn dump_entries(
+        &self,
+        keep: impl Fn(&str) -> bool,
+    ) -> Vec<(String, KvValue, Option<Duration>)> {
+        let now = Instant::now();
+        let mut out = Vec::new();
+        for s in 0..self.num_shards {
+            if let Some(map) = self.export_shard(s) {
+                for (k, e) in map {
+                    if e.is_expired() || !keep(&k) {
+                        continue;
+                    }
+                    let ttl = e.expires_at.map(|at| at.saturating_duration_since(now));
+                    out.push((k, e.value, ttl));
+                }
+            }
+        }
+        out
+    }
+
+    /// Remove every key matching `pred` without WAL logging (raft snapshot
+    /// install clears the group's keyspace first). Returns the number removed.
+    pub fn remove_where(&self, pred: impl Fn(&str) -> bool) -> usize {
+        let mut removed = 0;
+        for shard in &self.shards {
+            let keys: Vec<String> = shard
+                .data
+                .read()
+                .keys()
+                .filter(|k| pred(k))
+                .cloned()
+                .collect();
+            for k in keys {
+                if shard.delete(&k).is_some() {
+                    removed += 1;
+                }
+            }
+        }
+        removed
+    }
 }
 
 impl Default for KvEngine {

@@ -15,6 +15,7 @@
 
 use std::sync::Arc;
 
+use keep::apply::ApplyOutcome;
 use keep::persistence::format::WalOp;
 use keep::raft::{KvStateMachine, ShardHosts};
 use keep::{ClusterConfig, KvEngine, KvKey, KvValue};
@@ -41,7 +42,7 @@ async fn single_node_per_shard_read_your_write() {
         .unwrap();
     assert!(hosts.host_count() >= 1, "one host per owned shard");
 
-    let idx = hosts
+    let outcome = hosts
         .write(
             "rk",
             WalOp::Set {
@@ -52,23 +53,26 @@ async fn single_node_per_shard_read_your_write() {
         )
         .await
         .unwrap();
-    assert!(idx >= 1, "propose returns the applied raft index");
+    assert_eq!(
+        outcome.unwrap(),
+        ApplyOutcome::Done,
+        "propose returns the replicated apply outcome"
+    );
     assert_eq!(
         engine.get(&KvKey::new("rk").unwrap()),
         Some(KvValue::String("via-raft".to_string())),
         "raft-committed write is applied to the engine before propose returns"
     );
 
-    // A delete routes to the same shard host and applies.
-    hosts
-        .write(
-            "rk",
-            WalOp::Delete {
-                key: "rk".to_string(),
-            },
-        )
-        .await
-        .unwrap();
+    // A delete routes to the same shard host, applies, and reports that the key
+    // existed; a second delete reports that it did not.
+    let delete = || WalOp::Delete {
+        key: "rk".to_string(),
+    };
+    let first = hosts.write("rk", delete()).await.unwrap().unwrap();
+    assert_eq!(first, ApplyOutcome::Bool(true));
+    let second = hosts.write("rk", delete()).await.unwrap().unwrap();
+    assert_eq!(second, ApplyOutcome::Bool(false));
     assert_eq!(engine.get(&KvKey::new("rk").unwrap()), None);
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -99,6 +103,7 @@ async fn per_shard_hosts_route_writes_by_key() {
                 },
             )
             .await
+            .unwrap()
             .unwrap();
     }
     for i in 0..20 {
