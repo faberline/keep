@@ -81,13 +81,23 @@ async fn raft_http_cluster(tag: &str) -> (std::path::PathBuf, Vec<RaftHttpNode>)
     let mut nodes = Vec::new();
     for (node_id, listener) in listeners.into_iter().enumerate() {
         let engine = Arc::new(KvEngine::with_shards(4));
-        let cluster = ClusterConfig::from_shared_topology(node_id, 3, 1, urls.clone());
+        let mut peers = urls.clone();
+        peers[node_id].clear();
+        let cluster = ClusterConfig::replicated(
+            1,
+            keep::ReplicaPlacement {
+                shard_index: 0,
+                replica_index: node_id as u32,
+                replicas_per_shard: 3,
+                voter_count: 3,
+            },
+            peers,
+        );
         let hosts = Arc::new(
             keep::raft::ShardHosts::new(
                 cluster.clone(),
                 engine.clone(),
                 &dir.join(format!("node-{node_id}")),
-                3,
             )
             .await
             .unwrap(),

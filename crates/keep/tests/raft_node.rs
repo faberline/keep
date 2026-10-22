@@ -36,7 +36,7 @@ async fn single_node_per_shard_read_your_write() {
     let dir = tmp_dir("ryw");
     let engine = Arc::new(KvEngine::with_shards(4));
     let cluster = ClusterConfig::new(0, 1, 1, vec![]);
-    let hosts = ShardHosts::new(cluster, engine.clone(), &dir, 1)
+    let hosts = ShardHosts::new(cluster, engine.clone(), &dir)
         .await
         .unwrap();
     assert!(hosts.host_count() >= 1, "one host per owned shard");
@@ -82,7 +82,7 @@ async fn per_shard_hosts_route_writes_by_key() {
     let engine = Arc::new(KvEngine::with_shards(4));
     // 8 virtual shards on one node ⇒ up to 8 per-shard hosts.
     let cluster = ClusterConfig::new(0, 1, 8, vec![]);
-    let hosts = ShardHosts::new(cluster, engine.clone(), &dir, 1)
+    let hosts = ShardHosts::new(cluster, engine.clone(), &dir)
         .await
         .unwrap();
     assert!(hosts.host_count() >= 1, "one host per owned shard");

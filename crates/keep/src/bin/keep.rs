@@ -1129,29 +1129,35 @@ async fn serve_main(args: ServeArgs, worker_threads: usize) -> Result<()> {
         }
     }
     // Peer raft RPCs (`/shard/{id}/raft/*`, `/shard/{id}/raftz`) share the h2c
-    // serve port. Built only when the raft feature is compiled in and k8s has
-    // scaled the StatefulSet into replica/HA mode (REPLICAS_PER_SHARD > 1);
-    // single-node deployments keep the direct-to-engine write path. The hosts
-    // are held for the server's lifetime (Drop aborts their tick/pump tasks).
+    // serve port. Built only when the raft feature is compiled in and the
+    // downward API placed this pod in a replicated shard group
+    // (REPLICAS_PER_SHARD > 1); single-replica deployments keep the
+    // direct-to-engine write path. The hosts are held for the server's lifetime
+    // (Drop aborts their tick/pump tasks).
+    #[cfg(not(feature = "raft"))]
+    if state.cluster.replica.is_some() {
+        anyhow::bail!(
+            "REPLICAS_PER_SHARD > 1 needs a keep build with the `raft` feature; \
+             refusing to serve an unreplicated copy of a replicated shard"
+        );
+    }
     #[cfg(feature = "raft")]
-    let shard_hosts = if raft_runtime::cluster::replica_mode() {
-        let replicas = std::env::var("KEEP_REPLICAS_PER_SHARD")
-            .ok()
-            .and_then(|v| v.parse::<u32>().ok())
-            .unwrap_or(1);
+    let shard_hosts = if let Some(place) = state.cluster.replica {
         let hosts = Arc::new(
             keep::raft::ShardHosts::new(
                 (*state.cluster).clone(),
                 state.engine.clone(),
                 &args.data_dir,
-                replicas,
             )
             .await?,
         );
         info!(
-            shard_hosts = hosts.host_count(),
-            replicas_per_shard = replicas,
-            "raft: per-shard hosts up; peer transport merged onto serve port"
+            shard = place.shard_index,
+            replica = place.replica_index,
+            replicas_per_shard = place.replicas_per_shard,
+            voter_count = place.voter_count,
+            voter = place.is_voter(),
+            "raft: shard group host up; peer transport merged onto serve port"
         );
         Some(hosts)
     } else {
@@ -1286,34 +1292,68 @@ fn resolve_maxmemory(
     Ok(None)
 }
 
+/// Resolve this process's cluster placement.
+///
+/// The StatefulSet downward API (`POD_NAME`, `SHARD_COUNT`,
+/// `REPLICAS_PER_SHARD`, `VOTER_COUNT`) wins whenever it is complete: it is the
+/// raft-runtime `ClusterDims` contract the operator renders, and `KEEP_PEERS`
+/// then overrides peer addresses **per replica id** (for running a multi-node
+/// group on one machine). Without it, the phase-A local override
+/// (`KEEP_NODE_ID`/`KEEP_PEERS`/flags) or the flags alone apply.
 fn derive_cluster_config(args: &ServeArgs) -> Result<keep::ClusterConfig> {
+    if has_downward_api_topology() {
+        return downward_api_cluster_config(args);
+    }
     if let Some(cluster) = local_topology_override(args) {
         return Ok(cluster);
     }
-    if !has_downward_api_topology() {
-        return Ok(keep::ClusterConfig::new(
-            args.node_id,
-            args.node_count,
-            args.shard_count,
-            args.peers.clone(),
-        ));
-    }
+    Ok(keep::ClusterConfig::new(
+        args.node_id,
+        args.node_count,
+        args.shard_count,
+        args.peers.clone(),
+    ))
+}
 
+fn downward_api_cluster_config(args: &ServeArgs) -> Result<keep::ClusterConfig> {
+    if std::env::var_os("KEEP_NODE_ID").is_some() {
+        warn!("KEEP_NODE_ID is ignored: the StatefulSet downward API sets this pod's placement");
+    }
+    if let Ok(legacy) = std::env::var("KEEP_REPLICAS_PER_SHARD") {
+        if std::env::var("REPLICAS_PER_SHARD").ok().as_deref() != Some(legacy.as_str()) {
+            warn!(
+                keep_replicas_per_shard = %legacy,
+                "KEEP_REPLICAS_PER_SHARD is deprecated and ignored; REPLICAS_PER_SHARD wins"
+            );
+        }
+    }
     let headless =
         std::env::var("KEEP_HEADLESS_SERVICE").unwrap_or_else(|_| "keep-headless".to_string());
     let dims = raft_runtime::ClusterDims::from_env()?;
     let topo = raft_runtime::ClusterTopology::from_env("keep", &headless, args.port, "KEEP_PEERS")?;
-    let node_count = topo.replicas_per_shard.max(1) as usize;
-    let mut peers = vec![String::new(); node_count];
-    for (node, url) in topo.peers {
-        if let Some(slot) = peers.get_mut(node as usize) {
+    if topo.replicas_per_shard <= 1 {
+        // Phase A: one pod per shard, no replication.
+        return Ok(keep::ClusterConfig::from_shared_topology(
+            dims.pod_ordinal()? as usize,
+            dims.shard_count as usize,
+            dims.shard_count,
+            args.peers.clone(),
+        ));
+    }
+    let mut peers = vec![String::new(); topo.replicas_per_shard as usize];
+    for (replica, url) in topo.peers {
+        if let Some(slot) = peers.get_mut(replica as usize) {
             *slot = url;
         }
     }
-    Ok(keep::ClusterConfig::from_shared_topology(
-        topo.node_id as usize,
-        node_count,
+    Ok(keep::ClusterConfig::replicated(
         dims.shard_count,
+        keep::ReplicaPlacement {
+            shard_index: topo.shard_index,
+            replica_index: topo.node_id as u32,
+            replicas_per_shard: topo.replicas_per_shard,
+            voter_count: dims.voter_count,
+        },
         peers,
     ))
 }
@@ -1384,6 +1424,7 @@ mod tests {
         "KEEP_NODE_COUNT",
         "KEEP_SHARD_COUNT",
         "KEEP_PEERS",
+        "KEEP_REPLICAS_PER_SHARD",
     ];
 
     fn clear_topology_env() {
@@ -1496,13 +1537,9 @@ mod tests {
     }
 
     #[test]
-    fn cluster_topology_keeps_local_override_precedence() {
+    fn cluster_topology_local_override_without_downward_api() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         clear_topology_env();
-        std::env::set_var("POD_NAME", "keep-2");
-        std::env::set_var("SHARD_COUNT", "1");
-        std::env::set_var("REPLICAS_PER_SHARD", "3");
-        std::env::set_var("VOTER_COUNT", "3");
         std::env::set_var("KEEP_NODE_ID", "1");
         std::env::set_var("KEEP_PEERS", "127.0.0.1:7117,127.0.0.1:7118");
 
@@ -1511,10 +1548,80 @@ mod tests {
         assert_eq!(cluster.node_id, 1);
         assert_eq!(cluster.node_count, 2);
         assert_eq!(cluster.shard_count, 2);
+        assert!(cluster.replica.is_none());
         assert_eq!(
             cluster.peers,
             vec!["127.0.0.1:7117".to_string(), "127.0.0.1:7118".to_string()]
         );
+        clear_topology_env();
+    }
+
+    /// With the downward API present, `KEEP_PEERS` is the raft-runtime
+    /// per-replica address override, not the phase-A node list.
+    #[test]
+    fn cluster_topology_downward_api_wins_and_keep_peers_overrides_per_replica() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_topology_env();
+        std::env::set_var("POD_NAME", "keep-2");
+        std::env::set_var("SHARD_COUNT", "1");
+        std::env::set_var("REPLICAS_PER_SHARD", "3");
+        std::env::set_var("VOTER_COUNT", "3");
+        std::env::set_var("KEEP_NODE_ID", "1");
+        std::env::set_var("KEEP_PEERS", "127.0.0.1:7117,127.0.0.1:7118,127.0.0.1:7119");
+
+        let cluster = derive_cluster_config(&serve_args(&[])).unwrap();
+
+        let place = cluster.replica.expect("replica mode");
+        assert_eq!(place.shard_index, 0);
+        assert_eq!(place.replica_index, 2);
+        assert_eq!(cluster.node_id, 2);
+        assert_eq!(cluster.node_count, 3);
+        assert_eq!(cluster.peers[0], "http://127.0.0.1:7117");
+        assert_eq!(cluster.peers[1], "http://127.0.0.1:7118");
+        assert_eq!(cluster.peers[2], "");
+        clear_topology_env();
+    }
+
+    /// `ordinal = replica * S + shard`: keep-5 of S=2,R=3,V=2 is replica 2
+    /// (a learner) of shard 1, and its peers are shard 1's other replicas.
+    #[test]
+    fn cluster_topology_multi_shard_grid_matches_raft_runtime() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_topology_env();
+        std::env::set_var("POD_NAME", "keep-5");
+        std::env::set_var("SHARD_COUNT", "2");
+        std::env::set_var("REPLICAS_PER_SHARD", "3");
+        std::env::set_var("VOTER_COUNT", "2");
+        std::env::set_var("KEEP_HEADLESS_SERVICE", "keep-headless");
+
+        let cluster = derive_cluster_config(&serve_args(&[])).unwrap();
+
+        let place = cluster.replica.expect("replica mode");
+        assert_eq!((place.shard_index, place.replica_index), (1, 2));
+        assert!(!place.is_voter());
+        assert_eq!(cluster.owned_shards(), vec![1]);
+        assert_eq!(cluster.peers[0], "http://keep-1.keep-headless:7117");
+        assert_eq!(cluster.peers[1], "http://keep-3.keep-headless:7117");
+        assert_eq!(cluster.peers[2], "");
+        clear_topology_env();
+    }
+
+    /// REPLICAS_PER_SHARD=1 is phase A: each pod owns exactly its own shard.
+    #[test]
+    fn cluster_topology_downward_api_single_replica_partitions_shards() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_topology_env();
+        std::env::set_var("POD_NAME", "keep-1");
+        std::env::set_var("SHARD_COUNT", "3");
+        std::env::set_var("REPLICAS_PER_SHARD", "1");
+        std::env::set_var("VOTER_COUNT", "1");
+
+        let cluster = derive_cluster_config(&serve_args(&[])).unwrap();
+
+        assert!(cluster.replica.is_none());
+        assert_eq!(cluster.node_id, 1);
+        assert_eq!(cluster.node_count, 3);
+        assert_eq!(cluster.owned_shards(), vec![1]);
         clear_topology_env();
     }
 

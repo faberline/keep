@@ -25,8 +25,32 @@ pub struct ClusterConfig {
     pub node_count: usize,
     /// Virtual shard count (>= node_count; the client-side routing fan-out).
     pub shard_count: u32,
-    /// Peer base URLs, index = node ordinal (for a future replication layer).
+    /// Peer base URLs. Without a [`ReplicaPlacement`] the index is the node
+    /// ordinal; with one it is the replica id inside this pod's shard group
+    /// (own slot empty).
     pub peers: Vec<String>,
+    /// Raft replica placement (HA phase C). `Some` when the StatefulSet runs
+    /// `replicas_per_shard > 1`: this pod hosts exactly one shard group.
+    pub replica: Option<ReplicaPlacement>,
+}
+
+/// Where this pod sits in the `shard x replica` StatefulSet grid
+/// (`ordinal = replica_index * shard_count + shard_index`), mirroring
+/// raft-runtime's `ClusterDims`. Voters are replica ids `0..voter_count`; the
+/// rest are learners.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReplicaPlacement {
+    pub shard_index: u32,
+    pub replica_index: u32,
+    pub replicas_per_shard: u32,
+    pub voter_count: u32,
+}
+
+impl ReplicaPlacement {
+    /// Whether this replica is a voting member of its shard group.
+    pub fn is_voter(&self) -> bool {
+        self.replica_index < self.voter_count
+    }
 }
 
 impl Default for ClusterConfig {
@@ -36,6 +60,7 @@ impl Default for ClusterConfig {
             node_count: 1,
             shard_count: 1,
             peers: Vec::new(),
+            replica: None,
         }
     }
 }
@@ -51,6 +76,7 @@ impl ClusterConfig {
             node_count,
             shard_count,
             peers,
+            replica: None,
         }
     }
 
@@ -69,6 +95,21 @@ impl ClusterConfig {
             node_count,
             shard_count: shard_count.max(1),
             peers,
+            replica: None,
+        }
+    }
+
+    /// Build a raft replica-mode config: this pod is replica `replica_index` of
+    /// shard group `shard_index`. `peers` is indexed by replica id.
+    pub fn replicated(shard_count: u32, placement: ReplicaPlacement, peers: Vec<String>) -> Self {
+        let shard_count = shard_count.max(1);
+        let replicas = placement.replicas_per_shard.max(1);
+        Self {
+            node_id: (placement.replica_index * shard_count + placement.shard_index) as usize,
+            node_count: (shard_count * replicas) as usize,
+            shard_count,
+            peers,
+            replica: Some(placement),
         }
     }
 
@@ -77,18 +118,29 @@ impl ClusterConfig {
         crc32fast::hash(key.as_bytes()) % self.shard_count
     }
 
-    /// Node that owns a shard: `shard % node_count`.
+    /// Node that owns a shard: `shard % node_count`. In replica mode this is
+    /// the ordinal of the shard's replica 0 (`ordinal = replica * S + shard`).
     pub fn owner_of_shard(&self, shard: u32) -> usize {
+        if self.replica.is_some() {
+            return (shard % self.shard_count) as usize;
+        }
         (shard % self.node_count as u32) as usize
     }
 
-    /// Whether this node owns `key`.
+    /// Whether this node owns `key` (in replica mode: whether its shard group
+    /// replicates `key`).
     pub fn owns(&self, key: &str) -> bool {
-        self.owner_of_shard(self.shard_for(key)) == self.node_id
+        match self.replica {
+            Some(p) => self.shard_for(key) == p.shard_index,
+            None => self.owner_of_shard(self.shard_for(key)) == self.node_id,
+        }
     }
 
     /// Shard ids this node owns.
     pub fn owned_shards(&self) -> Vec<u32> {
+        if let Some(p) = self.replica {
+            return vec![p.shard_index];
+        }
         (0..self.shard_count)
             .filter(|s| self.owner_of_shard(*s) == self.node_id)
             .collect()
@@ -101,13 +153,18 @@ impl ClusterConfig {
             shard_count: self.shard_count,
             owned_shards: self.owned_shards().len(),
             peers: self.peers.clone(),
-            // Phase A has no consensus: every node is its own (single-shard-group) leader.
-            mode: if self.node_count > 1 {
+            mode: if self.replica.is_some() {
+                "raft"
+            } else if self.node_count > 1 {
                 "sharded"
             } else {
                 "single"
             }
             .to_string(),
+            shard_index: self.replica.map(|p| p.shard_index),
+            replica_index: self.replica.map(|p| p.replica_index),
+            replicas_per_shard: self.replica.map_or(1, |p| p.replicas_per_shard),
+            voter_count: self.replica.map_or(1, |p| p.voter_count),
         }
     }
 }
@@ -120,8 +177,16 @@ pub struct ClusterState {
     pub shard_count: u32,
     pub owned_shards: usize,
     pub peers: Vec<String>,
-    /// `single` or `sharded` (phase A). `raft` arrives with phase C.
+    /// `single`, `sharded` (phase A, no replication) or `raft` (replicated
+    /// shard groups).
     pub mode: String,
+    /// This pod's shard group (raft mode only).
+    pub shard_index: Option<u32>,
+    /// This pod's raft id inside its shard group (raft mode only).
+    pub replica_index: Option<u32>,
+    pub replicas_per_shard: u32,
+    /// Voting replicas per shard; replicas beyond it are learners.
+    pub voter_count: u32,
 }
 
 /// Shared cluster handle in [`crate::http::AppState`].
@@ -169,5 +234,41 @@ mod tests {
         assert_eq!(c.node_id, 2);
         assert_eq!(c.node_count, 3);
         assert_eq!(c.shard_count, 1);
+    }
+
+    #[test]
+    fn replicated_pod_owns_only_its_shard_group() {
+        // S=2, R=3: ordinal 5 = replica 2 of shard 1.
+        let place = |shard, replica| ReplicaPlacement {
+            shard_index: shard,
+            replica_index: replica,
+            replicas_per_shard: 3,
+            voter_count: 2,
+        };
+        let c = ClusterConfig::replicated(2, place(1, 2), vec![]);
+        assert_eq!(c.node_id, 5);
+        assert_eq!(c.node_count, 6);
+        assert_eq!(c.owned_shards(), vec![1]);
+        assert!(
+            !c.replica.unwrap().is_voter(),
+            "replica 2 >= V=2 is a learner"
+        );
+        assert_eq!(c.owner_of_shard(1), 1, "replica 0 of shard 1 is ordinal 1");
+        // Every replica of a shard group owns the same keys; groups are disjoint.
+        for k in ["a", "b", "user:1", "result:job-42", "x"] {
+            let groups: Vec<bool> = (0..2)
+                .map(|s| ClusterConfig::replicated(2, place(s, 0), vec![]).owns(k))
+                .collect();
+            assert_eq!(groups.iter().filter(|&&o| o).count(), 1, "key {k}");
+            let s = c.shard_for(k);
+            for r in 0..3 {
+                assert!(ClusterConfig::replicated(2, place(s, r), vec![]).owns(k));
+            }
+        }
+        let st = c.snapshot();
+        assert_eq!(st.mode, "raft");
+        assert_eq!(st.shard_index, Some(1));
+        assert_eq!(st.replica_index, Some(2));
+        assert_eq!(st.voter_count, 2);
     }
 }

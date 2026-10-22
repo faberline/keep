@@ -26,8 +26,8 @@ use std::sync::Arc;
 use anyhow::Result;
 use axum::Router;
 use raft_runtime::{
-    FsyncPolicy, HostConfig, Index, Membership, NodeId, RaftHost, RaftStateMachine, RaftStore,
-    SnapshotPolicy,
+    FsyncPolicy, GroupId, HostConfig, Index, Membership, NodeId, RaftHost, RaftStateMachine,
+    RaftStore, SnapshotPolicy,
 };
 use serde::{Deserialize, Serialize};
 
@@ -132,25 +132,22 @@ pub struct ShardHosts {
 }
 
 impl ShardHosts {
-    /// Spawn one host per `cluster.owned_shards()` shard, persisting each group's
-    /// hard state under `{data_dir}/raft/shard-{id}`. `replicas_per_shard <= 1`
-    /// runs each shard as a sole-voter single-node group (read-your-write, no
-    /// peers); `> 1` derives the shard's replica membership + `/shard/{id}` peer
-    /// URLs for the shared h2c transport.
+    /// Spawn the shard hosts this pod runs, persisting each group's hard state
+    /// under `{data_dir}/raft/shard-{id}`.
+    ///
+    /// - Replica mode (`cluster.replica` set): **one** host, for this pod's own
+    ///   shard group. Its raft id is the pod's replica index, voters are
+    ///   `0..voter_count` and the rest learners (raft-runtime's `ClusterDims`
+    ///   model); peers are the group's other replicas with a `/shard/{id}`
+    ///   suffix for the shared h2c transport.
+    /// - Otherwise: a sole-voter single-node group per owned shard
+    ///   (read-your-write, no peers).
     pub async fn new(
         cluster: ClusterConfig,
         engine: Arc<KvEngine>,
         data_dir: &Path,
-        replicas_per_shard: u32,
     ) -> Result<Self> {
-        Self::with_snapshot_every(
-            cluster,
-            engine,
-            data_dir,
-            replicas_per_shard,
-            SNAPSHOT_EVERY,
-        )
-        .await
+        Self::with_snapshot_every(cluster, engine, data_dir, SNAPSHOT_EVERY).await
     }
 
     /// As [`new`](Self::new), with the snapshot/compaction cadence overridden
@@ -160,32 +157,53 @@ impl ShardHosts {
         cluster: ClusterConfig,
         engine: Arc<KvEngine>,
         data_dir: &Path,
-        replicas_per_shard: u32,
         snapshot_every: u64,
     ) -> Result<Self> {
         let mut hosts = HashMap::new();
-        for shard in hosted_shards(&cluster, replicas_per_shard) {
-            let (node_id, membership, peers) = shard_topology(&cluster, shard, replicas_per_shard);
+        for shard in cluster.owned_shards() {
+            let topo = shard_topology(&cluster, shard)?;
             let dir = data_dir.join("raft").join(format!("shard-{shard}"));
             std::fs::create_dir_all(&dir)?;
-            let store = RaftStore::open(
-                dir.to_str()
-                    .ok_or_else(|| anyhow::anyhow!("raft data dir is not valid UTF-8"))?,
-                node_id,
-                FsyncPolicy::Always,
-            )?;
+            let dir = dir
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("raft data dir is not valid UTF-8"))?;
             let sm = KvStateMachine::new(engine.clone(), cluster.clone(), shard);
-            let host = RaftHost::spawn(
-                node_id,
-                membership,
-                peers,
-                store,
-                sm as Arc<dyn RaftStateMachine>,
-                HostConfig {
-                    snapshot: SnapshotPolicy::EveryEntries(snapshot_every),
-                    ..Default::default()
-                },
-            );
+            let cfg = HostConfig {
+                snapshot: SnapshotPolicy::EveryEntries(snapshot_every),
+                ..Default::default()
+            };
+            let host = match topo.group {
+                // Named group: peers reject RPCs addressed to another shard's
+                // group, so a misrouted `/shard/{id}` URL can never cross-vote.
+                Some(group) => {
+                    let store = RaftStore::open_group(
+                        dir,
+                        topo.node_id,
+                        group.clone(),
+                        FsyncPolicy::Always,
+                    )?;
+                    RaftHost::spawn_group(
+                        topo.node_id,
+                        group,
+                        topo.membership,
+                        topo.peers,
+                        store,
+                        sm as Arc<dyn RaftStateMachine>,
+                        cfg,
+                    )
+                }
+                None => {
+                    let store = RaftStore::open(dir, topo.node_id, FsyncPolicy::Always)?;
+                    RaftHost::spawn(
+                        topo.node_id,
+                        topo.membership,
+                        topo.peers,
+                        store,
+                        sm as Arc<dyn RaftStateMachine>,
+                        cfg,
+                    )
+                }
+            };
             hosts.insert(shard, Arc::new(host));
         }
         Ok(Self {
@@ -232,60 +250,73 @@ impl ShardHosts {
     }
 }
 
-fn hosted_shards(cluster: &ClusterConfig, replicas_per_shard: u32) -> Vec<u32> {
-    if replicas_per_shard <= 1 {
-        return cluster.owned_shards();
-    }
-    let node_count = cluster.node_count.max(1) as u32;
-    let replicas = replicas_per_shard.min(node_count);
-    (0..cluster.shard_count)
-        .filter(|shard| {
-            let owner = cluster.owner_of_shard(*shard) as u32;
-            (0..replicas).any(|r| ((owner + r) % node_count) as usize == cluster.node_id)
-        })
-        .collect()
+/// A shard group's raft identity on this pod.
+struct ShardTopology {
+    node_id: NodeId,
+    membership: Membership,
+    peers: HashMap<NodeId, String>,
+    /// Named raft group (replica mode); `None` keeps the legacy single-node
+    /// store layout.
+    group: Option<GroupId>,
+}
+
+/// Raft group id for a shard's replica group.
+pub fn shard_group_id(shard: u32) -> GroupId {
+    GroupId(format!("keep-shard-{shard}"))
 }
 
 /// Derive a shard group's raft node id, membership, and peer URLs.
 ///
-/// Single-node (`replicas_per_shard <= 1`): a sole voter (`node 0`, no peers) —
-/// the group commits locally (read-your-write with no transport). HA (`> 1`):
-/// shard `S`'s replicas are the nodes `(owner + r) % node_count` for
-/// `r in 0..replicas`; this node's raft id is its replica index `r`, every
-/// replica is a voter, and each peer URL is the peer node's base address with a
-/// `/shard/{S}` suffix so it matches the nested peer router.
-fn shard_topology(
-    cluster: &ClusterConfig,
-    shard: u32,
-    replicas_per_shard: u32,
-) -> (NodeId, Membership, HashMap<NodeId, String>) {
-    if replicas_per_shard <= 1 {
-        return (
-            0,
-            Membership {
+/// Without a replica placement: a sole voter (`node 0`, no peers) — the group
+/// commits locally. With one: this pod is replica `replica_index` of its shard
+/// group, voters are `0..voter_count`, learners `voter_count..replicas`, and
+/// `cluster.peers[r]` (indexed by replica id) carries each peer's base address,
+/// suffixed with `/shard/{shard}` to match the nested peer router.
+fn shard_topology(cluster: &ClusterConfig, shard: u32) -> Result<ShardTopology> {
+    let Some(place) = cluster.replica else {
+        return Ok(ShardTopology {
+            node_id: 0,
+            membership: Membership {
                 voters: vec![0],
                 learners: vec![],
             },
-            HashMap::new(),
-        );
-    }
-    let node_count = cluster.node_count.max(1) as u32;
-    let replicas = replicas_per_shard.min(node_count);
-    let owner = cluster.owner_of_shard(shard) as u32;
-    let mut node_id: NodeId = 0;
+            peers: HashMap::new(),
+            group: None,
+        });
+    };
+    anyhow::ensure!(
+        shard == place.shard_index,
+        "pod replicates shard {} but was asked to host shard {shard}",
+        place.shard_index
+    );
+    let replicas = place.replicas_per_shard.max(1);
+    anyhow::ensure!(
+        (1..=replicas).contains(&place.voter_count),
+        "voter_count {} must be in 1..={replicas}",
+        place.voter_count
+    );
     let mut peers = HashMap::new();
     for r in 0..replicas {
-        let node = ((owner + r) % node_count) as usize;
-        let rid = r as NodeId;
-        if node == cluster.node_id {
-            node_id = rid;
-        } else if let Some(base) = cluster.peers.get(node) {
-            peers.insert(rid, format!("{}/shard/{shard}", base.trim_end_matches('/')));
+        if r == place.replica_index {
+            continue;
         }
+        let base = cluster
+            .peers
+            .get(r as usize)
+            .filter(|b| !b.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("no peer URL for replica {r} of shard {shard}"))?;
+        peers.insert(
+            r as NodeId,
+            format!("{}/shard/{shard}", base.trim_end_matches('/')),
+        );
     }
-    let membership = Membership {
-        voters: (0..replicas as NodeId).collect(),
-        learners: vec![],
-    };
-    (node_id, membership, peers)
+    Ok(ShardTopology {
+        node_id: place.replica_index as NodeId,
+        membership: Membership {
+            voters: (0..place.voter_count as NodeId).collect(),
+            learners: (place.voter_count as NodeId..replicas as NodeId).collect(),
+        },
+        peers,
+        group: Some(shard_group_id(shard)),
+    })
 }

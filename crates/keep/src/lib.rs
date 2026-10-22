@@ -15,6 +15,7 @@
 
 pub use keep_core::{
     cluster, error, metrics, tls, types, ClusterConfig, ClusterState, KvError, KvKey, KvValue,
+    ReplicaPlacement,
 };
 #[cfg(feature = "raft")]
 pub use keep_engine::raft;
