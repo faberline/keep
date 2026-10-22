@@ -52,17 +52,27 @@ issue = ["cli-std/online", "rustls-provider"]
 report-issue = ["issue"]
 # operator — Kubernetes KeepSpec CRD + ManagedService reconcile controller.
 operator = ["dep:keep-operator", "rustls-provider"]
+# otel — export request spans to `--otlp-endpoint` / KEEP_OTLP_ENDPOINT through the
+# shared service-http OTLP path. Without it an endpoint is logged and ignored
+# (structured JSONL stdout only).
+otel = ["service-http/otlp"]
 # Private: link rustls + install its process-level crypto provider at startup.
 rustls-provider = ["keep-core/rustls-provider"]
 
 [dev-dependencies]
+chrono = "0.4"
 claim-token.workspace = true
 criterion.workspace = true
 futures.workspace = true
+# The CRD generator, so the committed-CRD drift gate runs without `--features operator`.
+keep-operator.workspace = true
 kube.workspace = true
 redis.workspace = true
+regex = "1"
 reqwest.workspace = true
 service-k8s.workspace = true
+# The checked-in axiom.service.log.v1 JSON Schema the stdout test validates against.
+service-observability.workspace = true
 tempfile.workspace = true
 tokio-test.workspace = true
 tower.workspace = true

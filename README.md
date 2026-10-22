@@ -372,6 +372,24 @@ Config: `--host/--port/--shards/--data-dir/--disable-persistence/--fsync-ms/
 --snapshot-secs/--snapshot-ops/--body-limit/--grace-secs`, each with a `KEEP_*`
 env fallback. `RUST_LOG` overrides `--log-level`.
 
+### Operational telemetry
+
+- `--log-format json` / `KEEP_LOG_FORMAT=json` writes one
+  `axiom.service.log.v1` record per stdout line (schema:
+  faberline/core `service_observability::service_log_schema_v1()`). Request
+  records carry the caller's W3C `traceparent` trace id, or a fresh one when it
+  is missing or invalid. The default `pretty` format is for local use.
+- `--otlp-endpoint` / `KEEP_OTLP_ENDPOINT` exports request spans over OTLP only
+  in a build with `--features otel`; the default build logs that the endpoint is
+  ignored and keeps JSONL stdout as the only signal.
+- Both Kubernetes paths (operator render and `k8s/base`) set
+  `KEEP_LOG_FORMAT=json` and `KEEP_BODY_LIMIT` through the keep ConfigMap.
+- Collection is deployment-owned: point the cluster's collector (Sift) at pod
+  stdout. keep has no Sift dependency, endpoint, or credential. Gate:
+  `cargo test -p keep --test structured_stdout_traceparent --test
+  operator_telemetry` — see
+  [sift-data-collection.md](external-contracts/operational-telemetry/observability/sift-data-collection.md).
+
 ## Kubernetes
 
 `StatefulSet` (each pod owns a PVC-backed disk tier) + headless & ClusterIP

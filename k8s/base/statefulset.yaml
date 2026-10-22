@@ -88,6 +88,11 @@ spec:
                 configMapKeyRef:
                   name: keep-config
                   key: KEEP_LOG_FORMAT
+            - name: KEEP_BODY_LIMIT
+              valueFrom:
+                configMapKeyRef:
+                  name: keep-config
+                  key: KEEP_BODY_LIMIT
             - name: KEEP_WORKER_THREADS
               valueFrom:
                 configMapKeyRef:

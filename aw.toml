@@ -61,6 +61,24 @@ assertions = [
     "The security evidence runs inside vat so generated reports and transient files do not mutate the host checkout.",
 ]
 
+[[aw.ec.generated.cases]]
+id = "keep-operational-telemetry-sift-collection"
+capability_id = "operational-telemetry"
+claim_id = "jsonl-stdout-collector-contract"
+contract_id = "keep-axiom-service-log-v1"
+category = "observability"
+td_ref = "external-contracts/operational-telemetry/observability/sift-data-collection.md#keep-operational-telemetry-sift-collection"
+test_path = "crates/keep/tests/observability_keep_operational_telemetry_sift_collection.rs"
+command = "cargo test --locked -p keep --test structured_stdout_traceparent --test operator_telemetry"
+required_for_production = false
+assertions = [
+    "A real keep process with --log-format json emits at least one stdout record, and every record validates against core's axiom.service.log.v1 schema with service.name=keep.",
+    "The request record for a call carrying a W3C traceparent reports that trace id and parent span; a call with an invalid or missing traceparent gets a fresh, distinct, valid trace id.",
+    "The schema validator rejects malformed records (missing service, bad severity, bad timestamp, bad trace id, unknown or nested fields, empty event).",
+    "Operator-rendered and k8s/base pods both start with KEEP_LOG_FORMAT=json and KEEP_BODY_LIMIT projected from the keep ConfigMap, and neither carries Sift collector configuration.",
+    "The wrapper fails closed when the selected tests report zero passes.",
+]
+
 [[aw.ec.generated.tool_manifests]]
 id = "keep-guard-security"
 tool = "guard"
