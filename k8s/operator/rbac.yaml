@@ -40,6 +40,10 @@ rules:
   - apiGroups: ["policy"]
     resources: ["poddisruptionbudgets"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # The optional scheduled backup runner (`spec.backup`).
+  - apiGroups: ["batch"]
+    resources: ["cronjobs"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # Leader-election Lease (HA: only the holder reconciles).
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]

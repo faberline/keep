@@ -9,7 +9,7 @@
 #   4. assert the API server kept `spec.backup` (a field missing from the CRD
 #      schema is pruned silently) and the operator rendered the CronJob;
 #   5. write a key, trigger the CronJob by hand, and require the job to finish
-#      with a non-empty snapshot.
+#      on pod 0's node with a snapshot that is larger than an empty one.
 #
 # Usage: scripts/e2e/kind-backup.sh
 #   KIND_CLUSTER   cluster name (default keep-backup-e2e; created if missing)
@@ -115,7 +115,7 @@ pf=$!
 for _ in $(seq 1 50); do curl -sf http://127.0.0.1:17117/healthz >/dev/null && break; sleep 0.2; done
 curl -sf -XPUT http://127.0.0.1:17117/kv/e2e-backup -H 'content-type: application/json' \
   -d '{"value":"persisted-before-backup"}' >/dev/null || { kill $pf; fail "PUT failed"; }
-kill $pf
+kill $pf; wait $pf 2>/dev/null || true
 # The WAL is fsynced on an interval; give it a beat before the job reads it.
 sleep 2
 
@@ -127,7 +127,9 @@ job="$NAME-backup-manual-$(date +%s)"
 out=$("${KC[@]}" logs -n "$NS" job/"$job")
 printf '%s\n' "$out"
 bytes=$(printf '%s\n' "$out" | sed -nE 's/.*"bytes": *([0-9]+).*/\1/p' | head -1)
-[[ -n $bytes && $bytes -gt 2 ]] || fail "backup wrote no snapshot bytes"
+# An empty snapshot is `{"version":1,"values":[]}` (25 bytes); the key written
+# above adds ~50. Anything at or below 25 means the job read an empty /data.
+[[ -n $bytes && $bytes -gt 25 ]] || fail "backup snapshot is empty (${bytes:-?} bytes): /data not mounted?"
 node_job=$("${KC[@]}" get pod -n "$NS" -l job-name="$job" -o jsonpath='{.items[0].spec.nodeName}')
 node_store=$("${KC[@]}" get pod "$NAME-0" -n "$NS" -o jsonpath='{.spec.nodeName}')
 [[ $node_job == "$node_store" ]] || fail "backup job ran on $node_job, store pod on $node_store"
