@@ -918,7 +918,13 @@ pub async fn info(State(st): State<AppState>) -> Json<InfoResponse> {
     responses((status = 200, description = "Cluster topology", body = ClusterState))
 )]
 pub async fn cluster(State(st): State<AppState>) -> Json<ClusterState> {
-    Json(st.cluster.snapshot())
+    #[allow(unused_mut)]
+    let mut state = st.cluster.snapshot();
+    #[cfg(feature = "raft")]
+    if let Some(hosts) = &st.raft_hosts {
+        state.shards = hosts.shard_states().await;
+    }
+    Json(state)
 }
 
 /// The generated OpenAPI document.

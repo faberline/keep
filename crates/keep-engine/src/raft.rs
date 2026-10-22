@@ -32,17 +32,19 @@ use anyhow::Result;
 use axum::Router;
 use raft_runtime::{
     AdmissionPermit, FsyncPolicy, GroupId, HostConfig, HostShutdownReport, Index, Membership,
-    NodeId, OutcomeWindow, RaftHost, RaftStateMachine, RaftStore, SnapshotPolicy,
+    NodeId, OutcomeWindow, RaftHost, RaftStateMachine, RaftStatus, RaftStore, SnapshotPolicy,
 };
+pub use raft_runtime::{ReadConsistency, READ_CONSISTENCY_HEADER};
 use serde::{Deserialize, Serialize};
 use server_lifecycle::ShutdownDeadline;
 use tokio::task::JoinHandle;
 
 use crate::apply::{execute, ApplyOutcome, ApplyResult};
-use crate::cluster::ClusterConfig;
+use crate::cluster::{ClusterConfig, ShardRaftState};
 use crate::engine::{EvictionPolicy, KvEngine};
 use crate::error::KvError;
 use crate::persistence::format::WalOp;
+use crate::raft_read::{track_freshness, ReadFence};
 use crate::types::KvValue;
 
 /// How many committed entries a shard's host applies before it captures a
@@ -354,19 +356,24 @@ impl RaftStateMachine for KvStateMachine {
 struct ShardGroup {
     host: Arc<RaftHost>,
     sm: Arc<KvStateMachine>,
+    /// Read barrier + freshness proof for reads served by this replica.
+    fence: Arc<ReadFence>,
+    /// Whether the group has other replicas (a sole voter is always current).
+    replicated: bool,
 }
 
 /// One [`RaftHost`] per hosted shard; a write routes to its key's shard host.
 pub struct ShardHosts {
     cluster: ClusterConfig,
     groups: HashMap<u32, ShardGroup>,
-    barrier_tasks: Vec<JoinHandle<()>>,
+    /// Leader barrier and freshness tasks; aborted on shutdown.
+    background: Vec<JoinHandle<()>>,
     pub engine: Arc<KvEngine>,
 }
 
 impl Drop for ShardHosts {
     fn drop(&mut self) {
-        for task in &self.barrier_tasks {
+        for task in &self.background {
             task.abort();
         }
     }
@@ -414,7 +421,7 @@ impl ShardHosts {
             0
         };
         let mut groups = HashMap::new();
-        let mut barrier_tasks = Vec::new();
+        let mut background = Vec::new();
         for shard in cluster.owned_shards() {
             let topo = shard_topology(&cluster, shard)?;
             let dir = data_dir.join("raft").join(format!("shard-{shard}"));
@@ -433,6 +440,7 @@ impl ShardHosts {
                 ..Default::default()
             };
             let dyn_sm = sm.clone() as Arc<dyn RaftStateMachine>;
+            let peers = topo.peers.clone();
             let host = match topo.group {
                 // Named group: peers reject RPCs addressed to another shard's
                 // group, so a misrouted `/shard/{id}` URL can never cross-vote.
@@ -466,13 +474,30 @@ impl ShardHosts {
                 }
             };
             let host = Arc::new(host);
-            barrier_tasks.push(tokio::spawn(barrier_on_election(host.clone(), shard)));
-            groups.insert(shard, ShardGroup { host, sm });
+            background.push(tokio::spawn(barrier_on_election(host.clone(), shard)));
+            let fence = Arc::new(ReadFence::default());
+            let replicated = !peers.is_empty();
+            if replicated {
+                background.push(tokio::spawn(track_freshness(
+                    host.clone(),
+                    peers,
+                    fence.clone(),
+                )));
+            }
+            groups.insert(
+                shard,
+                ShardGroup {
+                    host,
+                    sm,
+                    fence,
+                    replicated,
+                },
+            );
         }
         Ok(Self {
             cluster,
             groups,
-            barrier_tasks,
+            background,
             engine,
         })
     }
@@ -482,7 +507,7 @@ impl ShardHosts {
     /// and in-flight peer RPCs drain. All hosts share one `budget`; a host that
     /// runs out of it reports the phase it stopped in.
     pub async fn shutdown_within(&self, budget: Duration) -> Vec<(u32, HostShutdownReport)> {
-        for task in &self.barrier_tasks {
+        for task in &self.background {
             task.abort();
         }
         let deadline = ShutdownDeadline::from_now(budget, Duration::ZERO)
@@ -524,6 +549,81 @@ impl ShardHosts {
         Ok(index)
     }
 
+    /// Whether any hosted group has other replicas, i.e. whether reads need a
+    /// consistency proof at all.
+    pub fn replicated(&self) -> bool {
+        self.groups.values().any(|g| g.replicated)
+    }
+
+    /// Linearizable-read fence across every replicated group this node hosts:
+    /// resolves once a barrier that started after this call has been applied
+    /// locally (see [`crate::raft_read`]). Errors when a group has no leader
+    /// able to commit.
+    pub async fn read_fence(&self) -> Result<()> {
+        for group in self.groups.values().filter(|g| g.replicated) {
+            group
+                .fence
+                .run(|| async {
+                    let index = group.host.propose(barrier_command()).await?;
+                    group.sm.claim(index);
+                    Ok(index)
+                })
+                .await?;
+        }
+        Ok(())
+    }
+
+    /// Worst staleness bound across replicated groups; `None` while any of
+    /// them has no proof of freshness yet.
+    pub fn staleness(&self) -> Option<Duration> {
+        self.groups
+            .values()
+            .filter(|g| g.replicated)
+            .map(|g| g.fence.staleness())
+            .try_fold(Duration::ZERO, |worst, s| s.map(|s| worst.max(s)))
+    }
+
+    /// Whether this node leads every group it hosts.
+    pub async fn leads_all(&self) -> bool {
+        for group in self.groups.values() {
+            if !group.host.is_leader().await {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Raft state of each hosted group (served in `/cluster`'s `shards`).
+    pub async fn shard_states(&self) -> Vec<ShardRaftState> {
+        let mut out = Vec::with_capacity(self.groups.len());
+        for (shard, group) in &self.groups {
+            let Some(st) = local_status(&group.host).await else {
+                continue;
+            };
+            out.push(ShardRaftState {
+                shard: *shard,
+                replica_id: st.id,
+                role: st.role.to_ascii_lowercase(),
+                term: st.term,
+                leader: st.leader,
+                commit_index: st.commit_index,
+                applied_index: st.applied_index,
+                snapshot_index: st.snapshot_index,
+                voters: st.committed_voters,
+                learners: st.learners,
+                // A leader's bound comes from its fences like anyone's: being
+                // leader is no proof it has not been deposed.
+                staleness_ms: if group.replicated {
+                    group.fence.staleness().map(|d| d.as_millis() as u64)
+                } else {
+                    Some(0)
+                },
+            });
+        }
+        out.sort_by_key(|s| s.shard);
+        out
+    }
+
     /// Merge every shard host's peer router, each nested under `/shard/{id}`, so
     /// the Vote/Append/InstallSnapshot + leader-redirect RPCs ride the service's
     /// h2c serve port. Peer base URLs carry the matching `/shard/{id}` prefix.
@@ -558,6 +658,18 @@ impl ShardHosts {
     fn group_for(&self, key: &str) -> Option<&ShardGroup> {
         self.groups.get(&self.cluster.shard_for(key))
     }
+}
+
+/// A host's own `/raftz` view, served in-process (raft-runtime keeps its
+/// status accessor crate-private).
+async fn local_status(host: &RaftHost) -> Option<RaftStatus> {
+    use tower::ServiceExt;
+    let req = axum::http::Request::get("/raftz")
+        .body(axum::body::Body::empty())
+        .ok()?;
+    let resp = host.router().oneshot(req).await.ok()?;
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.ok()?;
+    serde_json::from_slice(&bytes).ok()
 }
 
 fn barrier_command() -> Vec<u8> {

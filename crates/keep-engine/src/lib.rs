@@ -13,5 +13,7 @@ pub mod engine;
 pub mod persistence;
 #[cfg(feature = "raft")]
 pub mod raft;
+#[cfg(feature = "raft")]
+pub mod raft_read;
 
 pub use engine::{EvictionPolicy, KvEngine};

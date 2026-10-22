@@ -234,17 +234,27 @@ impl Cluster {
     }
 
     /// Replica `i`'s local view of `key` (`None` = 404).
-    async fn get(&self, i: usize, key: &str) -> Option<Value> {
+    /// GET `key` on replica `i` at read-consistency `level`.
+    async fn read(&self, i: usize, key: &str, level: &str) -> (reqwest::StatusCode, Value) {
         let resp = self
             .http
             .get(self.url(i, &format!("/kv/{key}")))
+            .header("x-read-consistency", level)
             .send()
             .await
-            .ok()?;
-        if !resp.status().is_success() {
-            return None;
+            .unwrap();
+        let status = resp.status();
+        (status, resp.json().await.unwrap_or(Value::Null))
+    }
+
+    /// Linearizable read of `key` through replica `i` (`None` = 404).
+    async fn get(&self, i: usize, key: &str) -> Option<Value> {
+        let (status, body) = self.read(i, key, "leader").await;
+        match status {
+            reqwest::StatusCode::OK => Some(body["value"].clone()),
+            reqwest::StatusCode::NOT_FOUND => None,
+            other => panic!("read {key} on replica {i}: {other} {body}"),
         }
-        resp.json::<Value>().await.ok().map(|v| v["value"].clone())
     }
 
     /// Wait until replica `i` has applied everything replica `leader` has
@@ -275,11 +285,15 @@ impl Cluster {
         }
     }
 
+    /// Replica `i` serves every `{prefix}{k}`. The first read fences (so the
+    /// replica is current); the rest read its local state directly.
     async fn assert_has_many(&self, i: usize, prefix: &str, n: usize) {
-        for k in 0..n {
+        assert_eq!(self.get(i, &format!("{prefix}0")).await, Some(json!(0)));
+        for k in 1..n {
+            let (status, body) = self.read(i, &format!("{prefix}{k}"), "any").await;
             assert_eq!(
-                self.get(i, &format!("{prefix}{k}")).await,
-                Some(json!(k)),
+                (status, &body["value"]),
+                (reqwest::StatusCode::OK, &json!(k)),
                 "replica {i} lost committed key {prefix}{k}"
             );
         }
@@ -436,6 +450,14 @@ async fn stopped_leader_is_deposed_and_converges() {
         reqwest::StatusCode::OK
     );
     c.signal(leader, "CONT");
+    // The resumed node still believes it leads term `term`; a default read
+    // through it must not return the value it held before it was deposed.
+    let (status, body) = c.read(leader, "x", "leader").await;
+    match status {
+        reqwest::StatusCode::OK => assert_eq!(body["value"], json!("new"), "stale read"),
+        reqwest::StatusCode::SERVICE_UNAVAILABLE => {}
+        other => panic!("unexpected {other}: {body}"),
+    }
 
     let deadline = Instant::now() + WAIT;
     loop {
@@ -460,6 +482,46 @@ async fn stopped_leader_is_deposed_and_converges() {
     );
     c.caught_up(next, leader).await;
     assert_eq!(c.get(next, "y").await, Some(json!(1)));
+}
+
+/// Without a quorum a default read fails closed instead of serving state the
+/// node cannot prove current; `any` still answers from the local replica.
+#[tokio::test(flavor = "multi_thread")]
+async fn reads_fail_closed_without_quorum() {
+    let _serial = SERIAL.lock().await;
+    let c = Cluster::start("quorum", 1024);
+    let (leader, _) = c.leader(&[0, 1, 2], 0).await;
+    let followers: Vec<usize> = (0..REPLICAS).filter(|&i| i != leader).collect();
+    assert_eq!(
+        c.put(leader, "q", json!({"value": 1})).await,
+        reqwest::StatusCode::OK
+    );
+
+    for &f in &followers {
+        c.signal(f, "STOP");
+    }
+    let (status, body) = c.read(leader, "q", "leader").await;
+    assert_eq!(status, reqwest::StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(body["code"], json!("read_fence_failed"));
+    let (status, body) = c.read(leader, "q", "any").await;
+    assert_eq!(status, reqwest::StatusCode::OK);
+    assert_eq!(body["value"], json!(1));
+    for &f in &followers {
+        c.signal(f, "CONT");
+    }
+
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let (status, body) = c.read(leader, "q", "leader").await;
+        if status == reqwest::StatusCode::OK {
+            assert_eq!(body["value"], json!(1));
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "reads never recovered: {status} {body}"
+        );
+    }
 }
 
 /// SIGTERM on the leader hands leadership to a caught-up voter before the

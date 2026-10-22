@@ -5,6 +5,7 @@
 //! is a thin, typed adapter onto [`crate::engine::KvEngine`].
 
 pub mod auth;
+pub mod consistency;
 pub mod error;
 pub mod handlers;
 pub mod hash;

@@ -165,6 +165,7 @@ impl ClusterConfig {
             replica_index: self.replica.map(|p| p.replica_index),
             replicas_per_shard: self.replica.map_or(1, |p| p.replicas_per_shard),
             voter_count: self.replica.map_or(1, |p| p.voter_count),
+            shards: Vec::new(),
         }
     }
 }
@@ -187,6 +188,30 @@ pub struct ClusterState {
     pub replicas_per_shard: u32,
     /// Voting replicas per shard; replicas beyond it are learners.
     pub voter_count: u32,
+    /// Live raft state of each shard group this pod hosts (raft mode only).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub shards: Vec<ShardRaftState>,
+}
+
+/// One hosted shard group's raft state, as this replica sees it.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ShardRaftState {
+    pub shard: u32,
+    /// This replica's raft id in the group.
+    pub replica_id: u64,
+    /// `leader`, `follower`, `candidate` or `learner`.
+    pub role: String,
+    pub term: u64,
+    /// Raft id of the leader this replica follows, if known.
+    pub leader: Option<u64>,
+    pub commit_index: u64,
+    pub applied_index: u64,
+    pub snapshot_index: u64,
+    pub voters: Vec<u64>,
+    pub learners: Vec<u64>,
+    /// Upper bound on how stale this replica's reads are, in ms; `None`
+    /// before the replica has proved it is caught up.
+    pub staleness_ms: Option<u64>,
 }
 
 /// Shared cluster handle in [`crate::http::AppState`].

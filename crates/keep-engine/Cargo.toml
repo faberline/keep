@@ -13,6 +13,8 @@ keep-core.workspace = true
 # faberline/core shared crates
 raft-runtime = { workspace = true, optional = true }
 server-lifecycle = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+tower = { workspace = true, optional = true }
 service-backup.workspace = true
 
 # Runtime & storage
@@ -36,4 +38,4 @@ tempfile.workspace = true
 
 [features]
 default = []
-raft = ["dep:raft-runtime", "dep:server-lifecycle", "dep:axum", "keep-core/rustls-provider"]
+raft = ["dep:raft-runtime", "dep:server-lifecycle", "dep:axum", "dep:reqwest", "dep:tower", "keep-core/rustls-provider"]

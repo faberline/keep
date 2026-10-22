@@ -269,6 +269,79 @@ async fn replica_mode_http_answers_from_replicated_outcome() {
     stop_raft_http_cluster(dir, nodes).await;
 }
 
+/// Reads honor `x-read-consistency`: the default (`leader`) is linearizable on
+/// every replica — a follower sees a write the instant the leader acked it —
+/// while `bounded`/`any` answer locally and report their staleness bound.
+#[cfg(feature = "raft")]
+#[tokio::test]
+async fn replica_mode_reads_honor_consistency_level() {
+    let (dir, nodes) = raft_http_cluster("consistency").await;
+    let leader = await_raft_leader(&nodes, "any").await;
+    let follower = (leader + 1) % nodes.len();
+    let client = reqwest::Client::new();
+    let get = |node: usize, key: &str, level: Option<&str>| {
+        let mut req = client.get(format!("{}/kv/{key}", nodes[node].url));
+        if let Some(level) = level {
+            req = req.header("x-read-consistency", level);
+        }
+        async move {
+            let resp = req.send().await.unwrap();
+            let staleness = resp
+                .headers()
+                .get("x-keep-staleness-ms")
+                .map(|v| v.to_str().unwrap().parse::<u64>().unwrap());
+            let status = resp.status();
+            (status, staleness, resp.json::<Value>().await.unwrap())
+        }
+    };
+
+    // A follower's leader read waits for the barrier's commit to reach it on
+    // the next heartbeat, so keep the loop short.
+    for i in 0..8 {
+        let resp = client
+            .put(format!("{}/kv/rc", nodes[leader].url))
+            .json(&json!({"value": i}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        for level in [None, Some("unknown-level")] {
+            let (st, staleness, body) = get(follower, "rc", level).await;
+            assert_eq!(st, StatusCode::OK);
+            assert_eq!(
+                body["value"],
+                json!(i),
+                "stale {level:?} read on a follower"
+            );
+            assert_eq!(staleness, None, "leader reads report no staleness");
+        }
+    }
+
+    let (st, staleness, body) = get(follower, "rc", Some("any")).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(body["value"], json!(7));
+    assert!(staleness.is_some(), "a fenced follower knows its bound");
+    let (st, staleness, _) = get(follower, "rc", Some("bounded(60000)")).await;
+    assert_eq!(st, StatusCode::OK);
+    assert!(staleness.unwrap() <= 60_000);
+
+    let resp = client
+        .get(format!("{}/cluster", nodes[follower].url))
+        .send()
+        .await
+        .unwrap();
+    let cluster: Value = resp.json().await.unwrap();
+    let shard = &cluster["shards"][0];
+    assert_eq!(shard["shard"], json!(0));
+    assert_eq!(shard["replica_id"], json!(follower));
+    assert_eq!(shard["leader"], json!(leader));
+    assert_eq!(shard["role"], json!("follower"));
+    assert_eq!(shard["voters"], json!([0, 1, 2]));
+    assert!(shard["applied_index"].as_u64().unwrap() > 8);
+
+    stop_raft_http_cluster(dir, nodes).await;
+}
+
 /// A batch whose keys hash to different shard groups cannot commit atomically
 /// through one raft log, so replica mode refuses it instead of half-applying.
 #[cfg(feature = "raft")]
