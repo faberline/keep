@@ -1,32 +1,7 @@
-///! Persistence layer for the KV store
-///!
-///! Provides crash-safe durability using Write-Ahead Log (WAL) with periodic snapshots.
-///!
-///! ## Architecture
-///!
-///! - **WAL**: Append-only log recording all write operations
-///! - **Snapshots**: Periodic full engine state snapshots for faster recovery
-///! - **Batched Fsync**: 100ms flush intervals for optimal throughput
-///! - **Recovery**: Load snapshot + replay WAL delta
-///!
-///! ## Durability Guarantee
-///!
-///! All writes are logged to WAL before acknowledging to client. With 100ms batched
-///! fsync, the system can lose at most ~100ms of data on crash (acceptable for task backends).
-pub mod blob_store;
-pub mod format;
-pub mod handle;
-pub mod recovery;
-pub mod snapshot;
-pub mod wal;
-
-// Re-export key types for convenience
-pub use blob_store::{BlobStore, DiskBlob};
-pub use handle::PersistenceHandle;
+//! Persistence settings: the data directory, WAL, and snapshot options.
 
 use std::path::PathBuf;
 use std::time::Duration;
-use thiserror::Error;
 
 /// Persistence configuration
 #[derive(Debug, Clone)]
@@ -140,37 +115,3 @@ pub struct RecoveryStats {
     /// Total recovery duration
     pub recovery_duration: Duration,
 }
-
-/// Persistence errors
-#[derive(Error, Debug)]
-pub enum PersistenceError {
-    #[error("IO error: {0}")]
-    Io(#[from] std::io::Error),
-
-    #[error("Corrupted WAL entry at position {pos}: {reason}")]
-    CorruptedWal { pos: u64, reason: String },
-
-    #[error("Corrupted snapshot: {0}")]
-    CorruptedSnapshot(String),
-
-    #[error("Serialization error: {0}")]
-    Serialization(#[from] bincode::Error),
-
-    #[error("Checksum mismatch at position {pos}: expected {expected:x}, got {actual:x}")]
-    ChecksumMismatch {
-        pos: u64,
-        expected: u32,
-        actual: u32,
-    },
-
-    #[error("Unsupported version: {0}")]
-    UnsupportedVersion(u32),
-
-    #[error("Invalid magic number: expected {expected:?}, got {actual:?}")]
-    InvalidMagic { expected: Vec<u8>, actual: Vec<u8> },
-
-    #[error("Data directory error: {0}")]
-    DataDirectory(String),
-}
-
-pub type Result<T> = std::result::Result<T, PersistenceError>;

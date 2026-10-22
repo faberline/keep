@@ -10,7 +10,7 @@
 
 use std::time::Duration;
 
-use keep_core::types::{json_to_kv, kv_to_json, KvValue};
+use keep_shared_kernel::types::{json_to_kv, kv_to_json, KvValue};
 
 /// Errors from the HTTP KV client.
 #[derive(Debug, thiserror::Error)]

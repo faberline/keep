@@ -31,11 +31,11 @@ use raft_runtime::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::cluster::ClusterConfig;
-use crate::engine::KvEngine;
-use crate::persistence::format::WalOp;
-use crate::persistence::recovery::RecoveryManager;
-use crate::types::KvValue;
+use keep_keyspace::engine::KvEngine;
+use keep_keyspace::persistence::recovery::RecoveryManager;
+use keep_shared_kernel::cluster::ClusterConfig;
+use keep_shared_kernel::types::KvValue;
+use keep_storage::format::WalOp;
 
 /// How many committed entries a shard's host applies before it captures a
 /// snapshot and compacts the raft log (bounds the log; arms InstallSnapshot for

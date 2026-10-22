@@ -1,11 +1,11 @@
 [package]
-name = "keep-core"
+name = "keep-shared-kernel"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "keep-core — core types, error definitions, cluster topology, and metrics for keep"
+description = "keep-shared-kernel — the types, errors, cluster topology, metrics, and TLS helpers every keep context uses"
 
 [dependencies]
 crc32fast.workspace = true
@@ -19,3 +19,6 @@ utoipa.workspace = true
 [features]
 default = []
 rustls-provider = ["dep:rustls"]
+
+[lints]
+workspace = true
