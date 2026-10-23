@@ -8,12 +8,16 @@
 #
 #   docker build -f Dockerfile -t keep:dev .
 #   docker build --build-arg CARGO_PROFILE=debug -f Dockerfile -t keep:debug .
+#   docker build --build-arg CARGO_FEATURES=operator -f Dockerfile -t keep:operator .
 
 FROM rust:1.92-slim-bookworm AS builder
 # release (default; CI / GKE) or debug (build-debug — unoptimized, matches
 # `cargo build` on the host). Only these two values work: the binary is
 # copied out of target/<profile>/.
 ARG CARGO_PROFILE=release
+# Extra cargo features, comma-separated (empty = default features). `operator`
+# adds `keep k8s operator run` + the CRD generator.
+ARG CARGO_FEATURES=""
 WORKDIR /src
 # Only ca-certificates needed — keep links no openssl.
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
@@ -26,6 +30,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/src/target \
     cargo build $([ "$CARGO_PROFILE" = release ] && echo --release) -p keep --bin keep \
+       $([ -n "$CARGO_FEATURES" ] && echo --features "$CARGO_FEATURES") \
  && cp "target/$CARGO_PROFILE/keep" /usr/local/bin/
 
 # distroless runtime: glibc + libgcc + CA certs + nonroot (uid 65532, matching
