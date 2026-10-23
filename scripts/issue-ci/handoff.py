@@ -33,12 +33,30 @@ def pages(path, key=None):
 
 def load_config(path):
     config = json.loads(Path(path).read_text())
-    workflows = config['workflows']
-    if not workflows or len({w['path'] for w in workflows}) != len(workflows):
-        raise RuntimeError('required workflow paths must be nonempty and unique')
+    if not isinstance(config, dict):
+        raise RuntimeError('gate config must be an object')
+    mode = config.get('lifecycle_mode', 'full')
+    if mode not in ('full', 'failure-only'):
+        raise RuntimeError('lifecycle_mode must be full or failure-only')
+    blockers = config.get('qualification_blockers', [])
+    if not isinstance(blockers, list) or not all(isinstance(b, str) and b.strip() for b in blockers):
+        raise RuntimeError('qualification_blockers must be a list of nonempty strings')
+    workflows = config.get('workflows')
+    if not isinstance(workflows, list) or not workflows:
+        raise RuntimeError('required workflows must be a nonempty list')
+    paths = []
     for w in workflows:
-        if not re.fullmatch(r'\.github/workflows/[\w.-]+\.ya?ml', w['path']) or not w['jobs'] or not all(isinstance(j, str) and j.strip() for j in w['jobs']) or len(set(w['jobs'])) != len(w['jobs']):
+        if not isinstance(w, dict):
+            raise RuntimeError('each required workflow must be an object')
+        path, jobs = w.get('path'), w.get('jobs')
+        if (not isinstance(path, str) or not re.fullmatch(r'\.github/workflows/[\w.-]+\.ya?ml', path)
+                or not isinstance(jobs, list) or not jobs
+                or not all(isinstance(j, str) and j.strip() for j in jobs)
+                or len(set(jobs)) != len(jobs)):
             raise RuntimeError('each workflow needs an explicit nonempty unique job-name list')
+        paths.append(path)
+    if len(set(paths)) != len(paths):
+        raise RuntimeError('required workflow paths must be unique')
     return config
 
 
@@ -76,6 +94,19 @@ def evaluate(workflows, snapshots):
     return state, failures + pending, sorted(evidence)
 
 
+def evaluate_policy(config, snapshots):
+    """Missing qualification can never produce done, even in full mode."""
+    state, reasons, evidence = evaluate(config['workflows'], snapshots)
+    if state == 'done':
+        if config.get('lifecycle_mode', 'full') == 'failure-only':
+            state = 'pending'
+            reasons.append('failure-only mode does not authorize done')
+        if config.get('qualification_blockers', []):
+            state = 'pending'
+            reasons.extend(f'qualification blocked: {b}' for b in config['qualification_blockers'])
+    return state, reasons, evidence
+
+
 def snapshot(repo, sha, config):
     root = f'repos/{repo}'
     snapshots = {}
@@ -104,7 +135,7 @@ def process_head(args, config, check_event=True):
     if not re.search(rf'(?im)^Closes #{issue}\s*$', pr.get('body') or ''):
         raise RuntimeError('PR body must explicitly link its branch issue with Closes #N')
     snapshots = snapshot(args.repo, args.head, config)
-    state, reasons, evidence = evaluate(config['workflows'], snapshots)
+    state, reasons, evidence = evaluate_policy(config, snapshots)
     print(json.dumps(dict(state=state, head=args.head, evidence=evidence, reasons=reasons)))
     if not args.apply:
         return 0 if state == 'done' else 2
@@ -121,6 +152,9 @@ def process_head(args, config, check_event=True):
     labels = {l['name'] for l in current['labels']}
     if current['state'] != 'open' or not labels & {'todo', 'doing', 'done'} or 'blocked' in labels:
         raise RuntimeError('issue is closed, blocked, or unmanaged; no mutation')
+    failure_only = config.get('lifecycle_mode', 'full') == 'failure-only'
+    if failure_only and 'done' in labels:
+        return 0  # This mode has no authority over already done issues.
     comments = pages(f'{issue_path}/comments')
     policy = hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
     # A failure hands a head back once per coding epoch, regardless of how
@@ -139,6 +173,8 @@ def process_head(args, config, check_event=True):
     journals = [c for c in comments if c['body'].startswith(prefix) and c['user']['login'] == 'github-actions[bot]']
     journal = journals[-1] if journals else None
     phase = journal['body'].split(prefix, 1)[1].split(' -->', 1)[0] if journal else 'pending'
+    if failure_only and journal is None and labels & {'todo', 'doing', 'done'} != {'doing'}:
+        return 0  # Only doing -> todo; existing journals may finish recovery.
     if phase == 'applied':
         print('duplicate applied head/run handoff; no mutation')
         return 0
@@ -158,6 +194,8 @@ def process_head(args, config, check_event=True):
         labels = {l['name'] for l in current['labels']}
         if current['state'] != 'open' or 'blocked' in labels or not labels & {'todo', 'doing', 'done'}:
             raise RuntimeError('issue lifecycle changed during handoff')
+        if failure_only and 'done' in labels:
+            raise RuntimeError('failure-only mode cannot touch a done issue')
         return labels
 
     labels = fresh_labels()
@@ -170,6 +208,9 @@ def process_head(args, config, check_event=True):
     if snapshot(args.repo, args.head, config) != snapshots:
         raise RuntimeError('CI runs changed during evaluation; pending intent is retryable')
     if phase == 'pending':
+        # Snapshot pagination can outlast a lifecycle transition. Recheck after
+        # that read, immediately before adding the target label.
+        labels = fresh_labels()
         if state not in labels:
             api(f'{issue_path}/labels', 'POST', {'labels': [state]})
         # Durable proof that the desired label was added BEFORE deleting old
