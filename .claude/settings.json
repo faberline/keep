@@ -1,0 +1,13 @@
+{
+  "enabledPlugins": {
+    "faberline@faberline": true
+  },
+  "extraKnownMarketplaces": {
+    "faberline": {
+      "source": {
+        "source": "github",
+        "repo": "faberline/aw"
+      }
+    }
+  }
+}
