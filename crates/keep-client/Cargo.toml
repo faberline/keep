@@ -8,7 +8,7 @@ repository.workspace = true
 description = "keep-client — HTTP/2 client for in-tree and Rust keep consumers"
 
 [dependencies]
-keep-core = { workspace = true, features = ["rustls-provider"] }
+keep-shared-kernel = { workspace = true, features = ["rustls-provider"] }
 
 # faberline/core shared crates
 transport-h2c.workspace = true
@@ -17,3 +17,6 @@ transport-h2c.workspace = true
 reqwest.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+
+[lints]
+workspace = true
