@@ -8,7 +8,7 @@ repository.workspace = true
 description = "keep-operator — Kubernetes CRD, manifest renderer, and reconcile controller for keep"
 
 [dependencies]
-keep-core = { workspace = true, features = ["rustls-provider"] }
+keep-shared-kernel = { workspace = true, features = ["rustls-provider"] }
 
 # faberline/core shared crates
 service-backup.workspace = true
@@ -22,3 +22,6 @@ schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
+
+[lints]
+workspace = true

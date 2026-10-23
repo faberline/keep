@@ -1,53 +1,9 @@
 //! Build script: stamp `KEEP_GIT_SHA`, `KEEP_BUILT_AT`, and `KEEP_TARGET` into
 //! the binary so the standard CLI ops (`upgrade` picks the matching release
-//! asset; `report-issue` reports provenance) work without a server.
-//!
-//! All three are best-effort: outside a git checkout (e.g. a source tarball)
-//! the sha falls back to "unknown". Nothing here fails the build.
-
-use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+//! asset; `issue` reports provenance) work without a server. The stamping
+//! logic lives in the shared `core/build-stamp` crate; this file only supplies
+//! keep's `KEEP` env-var prefix.
 
 fn main() {
-    // Re-run when HEAD moves so the stamped sha stays current. The workspace
-    // `.git` lives 2 levels up from `crates/keep`; in a linked worktree `.git`
-    // is a file rather than a dir, so guard the rerun hint.
-    for candidate in ["../../.git/HEAD", ".git/HEAD"] {
-        if std::path::Path::new(candidate).exists() {
-            println!("cargo:rerun-if-changed={candidate}");
-            break;
-        }
-    }
-
-    let git_sha = short_sha().unwrap_or_else(|| "unknown".to_string());
-    println!("cargo:rustc-env=KEEP_GIT_SHA={git_sha}");
-
-    // Seconds since the epoch — unambiguous, no date crate.
-    let built_at = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| format!("{}", d.as_secs()))
-        .unwrap_or_else(|_| "unknown".to_string());
-    println!("cargo:rustc-env=KEEP_BUILT_AT={built_at}");
-
-    // The exact target triple cargo built for, so `keep upgrade` can select the
-    // matching `keep-<target>.tar.gz` asset. Cargo always sets `TARGET` here.
-    let target = std::env::var("TARGET").unwrap_or_else(|_| "unknown".to_string());
-    println!("cargo:rustc-env=KEEP_TARGET={target}");
-}
-
-/// Best-effort short SHA of HEAD. Returns `None` outside a git workspace.
-fn short_sha() -> Option<String> {
-    let out = Command::new("git")
-        .args(["rev-parse", "--short=8", "HEAD"])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if sha.is_empty() {
-        None
-    } else {
-        Some(sha)
-    }
+    build_stamp::stamp("KEEP");
 }

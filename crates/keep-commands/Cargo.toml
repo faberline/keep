@@ -1,15 +1,17 @@
 [package]
-name = "keep-http"
+name = "keep-commands"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "keep-http — HTTP/2 + OpenAPI transport surface and offline spec emitters for keep"
+description = "keep-commands — the HTTP/2 + OpenAPI interface over the keep keyspace, and the offline spec emitters"
 
 [dependencies]
-keep-core.workspace = true
-keep-engine.workspace = true
+keep-access.workspace = true
+keep-keyspace.workspace = true
+keep-replication.workspace = true
+keep-shared-kernel.workspace = true
 
 # faberline/core shared crates
 claim-token.workspace = true
@@ -30,4 +32,7 @@ utoipa.workspace = true
 
 [features]
 default = []
-raft = ["keep-engine/raft"]
+raft = ["keep-replication/raft"]
+
+[lints]
+workspace = true

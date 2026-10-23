@@ -1,16 +1,14 @@
-//! Sharded multi-core KV engine, WAL/snapshot persistence, backup, and Raft state machine for `keep`.
+//! The keyspace: keep's sharded multi-core KV engine, plus the engine-aware
+//! snapshot, recovery, and persistence handle.
 
 #![allow(clippy::all)]
 
-pub use keep_core::{
+pub use keep_shared_kernel::{
     cluster, error, metrics, tls, types, Cluster, ClusterConfig, ClusterState, KvError, KvKey,
     KvValue,
 };
 
-pub mod backup;
 pub mod engine;
 pub mod persistence;
-#[cfg(feature = "raft")]
-pub mod raft;
 
 pub use engine::{EvictionPolicy, KvEngine};

@@ -1,0 +1,179 @@
+# Architecture contract for keep. keep is a virtual workspace: one crate per
+# context under crates/, the value types, errors, cluster topology, metrics and
+# TLS helpers as the shared kernel, and the `keep` assembly crate (aw
+# docs/standards/saas-service.md). depends_on lists the other keep contexts a
+# context uses. Shared building blocks come from faberline/core.
+
+schema = 1
+
+# Report only: crates/keep-keyspace/src/engine.rs, crates/keep/src/bin/keep.rs
+# and crates/keep-commands/src/http/handlers.rs are over size_error. Split them,
+# then set enforce = true.
+[migration]
+enforce = false
+
+[policy]
+version = 1
+size_warn = 400
+size_error = 1000
+root_md = [
+  "README.md",
+  "CONTRIBUTING.md",
+  "LICENSE.md",
+  "CHANGELOG.md",
+  "SECURITY.md",
+  "CODE_OF_CONDUCT.md",
+  "CLAUDE.md",
+  "AGENTS.md",
+  # Temporary: the current project docs contract requires these at the root.
+  "STATUS.md",
+  "ROADMAP.md",
+]
+docs_required = [
+  "docs/README.md",
+  "docs/architecture.md",
+  "docs/glossary.md",
+  "docs/domain/",
+  "docs/adr/",
+  "docs/operations/",
+]
+layers = ["domain", "application", "infrastructure", "interfaces"]
+# The layer held to the [policy.domain] purity rules and kept free of other contexts.
+domain_layer = "domain"
+# Layers another context may use. A context without any of them exposes its whole public API.
+public_layers = ["application"]
+# <ctx>/domain/events(.rs|/) is the only domain module other contexts may use.
+domain_events = "events"
+# A tests/<name>.rs binary may stand alone only when it is the crate's single test
+# target, contains one of these markers, or its leading //! block carries
+# `//! isolation: <reason>`. Everything else lives in tests/it/.
+test_isolation_markers = ["set_var(", "remove_var(", "#[global_allocator]"]
+# tests/<dir>/ names holding .rs data (fixtures, trybuild cases), not test targets.
+test_data_dirs = ["fixtures", "compile_fail", "ui"]
+# false: one crate may hold several contexts (B3/B4 still guard each boundary).
+# true: B1 requires every crate to belong to exactly one context.
+one_context_per_crate = false
+
+# Layers each layer may use inside one context. The shared kernel is usable by
+# every layer; assembly code (the [assembly] crates) is unrestricted. A
+# multi-file binary is src/bin/<name>/main.rs plus sibling modules: B6 keeps
+# the entry file thin and does not apply to those modules.
+[policy.layer_deps]
+domain = []
+application = ["domain"]
+infrastructure = ["domain"]
+interfaces = ["application"]
+
+[policy.domain]
+# Applies to every domain layer, and to the shared kernel when shared_kernel_pure.
+allowed_crates = [
+  "std",
+  "core",
+  "alloc",
+  "thiserror",
+  "serde",
+  "serde_json",
+  "chrono",
+  "time",
+  "uuid",
+  "sha2",
+  "hex",
+  "regex",
+  "bytes",
+]
+denied_paths = [
+  "std::fs",
+  "std::net",
+  "std::process",
+  "std::env",
+  "std::os",
+  "std::io::stdin",
+  "std::io::stdout",
+  "std::io::stderr",
+  "std::thread::spawn",
+  "std::thread::sleep",
+  "std::time::SystemTime::now",
+  "std::time::Instant::now",
+  "chrono::Utc::now",
+  "chrono::Local::now",
+  "chrono::offset::Utc::now",
+  "chrono::offset::Local::now",
+  "time::OffsetDateTime::now_utc",
+  "time::OffsetDateTime::now_local",
+  "time::Instant::now",
+  "uuid::Uuid::now_v7",
+  "uuid::Uuid::new_v4",
+]
+denied_macros = ["println", "print", "eprintln", "eprint", "dbg"]
+shared_kernel_pure = true
+
+[policy.naming]
+crates_dir = "crates"
+domain_crate = "{repo}-{context}-domain"
+context_crate = "{repo}-{context}"
+shared_kernel_crate = "{repo}-shared-kernel"
+
+# Module layout (no mod.rs) is enforced by clippy, not by this checker.
+[policy.lints.clippy]
+mod_module_files = "deny"
+
+# The keep value types (KvKey, KvValue), the error model, the shard cluster
+# topology, Prometheus metrics and TLS helpers. Every context speaks these.
+[shared_kernel]
+path = "crates/keep-shared-kernel/src"
+
+# Assembly: `keep` re-exports the contexts as the `keep` library and holds the
+# `keep` binary, the integration tests, benchmarks and examples. Unrestricted.
+[assembly]
+crates = ["keep"]
+
+# The on-disk record format, write-ahead log, blob store and persistence
+# settings. No engine types.
+[[contexts]]
+name = "storage"
+depends_on = []
+[contexts.layers]
+infrastructure = "crates/keep-storage/src"
+
+# The sharded multi-core KV engine, with the engine-aware snapshot, recovery
+# and persistence handle.
+[[contexts]]
+name = "keyspace"
+depends_on = ["storage"]
+[contexts.layers]
+application = "crates/keep-keyspace/src"
+
+# Per-shard Raft hosts and backup and restore of snapshots.
+[[contexts]]
+name = "replication"
+depends_on = ["keyspace", "storage"]
+[contexts.layers]
+infrastructure = "crates/keep-replication/src"
+
+# Bearer auth over core/service-auth.
+[[contexts]]
+name = "access"
+depends_on = []
+[contexts.layers]
+application = "crates/keep-access/src"
+
+# The HTTP/h2c + OpenAPI surface and the offline spec emitters.
+[[contexts]]
+name = "commands"
+depends_on = ["access", "keyspace", "replication"]
+[contexts.layers]
+interfaces = "crates/keep-commands/src"
+
+# The Kubernetes operator.
+[[contexts]]
+name = "operator"
+depends_on = []
+[contexts.layers]
+infrastructure = "crates/keep-operator/src"
+
+# The in-tree async HTTP/2 client for Rust callers.
+[[contexts]]
+name = "client"
+depends_on = []
+[contexts.layers]
+interfaces = "crates/keep-client/src"
