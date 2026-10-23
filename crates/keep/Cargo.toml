@@ -17,9 +17,12 @@ name = "keep"
 path = "src/bin/keep.rs"
 
 [dependencies]
-keep-core.workspace = true
-keep-engine.workspace = true
-keep-http.workspace = true
+keep-access.workspace = true
+keep-commands.workspace = true
+keep-keyspace.workspace = true
+keep-replication.workspace = true
+keep-shared-kernel.workspace = true
+keep-storage.workspace = true
 keep-client = { workspace = true, optional = true }
 keep-operator = { workspace = true, optional = true }
 
@@ -39,12 +42,16 @@ serde_yaml.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
+[build-dependencies]
+# Stamp KEEP_GIT_SHA / KEEP_BUILT_AT / KEEP_TARGET for cli-std's ToolInfo.
+build-stamp.workspace = true
+
 [features]
 default = []
 # keep::client — HTTP/2 client for Rust callers.
 client = ["dep:keep-client", "rustls-provider"]
 # raft — raft-runtime-backed consensus (HA phase C; per-shard hosts + h2c peer transport).
-raft = ["keep-engine/raft", "keep-http/raft", "rustls-provider"]
+raft = ["keep-replication/raft", "keep-commands/raft", "rustls-provider"]
 # Online (HTTPS) paths of the standard CLI ops: `upgrade` + `issue`.
 self-update = ["cli-std/online", "rustls-provider"]
 issue = ["cli-std/online", "rustls-provider"]
@@ -57,7 +64,7 @@ operator = ["dep:keep-operator", "rustls-provider"]
 # (structured JSONL stdout only).
 otel = ["service-http/otlp"]
 # Private: link rustls + install its process-level crypto provider at startup.
-rustls-provider = ["keep-core/rustls-provider"]
+rustls-provider = ["keep-shared-kernel/rustls-provider"]
 
 [dev-dependencies]
 chrono = "0.4"
@@ -85,3 +92,6 @@ path = "examples/bench_compare.rs"
 [[bench]]
 name = "engine_bench"
 harness = false
+
+[lints]
+workspace = true

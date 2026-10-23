@@ -8,7 +8,7 @@
 //! Enable metrics by creating a `Metrics` instance and passing it to the engine:
 //!
 //! ```
-//! use keep_core::metrics::Metrics;
+//! use keep_shared_kernel::metrics::Metrics;
 //!
 //! let metrics = Metrics::new();
 //! // Use metrics.record_*() to track operations

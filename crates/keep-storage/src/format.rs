@@ -1,22 +1,23 @@
-use crate::persistence::{PersistenceError, Result};
-///! Binary format definitions for WAL and Snapshot files
-///!
-///! ## WAL File Format
-///!
-///! ```text
-///! Header: [Magic:8 | Version:4 | Created:8 | Reserved:12] = 32 bytes
-///! Entry:  [Length:4 | Timestamp:8 | OpType:1 | Payload:N | CRC32:4]
-///! ```
-///!
-///! ## Snapshot File Format
-///!
-///! ```text
-///! Header: [Magic:8 | Version:4 | Created:8 | NumShards:4 | TotalEntries:8 | WalPos:8 | SHA256:32]
-///! Data:   [Shard0] [Shard1] ... [ShardN]
-///! Shard:  [ShardID:4 | EntryCount:4 | Entries using bincode]
-///! ```
-use crate::types::KvValue;
+//! Binary format definitions for WAL and Snapshot files
+//!
+//! ## WAL File Format
+//!
+//! ```text
+//! Header: [Magic:8 | Version:4 | Created:8 | Reserved:12] = 32 bytes
+//! Entry:  [Length:4 | Timestamp:8 | OpType:1 | Payload:N | CRC32:4]
+//! ```
+//!
+//! ## Snapshot File Format
+//!
+//! ```text
+//! Header: [Magic:8 | Version:4 | Created:8 | NumShards:4 | TotalEntries:8 | WalPos:8 | SHA256:32]
+//! Data:   [Shard0] [Shard1] ... [ShardN]
+//! Shard:  [ShardID:4 | EntryCount:4 | Entries using bincode]
+//! ```
+
+use crate::error::{PersistenceError, Result};
 use crc32fast::Hasher;
+use keep_shared_kernel::types::KvValue;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
@@ -280,6 +281,12 @@ pub struct WalHeader {
     pub magic: [u8; 8],
     pub version: u32,
     pub created_at: i64, // Unix timestamp in seconds
+}
+
+impl Default for WalHeader {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl WalHeader {

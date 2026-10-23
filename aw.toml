@@ -1,5 +1,6 @@
 [project]
 name = "keep"
+kind = "saas-service"
 cap_path = "README.md"
 label = "app:keep"
 
@@ -22,6 +23,12 @@ paths = ["crates/**"]
 target = "rust"
 test_cmd = "cargo test --workspace"
 codegen.profile = "rust/score-crate"
+
+# keep#6 adds k8s/overlays/gke-test with the GKE test workflow.
+[[standards.saas_service.exception]]
+check = "SV7"
+reason = "the gke-test overlay lands in keep#6 (GKE test pilot)"
+path = "k8s/overlays/gke-test/kustomization.yaml"
 
 # AW-EC-BEGIN
 [aw.ec.generated]

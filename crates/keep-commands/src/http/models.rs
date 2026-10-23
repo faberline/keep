@@ -303,4 +303,4 @@ pub struct InfoResponse {
 // JSON <-> engine value mapping
 // ---------------------------------------------------------------------------
 
-pub use keep_core::types::{json_to_kv, kv_to_json};
+pub use keep_shared_kernel::types::{json_to_kv, kv_to_json};

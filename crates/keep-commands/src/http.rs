@@ -4,7 +4,7 @@
 //! The engine and persistence layers are transport-agnostic; everything here
 //! is a thin, typed adapter onto [`crate::engine::KvEngine`].
 
-pub mod auth;
+pub use keep_access::auth;
 pub mod error;
 pub mod handlers;
 pub mod hash;
