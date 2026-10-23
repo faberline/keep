@@ -1942,11 +1942,14 @@ dependencies = [
  "keep-shared-kernel",
  "keep-storage",
  "raft-runtime",
+ "reqwest",
  "serde",
  "serde_json",
+ "server-lifecycle",
  "service-backup",
  "tempfile",
  "tokio",
+ "tower",
  "tracing",
 ]
 

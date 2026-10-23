@@ -13,6 +13,7 @@ use axum::{
 };
 use serde::Deserialize;
 
+use crate::apply::ApplyOutcome;
 use crate::cluster::ClusterState;
 use crate::http::error::ApiErr;
 use crate::http::models::*;
@@ -66,11 +67,16 @@ pub(crate) async fn ack_durable(st: &AppState) {
     }
 }
 
-pub(crate) async fn propose_write(st: &AppState, key: &KvKey, op: WalOp) -> Result<bool, ApiErr> {
+/// In raft mode, replicate `op` through `key`'s shard group and return the
+/// outcome the state machine computed when it applied the entry. `None` means
+/// raft is off: the caller applies the write to the local engine itself.
+pub(crate) async fn propose_write(
+    st: &AppState,
+    key: &KvKey,
+    op: WalOp,
+) -> Result<Option<ApplyOutcome>, ApiErr> {
     #[cfg(feature = "raft")]
     {
-        use axum::http::StatusCode;
-
         if let Some(hosts) = &st.raft_hosts {
             if !hosts.owns(key.as_str()) {
                 return Err(ApiErr::new(
@@ -82,18 +88,70 @@ pub(crate) async fn propose_write(st: &AppState, key: &KvKey, op: WalOp) -> Resu
                     ),
                 ));
             }
-            hosts.write(key.as_str(), op).await.map_err(|e| {
-                ApiErr::new(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "raft_propose_failed",
-                    e.to_string(),
-                )
+            let outcome = hosts.write(key.as_str(), op).await.map_err(|e| {
+                let msg = e.to_string();
+                if msg.contains(crate::raft::OOM_REJECTION) {
+                    ApiErr::new(StatusCode::INSUFFICIENT_STORAGE, "out_of_memory", msg)
+                } else {
+                    ApiErr::new(StatusCode::SERVICE_UNAVAILABLE, "raft_propose_failed", msg)
+                }
             })?;
-            return Ok(true);
+            return outcome.map(Some).map_err(ApiErr::from);
         }
     }
     let _ = (st, key, op);
-    Ok(false)
+    Ok(None)
+}
+
+/// In raft mode, refuse a batch whose keys span several shard groups: each
+/// group commits independently, so the batch could not apply atomically.
+pub(crate) fn require_single_shard(st: &AppState, keys: &[KvKey]) -> Result<(), ApiErr> {
+    #[cfg(feature = "raft")]
+    {
+        if let Some(hosts) = &st.raft_hosts {
+            let mut shards = keys.iter().map(|k| hosts.shard_for(k.as_str()));
+            if let Some(first) = shards.next() {
+                if shards.any(|s| s != first) {
+                    return Err(ApiErr::new(
+                        StatusCode::BAD_REQUEST,
+                        "cross_shard_batch",
+                        "batch keys span several shard groups; split the batch by shard",
+                    ));
+                }
+            }
+        }
+    }
+    let _ = (st, keys);
+    Ok(())
+}
+
+fn unexpected_outcome(o: &ApplyOutcome) -> ApiErr {
+    ApiErr::new(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "unexpected_outcome",
+        format!("raft apply returned an unexpected outcome: {o:?}"),
+    )
+}
+
+pub(crate) fn outcome_bool(o: ApplyOutcome) -> Result<bool, ApiErr> {
+    o.as_bool().ok_or_else(|| unexpected_outcome(&o))
+}
+
+pub(crate) fn outcome_int(o: ApplyOutcome) -> Result<i64, ApiErr> {
+    o.as_int().ok_or_else(|| unexpected_outcome(&o))
+}
+
+pub(crate) fn outcome_count(o: ApplyOutcome) -> Result<usize, ApiErr> {
+    o.as_count().ok_or_else(|| unexpected_outcome(&o))
+}
+
+pub(crate) fn outcome_float(o: ApplyOutcome) -> Result<f64, ApiErr> {
+    o.as_float().ok_or_else(|| unexpected_outcome(&o))
+}
+
+pub(crate) fn outcome_value(o: ApplyOutcome) -> Result<Option<KvValue>, ApiErr> {
+    let err = unexpected_outcome(&o);
+    o.into_value().ok_or(err)
 }
 
 /// TTL passed via query string on the raw-bytes write path.
@@ -174,7 +232,7 @@ pub async fn put_key(
     if ct.starts_with("application/octet-stream") {
         let value = KvValue::Bytes(body.to_vec());
         let ttl = ttl(q.ttl_ms);
-        if !propose_write(
+        if propose_write(
             &st,
             &k,
             WalOp::Set {
@@ -184,6 +242,7 @@ pub async fn put_key(
             },
         )
         .await?
+        .is_none()
         {
             st.engine.set(&k, value, ttl).map_err(ApiErr::from)?;
         }
@@ -194,7 +253,7 @@ pub async fn put_key(
             .map_err(|e| ApiErr::bad_request(format!("invalid JSON body: {e}")))?;
         let value = req.value.0;
         let ttl = ttl(req.ttl_ms);
-        if !propose_write(
+        if propose_write(
             &st,
             &k,
             WalOp::Set {
@@ -204,6 +263,7 @@ pub async fn put_key(
             },
         )
         .await?
+        .is_none()
         {
             st.engine.set(&k, value, ttl).map_err(ApiErr::from)?;
         }
@@ -230,19 +290,17 @@ pub async fn delete_key(
 ) -> Result<Json<DeleteResponse>, ApiErr> {
     check_kv_claim_isolation(&st, &key)?;
     let k = key_of(&key)?;
-    let deleted = st.engine.exists(&k);
-    let proposed = propose_write(
+    let deleted = match propose_write(
         &st,
         &k,
         WalOp::Delete {
             key: k.as_str().to_string(),
         },
     )
-    .await?;
-    let deleted = if proposed {
-        deleted
-    } else {
-        st.engine.delete(&k)
+    .await?
+    {
+        Some(o) => outcome_bool(o)?,
+        None => st.engine.delete(&k),
     };
     ack_durable(&st).await;
     Ok(Json(DeleteResponse { deleted }))
@@ -289,7 +347,7 @@ pub async fn incr_key(
 ) -> Result<Json<IncrResponse>, ApiErr> {
     check_kv_claim_isolation(&st, &key)?;
     let k = key_of(&key)?;
-    let value = if propose_write(
+    let value = match propose_write(
         &st,
         &k,
         WalOp::Incr {
@@ -299,18 +357,8 @@ pub async fn incr_key(
     )
     .await?
     {
-        match st.engine.get(&k) {
-            Some(KvValue::Int(value)) => value,
-            Some(other) => {
-                return Err(ApiErr::from(crate::error::KvError::TypeMismatch {
-                    expected: "Int".to_string(),
-                    actual: format!("{:?}", std::mem::discriminant(&other)),
-                }))
-            }
-            None => req.delta,
-        }
-    } else {
-        st.engine.incr(&k, req.delta).map_err(ApiErr::from)?
+        Some(o) => outcome_int(o)?,
+        None => st.engine.incr(&k, req.delta).map_err(ApiErr::from)?,
     };
     ack_durable(&st).await;
     Ok(Json(IncrResponse { value }))
@@ -335,15 +383,7 @@ pub async fn cas_key(
     let expected = json_to_kv(req.expected);
     let new = json_to_kv(req.new);
     let ttl = ttl(req.ttl_ms);
-    let before = st.engine.get(&k).ok_or_else(|| {
-        ApiErr::new(
-            StatusCode::NOT_FOUND,
-            "key_not_found",
-            format!("key not found: {key}"),
-        )
-    })?;
-    let swapped = before == expected;
-    if !propose_write(
+    let swapped = match propose_write(
         &st,
         &k,
         WalOp::Cas {
@@ -355,13 +395,12 @@ pub async fn cas_key(
     )
     .await?
     {
-        let swapped = st
+        Some(o) => outcome_bool(o)?,
+        None => st
             .engine
             .cas(&k, &expected, new, ttl)
-            .map_err(ApiErr::from)?;
-        ack_durable(&st).await;
-        return Ok(Json(CasResponse { swapped }));
-    }
+            .map_err(ApiErr::from)?,
+    };
     ack_durable(&st).await;
     Ok(Json(CasResponse { swapped }))
 }
@@ -382,10 +421,9 @@ pub async fn setnx_key(
 ) -> Result<Json<SetNxResponse>, ApiErr> {
     check_kv_claim_isolation(&st, &key)?;
     let k = key_of(&key)?;
-    let set = !st.engine.exists(&k);
     let value = json_to_kv(req.value);
     let ttl = ttl(req.ttl_ms);
-    if !propose_write(
+    let set = match propose_write(
         &st,
         &k,
         WalOp::SetNx {
@@ -396,10 +434,9 @@ pub async fn setnx_key(
     )
     .await?
     {
-        let set = st.engine.setnx(&k, value, ttl).map_err(ApiErr::from)?;
-        ack_durable(&st).await;
-        return Ok(Json(SetNxResponse { set }));
-    }
+        Some(o) => outcome_bool(o)?,
+        None => st.engine.setnx(&k, value, ttl).map_err(ApiErr::from)?,
+    };
     ack_durable(&st).await;
     Ok(Json(SetNxResponse { set }))
 }
@@ -459,25 +496,31 @@ pub async fn mset(State(st): State<AppState>, body: Bytes) -> Result<Json<CountR
         vals.push(v.0);
     }
     let ttl = ttl(req.ttl_ms);
-    let pairs: Vec<(&KvKey, KvValue)> = keys.iter().zip(vals.iter().cloned()).collect();
-    let mut proposed = false;
-    for (key, value) in &pairs {
-        proposed |= propose_write(
+    require_single_shard(&st, &keys)?;
+    let count = keys.len();
+    let replicated = match keys.first() {
+        Some(first) => propose_write(
             &st,
-            key,
-            WalOp::Set {
-                key: key.as_str().to_string(),
-                value: value.clone(),
+            first,
+            WalOp::MSet {
+                pairs: keys
+                    .iter()
+                    .map(|k| k.as_str().to_string())
+                    .zip(vals.iter().cloned())
+                    .collect(),
                 ttl,
             },
         )
-        .await?;
-    }
-    if !proposed {
+        .await?
+        .is_some(),
+        None => false,
+    };
+    if !replicated {
+        let pairs: Vec<(&KvKey, KvValue)> = keys.iter().zip(vals).collect();
         st.engine.mset(&pairs, ttl).map_err(ApiErr::from)?;
     }
     ack_durable(&st).await;
-    Ok(Json(CountResponse { count: pairs.len() }))
+    Ok(Json(CountResponse { count }))
 }
 
 /// Delete many keys at once.
@@ -501,23 +544,26 @@ pub async fn mdel(
         .map(|s| KvKey::new(s))
         .collect::<Result<_, _>>()
         .map_err(ApiErr::from)?;
-    let existing = keys.iter().filter(|key| st.engine.exists(key)).count();
-    let mut proposed = false;
-    for key in &keys {
-        proposed |= propose_write(
-            &st,
-            key,
-            WalOp::Delete {
-                key: key.as_str().to_string(),
-            },
-        )
-        .await?;
-    }
-    let refs: Vec<&KvKey> = keys.iter().collect();
-    let count = if proposed {
-        existing
-    } else {
-        st.engine.mdel(&refs)
+    require_single_shard(&st, &keys)?;
+    let replicated = match keys.first() {
+        Some(first) => {
+            propose_write(
+                &st,
+                first,
+                WalOp::MDel {
+                    keys: keys.iter().map(|k| k.as_str().to_string()).collect(),
+                },
+            )
+            .await?
+        }
+        None => None,
+    };
+    let count = match replicated {
+        Some(o) => outcome_count(o)?,
+        None => {
+            let refs: Vec<&KvKey> = keys.iter().collect();
+            st.engine.mdel(&refs)
+        }
     };
     ack_durable(&st).await;
     Ok(Json(CountResponse { count }))
@@ -562,8 +608,7 @@ pub async fn lock(
 ) -> Result<Json<LockResponse>, ApiErr> {
     let k = key_of(&key)?;
     let ttl = Duration::from_millis(req.ttl_ms);
-    let acquired = !st.engine.exists(&k);
-    if !propose_write(
+    let acquired = match propose_write(
         &st,
         &k,
         WalOp::Lock {
@@ -574,10 +619,9 @@ pub async fn lock(
     )
     .await?
     {
-        let acquired = st.engine.lock(&k, &req.owner, ttl);
-        ack_durable(&st).await;
-        return Ok(Json(LockResponse { acquired }));
-    }
+        Some(o) => outcome_bool(o)?,
+        None => st.engine.lock(&k, &req.owner, ttl),
+    };
     ack_durable(&st).await;
     Ok(Json(LockResponse { acquired }))
 }
@@ -600,8 +644,7 @@ pub async fn unlock(
     Json(req): Json<UnlockRequest>,
 ) -> Result<Json<UnlockResponse>, ApiErr> {
     let k = key_of(&key)?;
-    let released = matches!(st.engine.get(&k), Some(KvValue::String(owner)) if owner == req.owner);
-    if !propose_write(
+    let released = match propose_write(
         &st,
         &k,
         WalOp::Unlock {
@@ -611,10 +654,9 @@ pub async fn unlock(
     )
     .await?
     {
-        let released = st.engine.unlock(&k, &req.owner).map_err(ApiErr::from)?;
-        ack_durable(&st).await;
-        return Ok(Json(UnlockResponse { released }));
-    }
+        Some(o) => outcome_bool(o)?,
+        None => st.engine.unlock(&k, &req.owner).map_err(ApiErr::from)?,
+    };
     ack_durable(&st).await;
     Ok(Json(UnlockResponse { released }))
 }
@@ -638,8 +680,7 @@ pub async fn extend_lock(
 ) -> Result<Json<ExtendLockResponse>, ApiErr> {
     let k = key_of(&key)?;
     let ttl = Duration::from_millis(req.ttl_ms);
-    let extended = matches!(st.engine.get(&k), Some(KvValue::String(owner)) if owner == req.owner);
-    if !propose_write(
+    let extended = match propose_write(
         &st,
         &k,
         WalOp::ExtendLock {
@@ -650,13 +691,12 @@ pub async fn extend_lock(
     )
     .await?
     {
-        let extended = st
+        Some(o) => outcome_bool(o)?,
+        None => st
             .engine
             .extend_lock(&k, &req.owner, ttl)
-            .map_err(ApiErr::from)?;
-        ack_durable(&st).await;
-        return Ok(Json(ExtendLockResponse { extended }));
-    }
+            .map_err(ApiErr::from)?,
+    };
     ack_durable(&st).await;
     Ok(Json(ExtendLockResponse { extended }))
 }
@@ -681,7 +721,7 @@ pub async fn lpush(
 ) -> Result<Json<PushResponse>, ApiErr> {
     let k = key_of(&key)?;
     let values: Vec<KvValue> = req.values.into_iter().map(json_to_kv).collect();
-    let length = if propose_write(
+    let length = match propose_write(
         &st,
         &k,
         WalOp::LPush {
@@ -691,9 +731,8 @@ pub async fn lpush(
     )
     .await?
     {
-        st.engine.llen(&k).map_err(ApiErr::from)?
-    } else {
-        st.engine.lpush(&k, values).map_err(ApiErr::from)?
+        Some(o) => outcome_count(o)?,
+        None => st.engine.lpush(&k, values).map_err(ApiErr::from)?,
     };
     ack_durable(&st).await;
     st.waiters.notify(&key);
@@ -716,7 +755,7 @@ pub async fn rpush(
 ) -> Result<Json<PushResponse>, ApiErr> {
     let k = key_of(&key)?;
     let values: Vec<KvValue> = req.values.into_iter().map(json_to_kv).collect();
-    let length = if propose_write(
+    let length = match propose_write(
         &st,
         &k,
         WalOp::RPush {
@@ -726,9 +765,8 @@ pub async fn rpush(
     )
     .await?
     {
-        st.engine.llen(&k).map_err(ApiErr::from)?
-    } else {
-        st.engine.rpush(&k, values).map_err(ApiErr::from)?
+        Some(o) => outcome_count(o)?,
+        None => st.engine.rpush(&k, values).map_err(ApiErr::from)?,
     };
     ack_durable(&st).await;
     st.waiters.notify(&key);
@@ -748,13 +786,7 @@ pub async fn lpop(
     Path(key): Path<String>,
 ) -> Result<Json<PopResponse>, ApiErr> {
     let k = key_of(&key)?;
-    let value = st
-        .engine
-        .lrange(&k, 0, 0)
-        .map_err(ApiErr::from)?
-        .into_iter()
-        .next();
-    if !propose_write(
+    let value = match propose_write(
         &st,
         &k,
         WalOp::LPop {
@@ -763,12 +795,9 @@ pub async fn lpop(
     )
     .await?
     {
-        let value = st.engine.lpop(&k);
-        ack_durable(&st).await;
-        return Ok(Json(PopResponse {
-            value: value.map(kv_to_json),
-        }));
-    }
+        Some(o) => outcome_value(o)?,
+        None => st.engine.lpop(&k),
+    };
     ack_durable(&st).await;
     Ok(Json(PopResponse {
         value: value.map(kv_to_json),
@@ -788,13 +817,7 @@ pub async fn rpop(
     Path(key): Path<String>,
 ) -> Result<Json<PopResponse>, ApiErr> {
     let k = key_of(&key)?;
-    let value = st
-        .engine
-        .lrange(&k, -1, -1)
-        .map_err(ApiErr::from)?
-        .into_iter()
-        .next();
-    if !propose_write(
+    let value = match propose_write(
         &st,
         &k,
         WalOp::RPop {
@@ -803,12 +826,9 @@ pub async fn rpop(
     )
     .await?
     {
-        let value = st.engine.rpop(&k);
-        ack_durable(&st).await;
-        return Ok(Json(PopResponse {
-            value: value.map(kv_to_json),
-        }));
-    }
+        Some(o) => outcome_value(o)?,
+        None => st.engine.rpop(&k),
+    };
     ack_durable(&st).await;
     Ok(Json(PopResponse {
         value: value.map(kv_to_json),
@@ -898,7 +918,13 @@ pub async fn info(State(st): State<AppState>) -> Json<InfoResponse> {
     responses((status = 200, description = "Cluster topology", body = ClusterState))
 )]
 pub async fn cluster(State(st): State<AppState>) -> Json<ClusterState> {
-    Json(st.cluster.snapshot())
+    #[allow(unused_mut)]
+    let mut state = st.cluster.snapshot();
+    #[cfg(feature = "raft")]
+    if let Some(hosts) = &st.raft_hosts {
+        state.shards = hosts.shard_states().await;
+    }
+    Json(state)
 }
 
 /// The generated OpenAPI document.
@@ -994,7 +1020,7 @@ async fn claim_put(
             .map_err(|e| ApiErr::bad_request(format!("invalid JSON body: {e}")))?;
         let value = req.value.0;
         let ttl = ttl(req.ttl_ms);
-        if !propose_write(
+        if propose_write(
             st,
             &k,
             WalOp::Set {
@@ -1004,13 +1030,14 @@ async fn claim_put(
             },
         )
         .await?
+        .is_none()
         {
             st.engine.set(&k, value, ttl).map_err(ApiErr::from)?;
         }
     } else {
         let value = KvValue::Bytes(body.to_vec());
         let ttl = ttl(q.ttl_ms);
-        if !propose_write(
+        if propose_write(
             st,
             &k,
             WalOp::Set {
@@ -1020,6 +1047,7 @@ async fn claim_put(
             },
         )
         .await?
+        .is_none()
         {
             st.engine.set(&k, value, ttl).map_err(ApiErr::from)?;
         }

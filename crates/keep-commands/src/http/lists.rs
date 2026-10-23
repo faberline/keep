@@ -13,10 +13,11 @@ use serde::Deserialize;
 use utoipa::ToSchema;
 
 use crate::http::error::ApiErr;
-use crate::http::handlers::{ack_durable, key_of, propose_write};
+use crate::http::handlers::{ack_durable, key_of, outcome_value, propose_write};
 use crate::http::models::{kv_to_json, PopResponse};
 use crate::http::AppState;
 use crate::persistence::format::WalOp;
+use crate::types::{KvKey, KvValue};
 
 /// Upper bound on a single blocking wait, so a long-poll can't pin a connection
 /// indefinitely (Redis BLPOP's 0 = block-forever is intentionally not offered).
@@ -32,6 +33,25 @@ pub struct BlockingPopRequest {
 enum Side {
     Left,
     Right,
+}
+
+/// Pop one element, through raft when the key's shard is replicated.
+async fn pop_once(st: &AppState, k: &KvKey, side: Side) -> Result<Option<KvValue>, ApiErr> {
+    let op = match side {
+        Side::Left => WalOp::LPop {
+            key: k.as_str().to_string(),
+        },
+        Side::Right => WalOp::RPop {
+            key: k.as_str().to_string(),
+        },
+    };
+    match propose_write(st, k, op).await? {
+        Some(o) => outcome_value(o),
+        None => Ok(match side {
+            Side::Left => st.engine.lpop(k),
+            Side::Right => st.engine.rpop(k),
+        }),
+    }
 }
 
 async fn blocking_pop(
@@ -58,29 +78,15 @@ async fn blocking_pop(
     };
 
     loop {
-        if let Some(v) = peek(&st) {
-            let op = match side {
-                Side::Left => WalOp::LPop {
-                    key: k.as_str().to_string(),
-                },
-                Side::Right => WalOp::RPop {
-                    key: k.as_str().to_string(),
-                },
-            };
-            if !propose_write(&st, &k, op).await? {
-                let v = match side {
-                    Side::Left => st.engine.lpop(&k),
-                    Side::Right => st.engine.rpop(&k),
-                };
+        if peek(&st).is_some() {
+            // A concurrent popper can win between the peek and the pop; the
+            // pop's own result decides, and an empty pop keeps waiting.
+            if let Some(v) = pop_once(&st, &k, side).await? {
                 ack_durable(&st).await;
                 return Ok(Json(PopResponse {
-                    value: v.map(kv_to_json),
+                    value: Some(kv_to_json(v)),
                 }));
             }
-            ack_durable(&st).await;
-            return Ok(Json(PopResponse {
-                value: Some(kv_to_json(v)),
-            }));
         }
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
@@ -94,29 +100,15 @@ async fn blocking_pop(
         tokio::pin!(notified);
         notified.as_mut().enable();
 
-        if let Some(v) = peek(&st) {
-            let op = match side {
-                Side::Left => WalOp::LPop {
-                    key: k.as_str().to_string(),
-                },
-                Side::Right => WalOp::RPop {
-                    key: k.as_str().to_string(),
-                },
-            };
-            if !propose_write(&st, &k, op).await? {
-                let v = match side {
-                    Side::Left => st.engine.lpop(&k),
-                    Side::Right => st.engine.rpop(&k),
-                };
+        if peek(&st).is_some() {
+            // A concurrent popper can win between the peek and the pop; the
+            // pop's own result decides, and an empty pop keeps waiting.
+            if let Some(v) = pop_once(&st, &k, side).await? {
                 ack_durable(&st).await;
                 return Ok(Json(PopResponse {
-                    value: v.map(kv_to_json),
+                    value: Some(kv_to_json(v)),
                 }));
             }
-            ack_durable(&st).await;
-            return Ok(Json(PopResponse {
-                value: Some(kv_to_json(v)),
-            }));
         }
 
         tokio::select! {

@@ -8,6 +8,7 @@ pub use keep_shared_kernel::{
     KvValue,
 };
 
+pub mod apply;
 pub mod engine;
 pub mod persistence;
 

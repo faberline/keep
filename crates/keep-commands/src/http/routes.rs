@@ -11,7 +11,7 @@ use axum::{
 };
 use service_http::MetricsProvider;
 
-use crate::http::{handlers, hash, lists, meta, metrics, sets, zsets, AppState};
+use crate::http::{consistency, handlers, hash, lists, meta, metrics, sets, zsets, AppState};
 
 /// The keep OpenAPI document — the accessor the shared `service_http`
 /// `/openapi.json` and `/docs` routes serve.
@@ -105,6 +105,9 @@ pub fn router(state: AppState) -> Router {
         .route("/zsets/{key}/members/{member}/rank", get(zsets::zrank))
         // Per-route request metrics (counts + latency). route_layer => only for
         // matched data-plane routes, and MatchedPath is populated.
+        // Read consistency runs after auth (innermost), so an unauthenticated
+        // read never costs a raft barrier.
+        .route_layer(from_fn_with_state(state.clone(), consistency::enforce))
         .route_layer(from_fn_with_state(state.clone(), enforce_api_token))
         .route_layer(from_fn_with_state(req_metrics, metrics::track))
         .layer(service_http::body_limit_layer(body_limit));

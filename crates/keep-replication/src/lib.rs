@@ -6,3 +6,5 @@
 pub mod backup;
 #[cfg(feature = "raft")]
 pub mod raft;
+#[cfg(feature = "raft")]
+pub mod raft_read;

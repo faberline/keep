@@ -81,13 +81,23 @@ async fn raft_http_cluster(tag: &str) -> (std::path::PathBuf, Vec<RaftHttpNode>)
     let mut nodes = Vec::new();
     for (node_id, listener) in listeners.into_iter().enumerate() {
         let engine = Arc::new(KvEngine::with_shards(4));
-        let cluster = ClusterConfig::from_shared_topology(node_id, 3, 1, urls.clone());
+        let mut peers = urls.clone();
+        peers[node_id].clear();
+        let cluster = ClusterConfig::replicated(
+            1,
+            keep::ReplicaPlacement {
+                shard_index: 0,
+                replica_index: node_id as u32,
+                replicas_per_shard: 3,
+                voter_count: 3,
+            },
+            peers,
+        );
         let hosts = Arc::new(
             keep::raft::ShardHosts::new(
                 cluster.clone(),
                 engine.clone(),
                 &dir.join(format!("node-{node_id}")),
-                3,
             )
             .await
             .unwrap(),
@@ -196,6 +206,191 @@ async fn replica_mode_http_write_proposes_and_replicates() {
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
     panic!("HTTP raft write did not reach every replica engine");
+}
+
+/// In replica mode every write answers from the outcome the raft state machine
+/// produced when it applied that log entry, never from a local pre-read.
+#[cfg(feature = "raft")]
+#[tokio::test]
+async fn replica_mode_http_answers_from_replicated_outcome() {
+    use reqwest::Method;
+
+    let (dir, nodes) = raft_http_cluster("outcome").await;
+    let leader = await_raft_leader(&nodes, "any").await;
+    let base = nodes[leader].url.clone();
+    let client = reqwest::Client::new();
+    let call = |method: Method, path: &str, body: Value| {
+        let req = client.request(method, format!("{base}{path}")).json(&body);
+        async move {
+            let resp = req.send().await.unwrap();
+            let status = resp.status();
+            let body: Value = resp.json().await.unwrap_or(Value::Null);
+            (status, body)
+        }
+    };
+
+    let (st, body) = call(Method::DELETE, "/kv/absent", Value::Null).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(body["deleted"], json!(false));
+
+    let (_, body) = call(Method::POST, "/kv/n/incr", json!({"delta": 5})).await;
+    assert_eq!(body["value"], json!(5));
+    let (_, body) = call(Method::POST, "/kv/n/incr", json!({"delta": 5})).await;
+    assert_eq!(body["value"], json!(10));
+
+    let (_, body) = call(Method::POST, "/kv/once/setnx", json!({"value": 1})).await;
+    assert_eq!(body["set"], json!(true));
+    let (_, body) = call(Method::POST, "/kv/once/setnx", json!({"value": 2})).await;
+    assert_eq!(body["set"], json!(false));
+
+    let cas = json!({"expected": 1, "new": 0});
+    let (_, body) = call(Method::POST, "/kv/n/cas", cas.clone()).await;
+    assert_eq!(body["swapped"], json!(false));
+    let (st, body) = call(Method::POST, "/kv/missing/cas", cas).await;
+    assert_eq!(st, StatusCode::NOT_FOUND, "{body}");
+
+    let push = json!({"values": ["a", "b"]});
+    let (_, body) = call(Method::POST, "/lists/q/rpush", push).await;
+    assert_eq!(body["length"], json!(2));
+    let (_, body) = call(Method::POST, "/lists/q/lpop", Value::Null).await;
+    assert_eq!(body["value"], json!("a"));
+
+    let (st, _) = call(Method::PUT, "/kv/s", json!({"value": "text"})).await;
+    assert_eq!(st, StatusCode::OK);
+    let (st, _) = call(Method::POST, "/kv/s/incr", json!({"delta": 1})).await;
+    assert!(
+        st.is_client_error(),
+        "a replicated type mismatch surfaces as the engine error, got {st}"
+    );
+
+    let (_, body) = call(Method::POST, "/kv:mdel", json!({"keys": ["n", "absent"]})).await;
+    assert_eq!(body["count"], json!(1));
+
+    stop_raft_http_cluster(dir, nodes).await;
+}
+
+/// Reads honor `x-read-consistency`: the default (`leader`) is linearizable on
+/// every replica — a follower sees a write the instant the leader acked it —
+/// while `bounded`/`any` answer locally and report their staleness bound.
+#[cfg(feature = "raft")]
+#[tokio::test]
+async fn replica_mode_reads_honor_consistency_level() {
+    let (dir, nodes) = raft_http_cluster("consistency").await;
+    let leader = await_raft_leader(&nodes, "any").await;
+    let follower = (leader + 1) % nodes.len();
+    let client = reqwest::Client::new();
+    let get = |node: usize, key: &str, level: Option<&str>| {
+        let mut req = client.get(format!("{}/kv/{key}", nodes[node].url));
+        if let Some(level) = level {
+            req = req.header("x-read-consistency", level);
+        }
+        async move {
+            let resp = req.send().await.unwrap();
+            let staleness = resp
+                .headers()
+                .get("x-keep-staleness-ms")
+                .map(|v| v.to_str().unwrap().parse::<u64>().unwrap());
+            let status = resp.status();
+            (status, staleness, resp.json::<Value>().await.unwrap())
+        }
+    };
+
+    // A follower's leader read waits for the barrier's commit to reach it on
+    // the next heartbeat, so keep the loop short.
+    for i in 0..8 {
+        let resp = client
+            .put(format!("{}/kv/rc", nodes[leader].url))
+            .json(&json!({"value": i}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        for level in [None, Some("unknown-level")] {
+            let (st, staleness, body) = get(follower, "rc", level).await;
+            assert_eq!(st, StatusCode::OK);
+            assert_eq!(
+                body["value"],
+                json!(i),
+                "stale {level:?} read on a follower"
+            );
+            assert_eq!(staleness, None, "leader reads report no staleness");
+        }
+    }
+
+    let (st, staleness, body) = get(follower, "rc", Some("any")).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(body["value"], json!(7));
+    assert!(staleness.is_some(), "a fenced follower knows its bound");
+    let (st, staleness, _) = get(follower, "rc", Some("bounded(60000)")).await;
+    assert_eq!(st, StatusCode::OK);
+    assert!(staleness.unwrap() <= 60_000);
+
+    let resp = client
+        .get(format!("{}/cluster", nodes[follower].url))
+        .send()
+        .await
+        .unwrap();
+    let cluster: Value = resp.json().await.unwrap();
+    let shard = &cluster["shards"][0];
+    assert_eq!(shard["shard"], json!(0));
+    assert_eq!(shard["replica_id"], json!(follower));
+    assert_eq!(shard["leader"], json!(leader));
+    assert_eq!(shard["role"], json!("follower"));
+    assert_eq!(shard["voters"], json!([0, 1, 2]));
+    assert!(shard["applied_index"].as_u64().unwrap() > 8);
+
+    stop_raft_http_cluster(dir, nodes).await;
+}
+
+/// A batch whose keys hash to different shard groups cannot commit atomically
+/// through one raft log, so replica mode refuses it instead of half-applying.
+#[cfg(feature = "raft")]
+#[tokio::test]
+async fn replica_mode_rejects_cross_shard_batch() {
+    let dir = tmp_dir("cross-shard");
+    let cluster = ClusterConfig::replicated(
+        2,
+        keep::ReplicaPlacement {
+            shard_index: 0,
+            replica_index: 0,
+            replicas_per_shard: 1,
+            voter_count: 1,
+        },
+        vec![String::new()],
+    );
+    let key_in = |shard: u32| {
+        (0..)
+            .map(|i| format!("k{i}"))
+            .find(|k| cluster.shard_for(k) == shard)
+            .unwrap()
+    };
+    let (a, b) = (key_in(0), key_in(1));
+    let engine = Arc::new(KvEngine::with_shards(4));
+    let hosts = Arc::new(
+        keep::raft::ShardHosts::new(cluster.clone(), engine.clone(), &dir)
+            .await
+            .unwrap(),
+    );
+    let state = AppState::new(engine)
+        .with_cluster(cluster)
+        .with_raft_hosts(hosts);
+    let app = router(state);
+
+    let entries = json!({"entries": {(a.clone()): 1, (b.clone()): 2}});
+    let (st, body) = send_json(&app, "POST", "/kv:mset", entries).await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+    assert_eq!(body["code"], json!("cross_shard_batch"));
+
+    let keys = json!({"keys": [a, b.clone()]});
+    let (st, body) = send_json(&app, "POST", "/kv:mdel", keys).await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+    assert_eq!(body["code"], json!("cross_shard_batch"));
+
+    let (st, body) = send_json(&app, "PUT", &format!("/kv/{b}"), json!({"value": 1})).await;
+    assert_eq!(st, StatusCode::CONFLICT);
+    assert_eq!(body["code"], json!("shard_not_owned"));
+
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[tokio::test]
