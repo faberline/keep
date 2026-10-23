@@ -7,7 +7,7 @@
 //!   log entry is a [`RaftCmd`]: a [`WalOp`] stamped with its proposal time
 //!   (so relative TTLs become deadlines every replica agrees on), or a
 //!   [`RaftCmd::Barrier`] a new leader commits to settle its term. Apply runs
-//!   the op through [`crate::apply::execute`] and keeps the result in an
+//!   the op through [`keep_keyspace::apply::execute`] and keeps the result in an
 //!   [`OutcomeWindow`] keyed by log index, so the proposing handler answers
 //!   from the replicated result instead of a racy local read.
 //! - Snapshots carry each key's remaining TTL; restore clears the shard's
@@ -39,13 +39,14 @@ use serde::{Deserialize, Serialize};
 use server_lifecycle::ShutdownDeadline;
 use tokio::task::JoinHandle;
 
-use crate::apply::{execute, ApplyOutcome, ApplyResult};
-use crate::cluster::{ClusterConfig, ShardRaftState};
-use crate::engine::{EvictionPolicy, KvEngine};
-use crate::error::KvError;
-use crate::persistence::format::WalOp;
+use keep_keyspace::apply::{execute, ApplyOutcome, ApplyResult};
+use keep_keyspace::engine::{EvictionPolicy, KvEngine};
+use keep_shared_kernel::cluster::{ClusterConfig, ShardRaftState};
+use keep_shared_kernel::error::KvError;
+use keep_shared_kernel::types::KvValue;
+use keep_storage::format::WalOp;
+
 use crate::raft_read::{track_freshness, ReadFence};
-use crate::types::KvValue;
 
 /// How many committed entries a shard's host applies before it captures a
 /// snapshot and compacts the raft log (bounds the log; arms InstallSnapshot for
@@ -778,7 +779,7 @@ fn shard_topology(cluster: &ClusterConfig, shard: u32) -> Result<ShardTopology> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::KvKey;
+    use keep_shared_kernel::types::KvKey;
 
     fn cmd(op: WalOp, at_ms: u64) -> Vec<u8> {
         serde_json::to_vec(&RaftCmd::Op { op, at_ms }).unwrap()

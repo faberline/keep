@@ -2053,8 +2053,8 @@ impl KvEngine {
     ///
     /// # Example
     /// ```
-    /// use keep_engine::engine::KvEngine;
-    /// use keep_engine::types::{KvKey, KvValue};
+    /// use keep_keyspace::engine::KvEngine;
+    /// use keep_keyspace::types::{KvKey, KvValue};
     ///
     /// let engine = KvEngine::new();
     /// let key1 = KvKey::new("key1").unwrap();
@@ -2090,8 +2090,8 @@ impl KvEngine {
     ///
     /// # Example
     /// ```
-    /// use keep_engine::engine::KvEngine;
-    /// use keep_engine::types::{KvKey, KvValue};
+    /// use keep_keyspace::engine::KvEngine;
+    /// use keep_keyspace::types::{KvKey, KvValue};
     ///
     /// let engine = KvEngine::new();
     /// let key1 = KvKey::new("key1").unwrap();
@@ -2430,8 +2430,8 @@ impl KvEngine {
     ///
     /// # Example
     /// ```
-    /// use keep_engine::engine::KvEngine;
-    /// use keep_engine::types::{KvKey, KvValue};
+    /// use keep_keyspace::engine::KvEngine;
+    /// use keep_keyspace::types::{KvKey, KvValue};
     ///
     /// let engine = KvEngine::new();
     /// let key1 = KvKey::new("user:1").unwrap();

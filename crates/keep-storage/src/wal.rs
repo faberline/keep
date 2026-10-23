@@ -1,20 +1,21 @@
-///! Write-Ahead Log (WAL) implementation
-///!
-///! Provides append-only logging of all write operations with batched fsync.
-///!
-///! ## Architecture
-///!
-///! - Single WAL file grows until rotation threshold (1GB default)
-///! - Background thread flushes every 100ms (batched fsync)
-///! - CRC32 checksum on every entry for corruption detection
-///! - File rotation creates new file with timestamp suffix
-///!
-///! ## File Naming
-///!
-///! - Active WAL: `wal-current.log`
-///! - Rotated WAL: `wal-{timestamp}.log`
-use super::format::{decode_wal_entry, encode_wal_entry, WalEntry, WalHeader, WalOp};
-use super::{PersistenceError, Result, WalConfig};
+//! Write-Ahead Log (WAL) implementation
+//!
+//! Provides append-only logging of all write operations with batched fsync.
+//!
+//! ## Architecture
+//!
+//! - Single WAL file grows until rotation threshold (1GB default)
+//! - Background thread flushes every 100ms (batched fsync)
+//! - CRC32 checksum on every entry for corruption detection
+//! - File rotation creates new file with timestamp suffix
+//!
+//! ## File Naming
+//!
+//! - Active WAL: `wal-current.log`
+//! - Rotated WAL: `wal-{timestamp}.log`
+
+use crate::format::{decode_wal_entry, encode_wal_entry, WalEntry, WalHeader, WalOp};
+use crate::{PersistenceError, Result, WalConfig};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
@@ -340,7 +341,7 @@ pub fn cleanup_old_wal_files(data_dir: impl AsRef<Path>, keep_count: usize) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::KvValue;
+    use keep_shared_kernel::types::KvValue;
     use std::time::Duration;
     use tempfile::TempDir;
 
@@ -549,7 +550,7 @@ mod tests {
         writer.flush().unwrap();
 
         // Read back
-        let mut reader = WalReader::new(&data_dir.join("wal-current.log")).unwrap();
+        let mut reader = WalReader::new(data_dir.join("wal-current.log")).unwrap();
 
         let entry1 = reader.read_entry().unwrap().unwrap();
         match entry1.op {

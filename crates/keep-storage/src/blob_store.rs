@@ -6,8 +6,8 @@
 //! evicted, dropping its `Arc<DiskBlob>` automatically unlinks the file and
 //! reclaims disk quota.
 
-use super::{PersistenceError, Result};
-use crate::types::KvValue;
+use crate::{PersistenceError, Result};
+use keep_shared_kernel::types::KvValue;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};

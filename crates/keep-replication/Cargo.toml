@@ -1,14 +1,16 @@
 [package]
-name = "keep-engine"
+name = "keep-replication"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "keep-engine — sharded multi-core KV engine, WAL/snapshot persistence, backup, and Raft state machine"
+description = "keep-replication — per-shard Raft hosts and the backup and restore of keep snapshots"
 
 [dependencies]
-keep-core.workspace = true
+keep-keyspace.workspace = true
+keep-shared-kernel.workspace = true
+keep-storage.workspace = true
 
 # faberline/core shared crates
 raft-runtime = { workspace = true, optional = true }
@@ -17,19 +19,10 @@ reqwest = { workspace = true, optional = true }
 tower = { workspace = true, optional = true }
 service-backup.workspace = true
 
-# Runtime & storage
 anyhow.workspace = true
-arc-swap.workspace = true
 axum = { workspace = true, optional = true }
-bincode.workspace = true
-crc32fast.workspace = true
-crossbeam-channel.workspace = true
-parking_lot.workspace = true
-rust_decimal.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sha2.workspace = true
-thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
@@ -38,4 +31,14 @@ tempfile.workspace = true
 
 [features]
 default = []
-raft = ["dep:raft-runtime", "dep:server-lifecycle", "dep:axum", "dep:reqwest", "dep:tower", "keep-core/rustls-provider"]
+raft = [
+    "dep:raft-runtime",
+    "dep:server-lifecycle",
+    "dep:axum",
+    "dep:reqwest",
+    "dep:tower",
+    "keep-shared-kernel/rustls-provider",
+]
+
+[lints]
+workspace = true

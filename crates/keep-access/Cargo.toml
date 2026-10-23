@@ -1,0 +1,18 @@
+[package]
+name = "keep-access"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "keep-access — who may call keep: bearer-token checks over the shared service-auth policy"
+
+[dependencies]
+# faberline/core shared crates
+claim-token.workspace = true
+service-auth.workspace = true
+
+axum.workspace = true
+
+[lints]
+workspace = true

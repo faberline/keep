@@ -11,7 +11,7 @@ is implemented behind the `raft` feature (on by default): replicated writes,
 the failover gate, and read consistency. Phase B is delivered as raft learners
 inside the Phase C groups. Membership changes on scale events remain. The
 phases share one substrate: node identity + the keyspace split
-(`keep-core/src/cluster.rs`).
+(`keep-shared-kernel/src/cluster.rs`).
 
 ## Phase A — sharded scale-out (DONE)
 
@@ -110,8 +110,8 @@ processes, real signals.
 ### Read consistency
 
 Every data-plane read on a replicated group honors raft-runtime's
-`x-read-consistency` header (`keep-http/src/http/consistency.rs`,
-`keep-engine/src/raft_read.rs`):
+`x-read-consistency` header (`keep-commands/src/http/consistency.rs`,
+`keep-replication/src/raft_read.rs`):
 
 | level | served when | else |
 |---|---|---|

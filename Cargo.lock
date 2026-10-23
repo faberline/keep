@@ -460,6 +460,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "build-stamp"
+version = "0.4.14"
+source = "git+https://github.com/faberline/core?tag=v0.4.14#029e765efaac4080bb9e8283005a9c6792953f54"
+
+[[package]]
 name = "bumpalo"
 version = "3.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1508,7 +1513,7 @@ dependencies = [
  "libc",
  "percent-encoding",
  "pin-project-lite",
- "socket2 0.6.3",
+ "socket2 0.5.10",
  "system-configuration",
  "tokio",
  "tower-service",
@@ -1814,16 +1819,20 @@ version = "0.4.13"
 dependencies = [
  "anyhow",
  "axum",
+ "build-stamp",
  "claim-token",
  "clap",
  "cli-std",
  "criterion",
  "futures",
+ "keep-access",
  "keep-client",
- "keep-core",
- "keep-engine",
- "keep-http",
+ "keep-commands",
+ "keep-keyspace",
  "keep-operator",
+ "keep-replication",
+ "keep-shared-kernel",
+ "keep-storage",
  "kube",
  "openapi-codegen",
  "raft-runtime",
@@ -1843,10 +1852,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "keep-access"
+version = "0.4.13"
+dependencies = [
+ "axum",
+ "claim-token",
+ "service-auth",
+]
+
+[[package]]
 name = "keep-client"
 version = "0.4.13"
 dependencies = [
- "keep-core",
+ "keep-shared-kernel",
  "reqwest",
  "serde_json",
  "thiserror 2.0.18",
@@ -1854,53 +1872,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "keep-core"
-version = "0.4.13"
-dependencies = [
- "crc32fast",
- "rust_decimal",
- "rustls",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "utoipa",
-]
-
-[[package]]
-name = "keep-engine"
-version = "0.4.13"
-dependencies = [
- "anyhow",
- "arc-swap",
- "axum",
- "bincode",
- "crc32fast",
- "crossbeam-channel",
- "keep-core",
- "parking_lot",
- "raft-runtime",
- "reqwest",
- "rust_decimal",
- "serde",
- "serde_json",
- "server-lifecycle",
- "service-backup",
- "sha2",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "tower",
- "tracing",
-]
-
-[[package]]
-name = "keep-http"
+name = "keep-commands"
 version = "0.4.13"
 dependencies = [
  "axum",
  "claim-token",
- "keep-core",
- "keep-engine",
+ "keep-access",
+ "keep-keyspace",
+ "keep-replication",
+ "keep-shared-kernel",
  "parking_lot",
  "serde",
  "serde_json",
@@ -1915,12 +1895,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "keep-keyspace"
+version = "0.4.13"
+dependencies = [
+ "anyhow",
+ "arc-swap",
+ "bincode",
+ "crc32fast",
+ "crossbeam-channel",
+ "keep-shared-kernel",
+ "keep-storage",
+ "parking_lot",
+ "rust_decimal",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "keep-operator"
 version = "0.4.13"
 dependencies = [
  "anyhow",
  "k8s-openapi",
- "keep-core",
+ "keep-shared-kernel",
  "kube",
  "schemars",
  "serde",
@@ -1928,6 +1930,54 @@ dependencies = [
  "serde_yaml",
  "service-backup",
  "service-k8s",
+]
+
+[[package]]
+name = "keep-replication"
+version = "0.4.13"
+dependencies = [
+ "anyhow",
+ "axum",
+ "keep-keyspace",
+ "keep-shared-kernel",
+ "keep-storage",
+ "raft-runtime",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "server-lifecycle",
+ "service-backup",
+ "tempfile",
+ "tokio",
+ "tower",
+ "tracing",
+]
+
+[[package]]
+name = "keep-shared-kernel"
+version = "0.4.13"
+dependencies = [
+ "crc32fast",
+ "rust_decimal",
+ "rustls",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "utoipa",
+]
+
+[[package]]
+name = "keep-storage"
+version = "0.4.13"
+dependencies = [
+ "bincode",
+ "crc32fast",
+ "keep-shared-kernel",
+ "serde",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]
@@ -2585,7 +2635,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls",
- "socket2 0.6.3",
+ "socket2 0.5.10",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -2622,7 +2672,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.6.3",
+ "socket2 0.5.10",
  "tracing",
  "windows-sys 0.60.2",
 ]

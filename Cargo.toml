@@ -2,11 +2,14 @@
 resolver = "2"
 members = [
     "crates/keep",
+    "crates/keep-access",
     "crates/keep-client",
-    "crates/keep-core",
-    "crates/keep-engine",
-    "crates/keep-http",
+    "crates/keep-commands",
+    "crates/keep-keyspace",
     "crates/keep-operator",
+    "crates/keep-replication",
+    "crates/keep-shared-kernel",
+    "crates/keep-storage",
 ]
 default-members = ["crates/keep"]
 
@@ -19,13 +22,17 @@ repository = "https://github.com/faberline/keep"
 
 [workspace.dependencies]
 # Internal keep crates
-keep-core = { path = "crates/keep-core", version = "0.4.13" }
-keep-engine = { path = "crates/keep-engine", version = "0.4.13" }
-keep-http = { path = "crates/keep-http", version = "0.4.13" }
-keep-operator = { path = "crates/keep-operator", version = "0.4.13" }
+keep-access = { path = "crates/keep-access", version = "0.4.13" }
 keep-client = { path = "crates/keep-client", version = "0.4.13" }
+keep-commands = { path = "crates/keep-commands", version = "0.4.13" }
+keep-keyspace = { path = "crates/keep-keyspace", version = "0.4.13" }
+keep-operator = { path = "crates/keep-operator", version = "0.4.13" }
+keep-replication = { path = "crates/keep-replication", version = "0.4.13" }
+keep-shared-kernel = { path = "crates/keep-shared-kernel", version = "0.4.13" }
+keep-storage = { path = "crates/keep-storage", version = "0.4.13" }
 
 # Shared faberline/core crates
+build-stamp = { git = "https://github.com/faberline/core", tag = "v0.4.14" }
 claim-token = { git = "https://github.com/faberline/core", tag = "v0.4.14" }
 cli-std = { git = "https://github.com/faberline/core", tag = "v0.4.14", default-features = false }
 openapi-codegen = { git = "https://github.com/faberline/core", tag = "v0.4.14", version = "0.5" }
@@ -74,6 +81,10 @@ criterion = "0.5"
 redis = { version = "0.27", features = ["tokio-comp"] }
 tempfile = "3.12"
 tokio-test = "0.4"
+
+# A module is a file `src/<name>.rs`, never `src/<name>/mod.rs`.
+[workspace.lints.clippy]
+mod_module_files = "deny"
 
 [profile.release]
 opt-level = 3
