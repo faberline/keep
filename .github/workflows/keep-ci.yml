@@ -39,6 +39,7 @@ jobs:
           set -euo pipefail
           cargo fmt --all -- --check
           cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+          cargo test --locked -p keep --features operator --test operator
           cargo test --locked --workspace
       - name: Release contract
         shell: bash
