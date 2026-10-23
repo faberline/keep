@@ -1,0 +1,40 @@
+# Deploy keep to the shared faberline GKE test cluster and run the test Job
+# in k8s/gke-test-job/ against it. faberline/aw owns the cluster, the pools
+# (pool-keep-server for the server, pool-keep-client for the test Job), and the
+# reusable workflow; keep owns k8s/overlays/gke-test/ and k8s/gke-test-job/.
+# Rules: aw's docs/standards/test-cluster.md.
+#
+# Every pool is at 0 nodes between runs, so the first rollout waits a few
+# minutes for the autoscaler to add a node. The run always deletes the
+# namespace, even when the test fails.
+name: gke-test
+
+on:
+  pull_request:
+    paths:
+      - "k8s/**"
+      - ".github/workflows/gke-test.yml"
+      - ".github/workflows/keep-test-image.yml"
+      - "Dockerfile"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/keep-test-image.yml
+
+  gke-test:
+    needs: image
+    permissions:
+      id-token: write
+      contents: read
+      packages: read
+    uses: faberline/aw/.github/workflows/gke-test.yml@main
+    with:
+      image: ${{ needs.image.outputs.image }}
+      test-job: k8s/gke-test-job

@@ -1,0 +1,18 @@
+# Test Job for the shared GKE test cluster. faberline/aw's
+# .github/workflows/gke-test.yml applies it after the keep StatefulSet is
+# rolled out, and the run passes only when the Job completes. Rules: aw's
+# docs/standards/test-cluster.md.
+#
+# The Job runs on pool-keep-client, so the test client never takes CPU from
+# the keep server it tests. It reaches keep through the Service DNS name, not
+# through a port-forward. The run sets the namespace.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: keep
+resources:
+  - rbac.yaml
+  - job.yaml
+configMapGenerator:
+  - name: keep-test-script
+    files:
+      - verify.sh
