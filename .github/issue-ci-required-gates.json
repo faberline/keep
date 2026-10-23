@@ -1,0 +1,15 @@
+{
+  "aw_revision": "84e9b72b4a63cc30b47449a2e321981525fa9c34",
+  "workflows": [
+    {
+      "path": ".github/workflows/keep-ci.yml",
+      "jobs": [
+        "fmt, clippy, tests, release contract"
+      ]
+    }
+  ],
+  "qualification_blockers": [
+    "No merged current-head cloud functional/e2e qualification gate; GKE pilot PR #6 is unmerged.",
+    "No approved affected performance qualification gate. Existing unit/integration and release contract checks do not prove full MR qualification."
+  ]
+}
