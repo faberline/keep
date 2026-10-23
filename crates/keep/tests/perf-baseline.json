@@ -1,0 +1,479 @@
+{
+  "_doc": "Competitive perf ratchet baseline (issue #2). Read by tests/perf_gate_vs_kv.rs; see external-contracts/performance/benchmark/competitor-ratchet.md. Ratios are keep/peer for ops and peer/keep for p99 (higher = better for keep). Re-record with KEEP_PERF_RECORD=1 (raise-only); lowering needs KEEP_PERF_RECORD=force plus KEEP_PERF_NOTE.",
+  "schema": "keep.perf_baseline/1",
+  "policy": {
+    "throughput_ratchet": 0.85,
+    "p99_ratchet": 0.7,
+    "max_cv": 0.1,
+    "ops_min_ratio_factor": 0.8,
+    "p99_min_ratio_factor": 0.6
+  },
+  "images": {
+    "redis": "redis:8.4@sha256:6a12a187547eb2eac4da4528f9d9787d69f3848e513480baedfd75e3b2ac393e",
+    "dragonfly": "docker.dragonflydb.io/dragonflydb/dragonfly@sha256:061f00b201b58e12f974e4e96c761a881ee1c05e9d8ee967466a604b7299753b",
+    "keydb": "eqalpha/keydb@sha256:6537505c42355ca1f571276bddf83f5b750f760f07b2a185a676481791e388ac",
+    "garnet": "ghcr.io/microsoft/garnet@sha256:47922043d0b55302eef0e0a396e9d159c9530b38e00d9cb5600548a90a3da551"
+  },
+  "hosts": {
+    "darwin-aarch64-orbstack-10c": {
+      "recorded": "2026-10-22",
+      "cores": [
+        1,
+        4
+      ],
+      "note": "tiered cells are report-only on this host class: OrbStack's virtualized fsync made Redis appendfsync=always swing 2x between calibration rounds (tiered/1c/SET/ops/redis 0.54 vs 1.24), so a ratchet there would gate on VM noise. The durable-tier ratchet is the Linux nightly host class.",
+      "cells": {
+        "ram/1c/CAS/ops/dragonfly": {
+          "gate": "ratchet",
+          "baseline": 0.4254,
+          "min_ratio": 0.3403
+        },
+        "ram/1c/CAS/ops/garnet": {
+          "gate": "report",
+          "baseline": 0.5421,
+          "min_ratio": 0.3882
+        },
+        "ram/1c/CAS/ops/keydb": {
+          "gate": "report",
+          "baseline": 0.4931,
+          "min_ratio": 0.3944
+        },
+        "ram/1c/CAS/ops/redis": {
+          "gate": "ratchet",
+          "baseline": 0.2821,
+          "min_ratio": 0.212
+        },
+        "ram/1c/CAS/p99/dragonfly": {
+          "gate": "ratchet",
+          "baseline": 0.4149,
+          "min_ratio": 0.2136
+        },
+        "ram/1c/CAS/p99/garnet": {
+          "gate": "report",
+          "baseline": 1.3189,
+          "min_ratio": 0.7228
+        },
+        "ram/1c/CAS/p99/keydb": {
+          "gate": "report",
+          "baseline": 1.8338,
+          "min_ratio": 1.1002
+        },
+        "ram/1c/CAS/p99/redis": {
+          "gate": "ratchet",
+          "baseline": 0.3552,
+          "min_ratio": 0.1641
+        },
+        "ram/1c/GET/ops/dragonfly": {
+          "gate": "ratchet",
+          "baseline": 0.2559,
+          "min_ratio": 0.2047
+        },
+        "ram/1c/GET/ops/garnet": {
+          "gate": "report",
+          "baseline": 0.495,
+          "min_ratio": 0.396
+        },
+        "ram/1c/GET/ops/keydb": {
+          "gate": "report",
+          "baseline": 0.444,
+          "min_ratio": 0.3552
+        },
+        "ram/1c/GET/ops/redis": {
+          "gate": "ratchet",
+          "baseline": 0.1973,
+          "min_ratio": 0.1571
+        },
+        "ram/1c/GET/p99/dragonfly": {
+          "gate": "ratchet",
+          "baseline": 0.3011,
+          "min_ratio": 0.1512
+        },
+        "ram/1c/GET/p99/garnet": {
+          "gate": "report",
+          "baseline": 1.1547,
+          "min_ratio": 0.597
+        },
+        "ram/1c/GET/p99/keydb": {
+          "gate": "report",
+          "baseline": 2.1758,
+          "min_ratio": 1.2873
+        },
+        "ram/1c/GET/p99/redis": {
+          "gate": "ratchet",
+          "baseline": 0.2445,
+          "min_ratio": 0.1395
+        },
+        "ram/1c/SET/ops/dragonfly": {
+          "gate": "ratchet",
+          "baseline": 0.2558,
+          "min_ratio": 0.1915
+        },
+        "ram/1c/SET/ops/garnet": {
+          "gate": "report",
+          "baseline": 0.4169,
+          "min_ratio": 0.319
+        },
+        "ram/1c/SET/ops/keydb": {
+          "gate": "report",
+          "baseline": 0.4236,
+          "min_ratio": 0.3388
+        },
+        "ram/1c/SET/ops/redis": {
+          "gate": "ratchet",
+          "baseline": 0.1874,
+          "min_ratio": 0.1373
+        },
+        "ram/1c/SET/p99/dragonfly": {
+          "gate": "ratchet",
+          "baseline": 0.2977,
+          "min_ratio": 0.1573
+        },
+        "ram/1c/SET/p99/garnet": {
+          "gate": "report",
+          "baseline": 1.062,
+          "min_ratio": 0.6372
+        },
+        "ram/1c/SET/p99/keydb": {
+          "gate": "report",
+          "baseline": 2.1255,
+          "min_ratio": 1.2753
+        },
+        "ram/1c/SET/p99/redis": {
+          "gate": "ratchet",
+          "baseline": 0.2684,
+          "min_ratio": 0.1381
+        },
+        "ram/4c/CAS/ops/dragonfly": {
+          "gate": "ratchet",
+          "baseline": 0.3782,
+          "min_ratio": 0.2924
+        },
+        "ram/4c/CAS/ops/garnet": {
+          "gate": "report",
+          "baseline": 0.4046,
+          "min_ratio": 0.3236
+        },
+        "ram/4c/CAS/ops/keep-1c": {
+          "gate": "report",
+          "baseline": 1.671,
+          "min_ratio": 1.2997
+        },
+        "ram/4c/CAS/ops/keydb": {
+          "gate": "report",
+          "baseline": 0.4437,
+          "min_ratio": 0.3549
+        },
+        "ram/4c/CAS/ops/redis": {
+          "gate": "ratchet",
+          "baseline": 0.4295,
+          "min_ratio": 0.3436
+        },
+        "ram/4c/CAS/p99/dragonfly": {
+          "gate": "ratchet",
+          "baseline": 0.3509,
+          "min_ratio": 0.2105
+        },
+        "ram/4c/CAS/p99/garnet": {
+          "gate": "report",
+          "baseline": 0.418,
+          "min_ratio": 0.2508
+        },
+        "ram/4c/CAS/p99/keydb": {
+          "gate": "report",
+          "baseline": 1.7544,
+          "min_ratio": 1.0291
+        },
+        "ram/4c/CAS/p99/redis": {
+          "gate": "ratchet",
+          "baseline": 0.387,
+          "min_ratio": 0.2322
+        },
+        "ram/4c/GET/ops/dragonfly": {
+          "gate": "ratchet",
+          "baseline": 0.4388,
+          "min_ratio": 0.351
+        },
+        "ram/4c/GET/ops/garnet": {
+          "gate": "report",
+          "baseline": 0.4801,
+          "min_ratio": 0.384
+        },
+        "ram/4c/GET/ops/keep-1c": {
+          "gate": "report",
+          "baseline": 1.7422,
+          "min_ratio": 1.36
+        },
+        "ram/4c/GET/ops/keydb": {
+          "gate": "report",
+          "baseline": 0.6882,
+          "min_ratio": 0.5505
+        },
+        "ram/4c/GET/ops/redis": {
+          "gate": "ratchet",
+          "baseline": 0.4635,
+          "min_ratio": 0.3708
+        },
+        "ram/4c/GET/p99/dragonfly": {
+          "gate": "ratchet",
+          "baseline": 0.4148,
+          "min_ratio": 0.2488
+        },
+        "ram/4c/GET/p99/garnet": {
+          "gate": "report",
+          "baseline": 0.4495,
+          "min_ratio": 0.2697
+        },
+        "ram/4c/GET/p99/keydb": {
+          "gate": "report",
+          "baseline": 3.6921,
+          "min_ratio": 2.2152
+        },
+        "ram/4c/GET/p99/redis": {
+          "gate": "ratchet",
+          "baseline": 0.4373,
+          "min_ratio": 0.2623
+        },
+        "ram/4c/SET/ops/dragonfly": {
+          "gate": "ratchet",
+          "baseline": 0.3895,
+          "min_ratio": 0.3116
+        },
+        "ram/4c/SET/ops/garnet": {
+          "gate": "report",
+          "baseline": 0.4183,
+          "min_ratio": 0.3346
+        },
+        "ram/4c/SET/ops/keep-1c": {
+          "gate": "report",
+          "baseline": 1.7435,
+          "min_ratio": 1.3628
+        },
+        "ram/4c/SET/ops/keydb": {
+          "gate": "report",
+          "baseline": 0.5522,
+          "min_ratio": 0.4417
+        },
+        "ram/4c/SET/ops/redis": {
+          "gate": "ratchet",
+          "baseline": 0.4109,
+          "min_ratio": 0.3287
+        },
+        "ram/4c/SET/p99/dragonfly": {
+          "gate": "ratchet",
+          "baseline": 0.3554,
+          "min_ratio": 0.2132
+        },
+        "ram/4c/SET/p99/garnet": {
+          "gate": "report",
+          "baseline": 0.3857,
+          "min_ratio": 0.2314
+        },
+        "ram/4c/SET/p99/keydb": {
+          "gate": "report",
+          "baseline": 2.5936,
+          "min_ratio": 1.5532
+        },
+        "ram/4c/SET/p99/redis": {
+          "gate": "ratchet",
+          "baseline": 0.3636,
+          "min_ratio": 0.2181
+        },
+        "tiered/1c/CAS/ops/keydb": {
+          "gate": "report",
+          "baseline": 1.6612,
+          "min_ratio": 1.0524
+        },
+        "tiered/1c/CAS/ops/redis": {
+          "gate": "report",
+          "baseline": 1.5319,
+          "min_ratio": 1.1219
+        },
+        "tiered/1c/CAS/p99/keydb": {
+          "gate": "report",
+          "baseline": 1.7724,
+          "min_ratio": 1.0634
+        },
+        "tiered/1c/CAS/p99/redis": {
+          "gate": "report",
+          "baseline": 2.0901,
+          "min_ratio": 1.254
+        },
+        "tiered/1c/GET/ops/keydb": {
+          "gate": "report",
+          "baseline": 0.5873,
+          "min_ratio": 0.4698
+        },
+        "tiered/1c/GET/ops/redis": {
+          "gate": "report",
+          "baseline": 0.2239,
+          "min_ratio": 0.1791
+        },
+        "tiered/1c/GET/p99/keydb": {
+          "gate": "report",
+          "baseline": 3.2579,
+          "min_ratio": 1.9547
+        },
+        "tiered/1c/GET/p99/redis": {
+          "gate": "report",
+          "baseline": 0.3166,
+          "min_ratio": 0.1899
+        },
+        "tiered/1c/SET/ops/keydb": {
+          "gate": "report",
+          "baseline": 1.2696,
+          "min_ratio": 0.734
+        },
+        "tiered/1c/SET/ops/redis": {
+          "gate": "report",
+          "baseline": 1.2359,
+          "min_ratio": 0.4339
+        },
+        "tiered/1c/SET/p99/keydb": {
+          "gate": "report",
+          "baseline": 1.4058,
+          "min_ratio": 0.7008
+        },
+        "tiered/1c/SET/p99/redis": {
+          "gate": "report",
+          "baseline": 1.3808,
+          "min_ratio": 0.3433
+        },
+        "tiered/4c/CAS/ops/keep-1c": {
+          "gate": "report",
+          "baseline": 1.2979,
+          "min_ratio": 1.0383
+        },
+        "tiered/4c/CAS/ops/keydb": {
+          "gate": "report",
+          "baseline": 8.003,
+          "min_ratio": 6.4024
+        },
+        "tiered/4c/CAS/ops/redis": {
+          "gate": "report",
+          "baseline": 1.0402,
+          "min_ratio": 0.8321
+        },
+        "tiered/4c/CAS/p99/keydb": {
+          "gate": "report",
+          "baseline": 4.7999,
+          "min_ratio": 2.763
+        },
+        "tiered/4c/CAS/p99/redis": {
+          "gate": "report",
+          "baseline": 0.9897,
+          "min_ratio": 0.4793
+        },
+        "tiered/4c/GET/ops/keep-1c": {
+          "gate": "report",
+          "baseline": 1.5113,
+          "min_ratio": 1.1822
+        },
+        "tiered/4c/GET/ops/keydb": {
+          "gate": "report",
+          "baseline": 0.5392,
+          "min_ratio": 0.4313
+        },
+        "tiered/4c/GET/ops/redis": {
+          "gate": "report",
+          "baseline": 0.4194,
+          "min_ratio": 0.3355
+        },
+        "tiered/4c/GET/p99/keydb": {
+          "gate": "report",
+          "baseline": 3.1148,
+          "min_ratio": 1.7549
+        },
+        "tiered/4c/GET/p99/redis": {
+          "gate": "report",
+          "baseline": 0.4035,
+          "min_ratio": 0.2223
+        },
+        "tiered/4c/SET/ops/keep-1c": {
+          "gate": "report",
+          "baseline": 2.081,
+          "min_ratio": 1.3124
+        },
+        "tiered/4c/SET/ops/keydb": {
+          "gate": "report",
+          "baseline": 10.7732,
+          "min_ratio": 6.3325
+        },
+        "tiered/4c/SET/ops/redis": {
+          "gate": "report",
+          "baseline": 0.663,
+          "min_ratio": 0.5304
+        },
+        "tiered/4c/SET/p99/keydb": {
+          "gate": "report",
+          "baseline": 7.1506,
+          "min_ratio": 3.0028
+        },
+        "tiered/4c/SET/p99/redis": {
+          "gate": "report",
+          "baseline": 0.6222,
+          "min_ratio": 0.3733
+        },
+        "tiered/1c/CAS/ops/garnet": {
+          "gate": "report",
+          "baseline": 0.7959,
+          "min_ratio": 0.6367
+        },
+        "tiered/1c/CAS/p99/garnet": {
+          "gate": "report",
+          "baseline": 0.8435,
+          "min_ratio": 0.5061
+        },
+        "tiered/1c/GET/ops/garnet": {
+          "gate": "report",
+          "baseline": 0.4502,
+          "min_ratio": 0.3601
+        },
+        "tiered/1c/GET/p99/garnet": {
+          "gate": "report",
+          "baseline": 0.519,
+          "min_ratio": 0.3114
+        },
+        "tiered/1c/SET/ops/garnet": {
+          "gate": "report",
+          "baseline": 0.4347,
+          "min_ratio": 0.3477
+        },
+        "tiered/1c/SET/p99/garnet": {
+          "gate": "report",
+          "baseline": 0.4886,
+          "min_ratio": 0.2931
+        },
+        "tiered/4c/CAS/ops/garnet": {
+          "gate": "report",
+          "baseline": 0.584,
+          "min_ratio": 0.4672
+        },
+        "tiered/4c/CAS/p99/garnet": {
+          "gate": "report",
+          "baseline": 0.5769,
+          "min_ratio": 0.3461
+        },
+        "tiered/4c/GET/ops/garnet": {
+          "gate": "report",
+          "baseline": 0.4,
+          "min_ratio": 0.32
+        },
+        "tiered/4c/GET/p99/garnet": {
+          "gate": "report",
+          "baseline": 0.4056,
+          "min_ratio": 0.2433
+        },
+        "tiered/4c/SET/ops/garnet": {
+          "gate": "report",
+          "baseline": 0.9129,
+          "min_ratio": 0.7303
+        },
+        "tiered/4c/SET/p99/garnet": {
+          "gate": "report",
+          "baseline": 0.9487,
+          "min_ratio": 0.5692
+        }
+      }
+    }
+  }
+}

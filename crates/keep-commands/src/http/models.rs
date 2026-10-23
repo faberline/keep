@@ -296,6 +296,10 @@ pub struct InfoResponse {
     pub evicted_keys: u64,
     pub spilled_keys: u64,
     pub eviction_policy: String,
+    /// True when writes are WAL-backed (durable-before-ack); false for RAM-only.
+    pub persistence_enabled: bool,
+    /// WAL group-commit fsync interval; `null` when persistence is disabled.
+    pub fsync_interval_ms: Option<u64>,
     pub version: String,
 }
 
