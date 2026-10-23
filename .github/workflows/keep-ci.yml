@@ -1,6 +1,6 @@
 # Pull-request and main CI: format, lint, the workspace tests, and the
-# release contract. The issue loop's review step merges a PR only after these
-# checks pass, and a PR without checks blocks its issue.
+# release contract. CI lifecycle handoff requires the reviewed gate contract;
+# independent review after success does not merge or change issue labels.
 name: keep-ci
 
 on:

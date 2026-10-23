@@ -1,0 +1,36 @@
+# Trusted default-branch controller only; never executes PR code or artifacts.
+name: Issue CI handoff
+on:
+  workflow_run:
+    workflows: ["keep-ci"]
+    types: [completed]
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+  issues: write
+concurrency:
+  group: issue-ci-handoff
+  cancel-in-progress: false
+jobs:
+  handoff:
+    if: github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Validate trusted failure-only policy
+        run: python3 scripts/issue-ci/check-policy.py .github/issue-ci-required-gates.json
+      - name: Reconcile current PR heads from trusted configuration
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/issue-ci/handoff.py \
+            --repo "$REPO" --run-id "$RUN_ID" --reconcile \
+            --config .github/issue-ci-required-gates.json
