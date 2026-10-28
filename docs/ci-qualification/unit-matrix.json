@@ -1,0 +1,112 @@
+{
+  "include": [
+    {
+      "package": "keep",
+      "profile": "default"
+    },
+    {
+      "package": "keep-access",
+      "profile": "default"
+    },
+    {
+      "package": "keep-client",
+      "profile": "default"
+    },
+    {
+      "package": "keep-commands",
+      "profile": "default"
+    },
+    {
+      "package": "keep-keyspace",
+      "profile": "default"
+    },
+    {
+      "package": "keep-operator",
+      "profile": "default"
+    },
+    {
+      "package": "keep-replication",
+      "profile": "default"
+    },
+    {
+      "package": "keep-shared-kernel",
+      "profile": "default"
+    },
+    {
+      "package": "keep-storage",
+      "profile": "default"
+    },
+    {
+      "package": "keep",
+      "profile": "all-features"
+    },
+    {
+      "package": "keep",
+      "profile": "feature:client"
+    },
+    {
+      "package": "keep",
+      "profile": "feature:issue"
+    },
+    {
+      "package": "keep",
+      "profile": "feature:operator"
+    },
+    {
+      "package": "keep",
+      "profile": "feature:raft"
+    },
+    {
+      "package": "keep",
+      "profile": "feature:report-issue"
+    },
+    {
+      "package": "keep",
+      "profile": "feature:rustls-provider"
+    },
+    {
+      "package": "keep",
+      "profile": "feature:self-update"
+    },
+    {
+      "package": "keep",
+      "profile": "no-default"
+    },
+    {
+      "package": "keep-commands",
+      "profile": "all-features"
+    },
+    {
+      "package": "keep-commands",
+      "profile": "feature:raft"
+    },
+    {
+      "package": "keep-commands",
+      "profile": "no-default"
+    },
+    {
+      "package": "keep-replication",
+      "profile": "all-features"
+    },
+    {
+      "package": "keep-replication",
+      "profile": "feature:raft"
+    },
+    {
+      "package": "keep-replication",
+      "profile": "no-default"
+    },
+    {
+      "package": "keep-shared-kernel",
+      "profile": "all-features"
+    },
+    {
+      "package": "keep-shared-kernel",
+      "profile": "feature:rustls-provider"
+    },
+    {
+      "package": "keep-shared-kernel",
+      "profile": "no-default"
+    }
+  ]
+}

@@ -1,0 +1,337 @@
+{
+  "baseline_comparison": null,
+  "execution_selection": "complete workspace",
+  "packages": [
+    {
+      "dependencies": [
+        "anyhow",
+        "axum",
+        "build-stamp",
+        "claim-token",
+        "clap",
+        "cli-std",
+        "criterion",
+        "futures",
+        "keep-access",
+        "keep-client",
+        "keep-commands",
+        "keep-keyspace",
+        "keep-operator",
+        "keep-replication",
+        "keep-shared-kernel",
+        "keep-storage",
+        "kube",
+        "openapi-codegen",
+        "raft-runtime",
+        "redis",
+        "reqwest",
+        "serde",
+        "serde_json",
+        "serde_yaml",
+        "service-http",
+        "service-k8s",
+        "tempfile",
+        "tokio",
+        "tokio-test",
+        "tower",
+        "tracing",
+        "transport-h2c"
+      ],
+      "directory": "crates/keep",
+      "features": {
+        "client": [
+          "dep:keep-client",
+          "rustls-provider"
+        ],
+        "default": [],
+        "issue": [
+          "cli-std/online",
+          "rustls-provider"
+        ],
+        "operator": [
+          "dep:keep-operator",
+          "rustls-provider"
+        ],
+        "raft": [
+          "keep-replication/raft",
+          "keep-commands/raft",
+          "rustls-provider"
+        ],
+        "report-issue": [
+          "issue"
+        ],
+        "rustls-provider": [
+          "keep-shared-kernel/rustls-provider"
+        ],
+        "self-update": [
+          "cli-std/online",
+          "rustls-provider"
+        ]
+      },
+      "name": "keep",
+      "targets": [
+        {
+          "harness": true,
+          "kind": [
+            "rlib"
+          ],
+          "name": "keep",
+          "required-features": [],
+          "test": true
+        },
+        {
+          "harness": true,
+          "kind": [
+            "bin"
+          ],
+          "name": "keep",
+          "required-features": [],
+          "test": true
+        }
+      ]
+    },
+    {
+      "dependencies": [
+        "axum",
+        "claim-token",
+        "service-auth"
+      ],
+      "directory": "crates/keep-access",
+      "features": {},
+      "name": "keep-access",
+      "targets": [
+        {
+          "harness": true,
+          "kind": [
+            "lib"
+          ],
+          "name": "keep_access",
+          "required-features": [],
+          "test": true
+        }
+      ]
+    },
+    {
+      "dependencies": [
+        "keep-shared-kernel",
+        "reqwest",
+        "serde_json",
+        "thiserror",
+        "transport-h2c"
+      ],
+      "directory": "crates/keep-client",
+      "features": {},
+      "name": "keep-client",
+      "targets": [
+        {
+          "harness": true,
+          "kind": [
+            "lib"
+          ],
+          "name": "keep_client",
+          "required-features": [],
+          "test": true
+        }
+      ]
+    },
+    {
+      "dependencies": [
+        "axum",
+        "claim-token",
+        "keep-access",
+        "keep-keyspace",
+        "keep-replication",
+        "keep-shared-kernel",
+        "parking_lot",
+        "serde",
+        "serde_json",
+        "serde_yaml",
+        "service-auth",
+        "service-http",
+        "tokio",
+        "tower",
+        "tower-http",
+        "tracing",
+        "utoipa"
+      ],
+      "directory": "crates/keep-commands",
+      "features": {
+        "default": [],
+        "raft": [
+          "keep-replication/raft"
+        ]
+      },
+      "name": "keep-commands",
+      "targets": [
+        {
+          "harness": true,
+          "kind": [
+            "lib"
+          ],
+          "name": "keep_commands",
+          "required-features": [],
+          "test": true
+        }
+      ]
+    },
+    {
+      "dependencies": [
+        "anyhow",
+        "arc-swap",
+        "bincode",
+        "crc32fast",
+        "crossbeam-channel",
+        "keep-shared-kernel",
+        "keep-storage",
+        "parking_lot",
+        "rust_decimal",
+        "serde",
+        "serde_json",
+        "sha2",
+        "tempfile",
+        "thiserror",
+        "tokio",
+        "tracing"
+      ],
+      "directory": "crates/keep-keyspace",
+      "features": {},
+      "name": "keep-keyspace",
+      "targets": [
+        {
+          "harness": true,
+          "kind": [
+            "lib"
+          ],
+          "name": "keep_keyspace",
+          "required-features": [],
+          "test": true
+        }
+      ]
+    },
+    {
+      "dependencies": [
+        "anyhow",
+        "k8s-openapi",
+        "keep-shared-kernel",
+        "kube",
+        "schemars",
+        "serde",
+        "serde_json",
+        "serde_yaml",
+        "service-backup",
+        "service-k8s"
+      ],
+      "directory": "crates/keep-operator",
+      "features": {},
+      "name": "keep-operator",
+      "targets": [
+        {
+          "harness": true,
+          "kind": [
+            "lib"
+          ],
+          "name": "keep_operator",
+          "required-features": [],
+          "test": true
+        }
+      ]
+    },
+    {
+      "dependencies": [
+        "anyhow",
+        "axum",
+        "keep-keyspace",
+        "keep-shared-kernel",
+        "keep-storage",
+        "raft-runtime",
+        "serde",
+        "serde_json",
+        "service-backup",
+        "tempfile",
+        "tokio",
+        "tracing"
+      ],
+      "directory": "crates/keep-replication",
+      "features": {
+        "default": [],
+        "raft": [
+          "dep:raft-runtime",
+          "dep:axum",
+          "keep-shared-kernel/rustls-provider"
+        ]
+      },
+      "name": "keep-replication",
+      "targets": [
+        {
+          "harness": true,
+          "kind": [
+            "lib"
+          ],
+          "name": "keep_replication",
+          "required-features": [],
+          "test": true
+        }
+      ]
+    },
+    {
+      "dependencies": [
+        "crc32fast",
+        "rust_decimal",
+        "rustls",
+        "serde",
+        "serde_json",
+        "thiserror",
+        "utoipa"
+      ],
+      "directory": "crates/keep-shared-kernel",
+      "features": {
+        "default": [],
+        "rustls-provider": [
+          "dep:rustls"
+        ]
+      },
+      "name": "keep-shared-kernel",
+      "targets": [
+        {
+          "harness": true,
+          "kind": [
+            "lib"
+          ],
+          "name": "keep_shared_kernel",
+          "required-features": [],
+          "test": true
+        }
+      ]
+    },
+    {
+      "dependencies": [
+        "bincode",
+        "crc32fast",
+        "keep-shared-kernel",
+        "serde",
+        "sha2",
+        "tempfile",
+        "thiserror",
+        "tracing"
+      ],
+      "directory": "crates/keep-storage",
+      "features": {},
+      "name": "keep-storage",
+      "targets": [
+        {
+          "harness": true,
+          "kind": [
+            "lib"
+          ],
+          "name": "keep_storage",
+          "required-features": [],
+          "test": true
+        }
+      ]
+    }
+  ],
+  "provenance": {
+    "inspection_only": true
+  },
+  "qualification": "not evaluated"
+}
