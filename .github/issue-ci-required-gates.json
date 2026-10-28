@@ -1,5 +1,5 @@
 {
-  "aw_revision": "67af8d020df3ca2ec4b064289408cfb0c2f8b299",
+  "aw_revision": "28637704225692e5a1766b9c6b9778ef2b52e155",
   "workflows": [
     {
       "path": ".github/workflows/keep-ci.yml",
@@ -12,5 +12,68 @@
     "No merged current-head cloud functional/e2e qualification gate; GKE pilot PR #6 is unmerged.",
     "No approved affected performance qualification gate. Existing unit/integration and release contract checks do not prove full MR qualification."
   ],
-  "lifecycle_mode": "failure-only"
+  "lifecycle_mode": "failure-only",
+  "ci_handoff_policy": {
+    "aw_revision": "67af8d020df3ca2ec4b064289408cfb0c2f8b299",
+    "workflows": [
+      {
+        "path": ".github/workflows/keep-ci.yml",
+        "jobs": [
+          "fmt, clippy, tests, release contract"
+        ]
+      }
+    ],
+    "qualification_blockers": [
+      "No merged current-head cloud functional/e2e qualification gate; GKE pilot PR #6 is unmerged.",
+      "No approved affected performance qualification gate. Existing unit/integration and release contract checks do not prove full MR qualification."
+    ],
+    "lifecycle_mode": "failure-only"
+  },
+  "controller_source": "faberline/aw@28637704225692e5a1766b9c6b9778ef2b52e155:plugins/faberline/skills/issue-ci/scripts/native_merge.py",
+  "claude_final_review": {
+    "version": 1,
+    "producer": {
+      "path": ".github/workflows/claude-final-review.yml",
+      "id": 399790350,
+      "definition_sha": "fad843a0b1afb53c82770341d1877c8c69ec293f",
+      "job": "review"
+    },
+    "gates": {
+      ".github/workflows/keep-ci.yml": {
+        "id": 393760107,
+        "definition_sha": "e10b6a613ee271c997fb72bfa8e1a352da5f471c"
+      }
+    },
+    "protected_paths": [
+      "scripts/issue-ci/",
+      "scripts/pr-gates/",
+      "scripts/gke-test/",
+      "acceptance/gcp/",
+      "k8s/",
+      "Cargo.toml",
+      "Cargo.lock",
+      ".cargo/",
+      "rust-toolchain",
+      "rust-toolchain.toml",
+      "Dockerfile.test"
+    ],
+    "cli_sha256": "b73676430af12f97316a798b8371f81d640f90a58bdcb8f3ce56a835bb47df56",
+    "credential_profile": "personal-claude-max-oauth",
+    "merge_producer": null,
+    "merge_method": null
+  },
+  "native_auto_merge": {
+    "version": 1,
+    "enabled": true,
+    "status_context": "claude/verified-merge",
+    "status_app_id": 15368,
+    "merge_method": "SQUASH",
+    "ruleset_id": 26069027,
+    "producer": {
+      "path": ".github/workflows/issue-ci.yml",
+      "id": 394215005,
+      "definition_sha": "41cbc9dfd22bfcab77516c76abbbd54062f58443",
+      "job": "native-auto-merge"
+    }
+  }
 }
