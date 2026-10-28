@@ -3,7 +3,7 @@
 
 #![allow(clippy::all)]
 
-pub use keep_keyspace::{engine, persistence, EvictionPolicy, KvEngine};
+pub use keep_keyspace::{apply, engine, persistence, EvictionPolicy, KvEngine};
 pub use keep_replication::backup;
 #[cfg(feature = "raft")]
 pub use keep_replication::raft;
