@@ -250,3 +250,18 @@ fn rustls_provider_install_is_idempotent() {
     install_default_crypto_provider();
     install_default_crypto_provider();
 }
+
+/// R6 (#14) — the committed `k8s/operator/crd.yaml` is byte-equal to the generator output.
+#[test]
+fn committed_crd_matches_generator() {
+    let _ = include_str!("../../../k8s/operator/crd.yaml");
+    let crd_path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../k8s/operator/crd.yaml");
+    let committed = std::fs::read(&crd_path).expect("read committed k8s/operator/crd.yaml");
+    let generated = cli_std::artifact::ensure_trailing_newline(&crd_yaml());
+    assert_eq!(
+        committed.as_slice(),
+        generated.as_bytes(),
+        "k8s/operator/crd.yaml does not match generator output; regenerate with:\n  cargo run -p keep --features operator -- k8s crd render --out k8s/operator/crd.yaml"
+    );
+}
