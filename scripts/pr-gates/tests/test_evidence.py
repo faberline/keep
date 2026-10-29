@@ -5,6 +5,7 @@ import importlib.util
 import io
 from pathlib import Path
 import subprocess
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -36,6 +37,9 @@ class IdentityTests(unittest.TestCase):
         discovery=patch.object(plan, '_list_unit_tests', return_value={'alpha', 'beta'})
         discovery.start()
         self.addCleanup(discovery.stop)
+        clean=patch.object(plan, 'verify_clean')
+        self.clean=clean.start()
+        self.addCleanup(clean.stop)
 
     @patch.object(plan.subprocess, 'check_output')
     def test_exact_head_and_base_are_read_using_argv(self, command):
@@ -71,13 +75,13 @@ class IdentityTests(unittest.TestCase):
     @patch.object(plan, 'load')
     @patch.object(plan.subprocess, 'check_output')
     def test_cli_rechecks_identity_and_uses_fresh_baseline_before_execution(self, git, load, run):
-        git.side_effect = [HEAD, BASE, HEAD, BASE]
+        git.side_effect = [HEAD, BASE] * 4
         load.side_effect = [[package()], [package()]]
         run.return_value = subprocess.CompletedProcess([], 0, stdout=output(), stderr='')
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             plan.main(['run', '--root', '/head', '--expected-head', HEAD, '--expected-base', BASE,
                        '--baseline-root', '/base', '--package', 'leaf', '--profile', 'default', '--kind', 'unit'])
-        self.assertEqual(4, git.call_count)
+        self.assertEqual(8, git.call_count)
         self.assertEqual(Path('/base'), load.call_args_list[1].args[0])
         self.assertEqual(1, run.call_count)
 
@@ -97,6 +101,60 @@ class IdentityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '40-hex'):
             plan.verify_identity('/head', '123abcd', BASE, '/base')
         command.assert_not_called()
+
+    @patch.object(plan, 'execute')
+    @patch.object(plan, 'load')
+    @patch.object(plan.subprocess, 'check_output')
+    def test_checkout_change_after_execution_refuses_passing_result(self, git, load, execute):
+        git.side_effect = [HEAD, BASE] * 4
+        load.side_effect = [[package()], [package()]]
+        self.clean.side_effect = [None] * 6 + [ValueError('checkout changed')]
+        with self.assertRaisesRegex(ValueError, 'checkout changed'):
+            plan.main(['run', '--root', '/head', '--expected-head', HEAD, '--expected-base', BASE,
+                       '--baseline-root', '/base', '--package', 'leaf', '--profile', 'default', '--kind', 'unit'])
+        execute.assert_called_once()
+
+    @patch.object(plan, 'execute', side_effect=ValueError('unit failed'))
+    @patch.object(plan, 'load')
+    @patch.object(plan.subprocess, 'check_output')
+    def test_failed_execution_still_checks_both_checkouts(self, git, load, execute):
+        git.side_effect = [HEAD, BASE] * 4
+        load.side_effect = [[package()], [package()]]
+        with self.assertRaisesRegex(ValueError, 'unit failed'):
+            plan.main(['run', '--root', '/head', '--expected-head', HEAD, '--expected-base', BASE,
+                       '--baseline-root', '/base', '--package', 'leaf', '--profile', 'default', '--kind', 'unit'])
+        self.assertEqual(8, self.clean.call_count)
+        self.assertEqual(Path('/base'), self.clean.call_args_list[-1].args[0])
+
+    @patch.object(plan.subprocess, 'check_output')
+    def test_dirty_baseline_is_rejected(self, git):
+        git.side_effect = [HEAD, BASE]
+        self.clean.side_effect = [None, ValueError('baseline changed')]
+        with self.assertRaisesRegex(ValueError, 'baseline changed'):
+            plan.verify_identity('/head', HEAD, BASE, '/base')
+
+
+class CleanCheckoutTests(unittest.TestCase):
+    def test_tracked_staged_and_untracked_changes_are_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            def git(*args):
+                subprocess.run(['git', '-C', tmp, *args], check=True, capture_output=True)
+            git('init', '-q')
+            (root/'file').write_text('original\n')
+            git('add', 'file')
+            git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'fixture')
+            plan.verify_clean(root)
+            (root/'file').write_text('changed\n')
+            with self.assertRaisesRegex(ValueError, 'checkout contains'):
+                plan.verify_clean(root)
+            git('add', 'file')
+            with self.assertRaisesRegex(ValueError, 'checkout contains'):
+                plan.verify_clean(root)
+            git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'updated fixture')
+            (root/'untracked').write_text('new\n')
+            with self.assertRaisesRegex(ValueError, 'checkout contains'):
+                plan.verify_clean(root)
 
 
 class BaselineTests(unittest.TestCase):

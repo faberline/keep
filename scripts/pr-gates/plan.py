@@ -196,6 +196,15 @@ def compare_inventory(baseline, head):
             'execution_selection': 'complete workspace', 'qualification': 'not evaluated'}
 
 
+def verify_clean(root):
+    """Reject visible changes to a checkout used as CI evidence."""
+    status = subprocess.check_output(
+        ['git', '-C', str(root), 'status', '--porcelain=v1', '--untracked-files=all',
+         '--ignore-submodules=none'], text=True)
+    if status:
+        raise ValueError(f'checkout contains tracked or untracked changes: {root}')
+
+
 def verify_identity(root, expected_head, expected_base, baseline_root):
     """Resolve checkout identity through read-only argv calls, never shell text."""
     if not all((expected_head, expected_base, baseline_root)):
@@ -210,6 +219,8 @@ def verify_identity(root, expected_head, expected_base, baseline_root):
         raise ValueError(f'stale head: expected {expected_head}, actual {actual_head}')
     if actual_base.lower() != expected_base.lower():
         raise ValueError(f'wrong baseline: expected {expected_base}, actual {actual_base}')
+    verify_clean(root)
+    verify_clean(baseline_root)
     return {'expected_head': expected_head, 'expected_base': expected_base,
             'actual_head': actual_head, 'actual_base': actual_base}
 
@@ -414,6 +425,8 @@ def main(argv=None):
     comparison = None
     if all(provided):
         comparison = compare_inventory(load(args.baseline_root), packages)
+        # Metadata generation must not silently change the evidence inputs.
+        provenance = verify_identity(args.root, *provided)
     if args.action == 'inventory':
         print(json.dumps({'packages': packages, 'provenance': provenance,
                           'baseline_comparison': comparison, 'execution_selection': 'complete workspace',
@@ -428,7 +441,12 @@ def main(argv=None):
             parser.error('run requires a workspace --package, --profile and --kind')
         # Recheck identity immediately before launching product commands.
         provenance = verify_identity(args.root, *provided)
-        execute(args.root, package, args.profile, args.kind, provenance)
+        try:
+            execute(args.root, package, args.profile, args.kind, provenance)
+        finally:
+            # Check after both a passing and a failed product command. The
+            # commit IDs alone do not describe an edited working tree.
+            verify_identity(args.root, *provided)
 
 
 if __name__ == '__main__':

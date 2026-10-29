@@ -54,6 +54,10 @@ Zero, failed, filtered, measured, duplicate, incomplete or missing results fail.
 This candidate grants no empty-target exception. A failed target does not hide
 later targets. Clippy still runs unless the workflow is cancelled.
 Each roster must match the harness discovery list before and after execution.
+The planner checks both checkouts for tracked and non-ignored untracked changes
+before and after metadata generation and product commands. A detected change
+fails the job. This does not prove that files cannot change and be restored
+during a run.
 
 If debug reports ignored tests, the entire same target must also pass in
 release with `--include-ignored`. Every ignored name must pass there. Both
