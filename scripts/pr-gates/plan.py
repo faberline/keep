@@ -46,6 +46,8 @@ def inventory(root, metadata):
                          'required-features': t.get('required-features', []),
                          'harness': True, 'test': True} for t in targets],
             'dependencies': sorted({d['name'] for d in package['dependencies']}),
+            'optional_dependencies': sorted({d.get('rename') or d['name']
+                                             for d in package['dependencies'] if d.get('optional') is True}),
         })
         row = result[-1]
         coverage = [target_coverage(row, profile) for profile in profiles(row)]
@@ -91,8 +93,17 @@ def enabled_features(package, profile):
     while roots - result:
         feature = sorted(roots - result)[0]
         result.add(feature)
-        roots.update(value for value in package['features'].get(feature, [])
-                     if value in package['features'])
+        for value in package['features'].get(feature, []):
+            if value in package['features']:
+                roots.add(value)
+            elif '/' in value:
+                dependency, _ = value.split('/', 1)
+                # Cargo enables an optional dependency for dep/feature, but
+                # dep?/feature leaves it disabled. A matching crate feature
+                # can then satisfy a target's required-features.
+                if (not dependency.endswith('?') and dependency in package.get('optional_dependencies', [])
+                        and dependency in package['features']):
+                    roots.add(dependency)
     return result
 
 
@@ -207,6 +218,8 @@ RUNNING = re.compile(r'^running (\d+) tests?$')
 SUMMARY = re.compile(r'^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; '
                      r'(\d+) ignored; (\d+) measured; (\d+) filtered out;')
 TEST_ROW = re.compile(r'^test (.+) \.\.\. (.+)$')
+LIST_ROW = re.compile(r'^(.+): test$')
+LIST_SUMMARY = re.compile(r'^(\d+) tests?, (\d+) benchmarks?$')
 
 
 def _libtest_blocks(stdout, expected_targets, pending_ignored=False):
@@ -270,6 +283,43 @@ def _run_product(argv, root):
     return result
 
 
+def listed_unit_tests(stdout):
+    """Require one complete, nonempty libtest discovery roster."""
+    names = []
+    summary = None
+    for line in stdout.splitlines():
+        if not line:
+            continue
+        row = LIST_ROW.fullmatch(line)
+        totals = LIST_SUMMARY.fullmatch(line)
+        if row and summary is None:
+            name = row[1]
+            if name in names:
+                raise ValueError(f'duplicate listed unit test: {name}')
+            names.append(name)
+        elif totals and summary is None:
+            summary = (int(totals[1]), int(totals[2]))
+        else:
+            raise ValueError('unrecognized or incomplete libtest discovery output')
+    if summary is None or summary[1] or summary[0] != len(names):
+        raise ValueError('partial or non-unit libtest discovery roster')
+    if not names:
+        raise ValueError('zero-test target requires reviewed applicability')
+    return set(names)
+
+
+def _list_unit_tests(root, package, profile, target, release=False):
+    argv = command(package, profile, 'unit', target)
+    if release:
+        argv.insert(2, '--release')
+    argv += ['--', '--list', '--format', 'pretty', '--color', 'never']
+    print(json.dumps({'command': argv, 'phase': 'release-list' if release else 'debug-list'}), flush=True)
+    result = _run_product(argv, root)
+    if result.returncode:
+        raise ValueError(f'unit test discovery failed with exit {result.returncode}')
+    return listed_unit_tests(result.stdout)
+
+
 def execute(root, package, profile, kind, provenance):
     active = [target for target, enabled in target_coverage(package, profile) if enabled]
     if not active:
@@ -282,6 +332,14 @@ def execute(root, package, profile, kind, provenance):
             argv += ['--', '--format', 'pretty', '--color', 'never']
         record = {'command': argv, 'package': package['name'], 'target': target,
                   'profile': profile, 'provenance': provenance, 'qualification': 'not evaluated'}
+        if kind == 'unit':
+            try:
+                before = _list_unit_tests(root, package, profile, target)
+            except ValueError as error:
+                errors.append(f'{target}: {error}')
+                record['evidence_error'] = str(error)
+                print(json.dumps(record), flush=True)
+                continue
         print(json.dumps(record), flush=True)
         result = _run_product(argv, root)
         if result.returncode:
@@ -289,6 +347,11 @@ def execute(root, package, profile, kind, provenance):
         elif kind == 'unit':
             try:
                 debug = _libtest_blocks(result.stdout, 1, pending_ignored=True)
+                debug_names = {name for block in debug for name in block['roster'] + block['ignored_roster']}
+                listed = _list_unit_tests(root, package, profile, target)
+                if before != listed or listed != debug_names:
+                    raise ValueError('debug execution differs from discovered unit roster')
+                record['discovered_unit_roster'] = sorted(listed)
                 ignored = {name for block in debug for name in block['ignored_roster']}
                 if ignored:
                     # Measurement units explicitly require release. Retain the
@@ -298,6 +361,7 @@ def execute(root, package, profile, kind, provenance):
                     release_argv = command(package, profile, 'unit', target)
                     release_argv.insert(2, '--release')
                     release_argv += ['--', '--format', 'pretty', '--color', 'never', '--include-ignored']
+                    release_before = _list_unit_tests(root, package, profile, target, release=True)
                     print(json.dumps({**record, 'command': release_argv, 'phase': 'release-all-including-ignored'}), flush=True)
                     release = _run_product(release_argv, root)
                     if release.returncode:
@@ -306,8 +370,12 @@ def execute(root, package, profile, kind, provenance):
                     executed = {name for block in evidence for name in block['roster']}
                     if not ignored <= executed:
                         raise ValueError('ignored unit names missing from complete release execution')
+                    release_listed = _list_unit_tests(root, package, profile, target, release=True)
+                    if release_before != release_listed or not debug_names <= release_listed or release_listed != executed:
+                        raise ValueError('release execution differs from discovered unit roster')
                     record['release_command'] = release_argv
                     record['resolved_ignored_roster'] = sorted(ignored)
+                    record['release_discovered_unit_roster'] = sorted(release_listed)
                     record['unit_evidence'] = evidence
                 else:
                     record['unit_evidence'] = libtest_evidence(result.stdout, 1)

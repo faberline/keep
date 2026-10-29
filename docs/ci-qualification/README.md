@@ -44,6 +44,8 @@ Every PR runs the complete workspace, including docs-only changes. Advisory
 affected-path selection cannot remove execution. Missing or duplicate packages,
 disabled harnesses, lost baseline targets/features and matrices over 256 rows
 fail instead of being accepted or truncated.
+Optional dependency features also select binaries whose required features they
+enable. Weak dependency features do not enable a dependency on their own.
 
 ## Passing evidence
 
@@ -51,11 +53,13 @@ Each enabled target must produce a complete, named, nonempty passing roster.
 Zero, failed, filtered, measured, duplicate, incomplete or missing results fail.
 This candidate grants no empty-target exception. A failed target does not hide
 later targets. Clippy still runs unless the workflow is cancelled.
+Each roster must match the harness discovery list before and after execution.
 
 If debug reports ignored tests, the entire same target must also pass in
 release with `--include-ignored`. Every ignored name must pass there. Both
 executions must succeed; the release roster must have zero failures, ignored,
-measured or filtered tests. Existing performance assertions stay unchanged.
+measured or filtered tests and match its discovery lists. Every debug test name
+must remain in the release list. Existing performance assertions stay unchanged.
 
 Clippy uses `--all-targets -- -D warnings` in each feature row. Formatting is
 independent of the matrix. The workflow uses pinned actions, read-only

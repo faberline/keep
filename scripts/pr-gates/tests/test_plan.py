@@ -47,6 +47,19 @@ class MatrixTests(unittest.TestCase):
         self.assertEqual([True, False], [active for _, active in plan.target_coverage(p, 'default')])
         self.assertEqual([True, True], [active for _, active in plan.target_coverage(p, 'all-features')])
 
+    def test_optional_dependency_feature_selects_its_required_binary(self):
+        p=package(features={'alias': [], 'direct': ['alias/extra'], 'nested': ['direct'],
+                            'weak': ['alias?/extra'], 'internal': ['dep:alias']},
+                  targets=[{'name':'leaf','kind':['lib'],'required-features':[]},
+                           {'name':'tool','kind':['bin'],'required-features':['alias']}])
+        p['optional_dependencies']=['alias']
+        for profile in ('feature:direct','feature:nested'):
+            self.assertIn('--bin',plan.command(p,profile,'unit'))
+        for profile in ('feature:weak','feature:internal','no-default'):
+            self.assertNotIn('--bin',plan.command(p,profile,'unit'))
+        p['optional_dependencies']=[]
+        self.assertNotIn('--bin',plan.command(p,'feature:direct','unit'))
+
     def test_binary_only_profile_cannot_succeed_with_zero_targets(self):
         p = package(features={'cli': []}, targets=[{'name': 'tool', 'kind': ['bin'], 'required-features': ['cli']}])
         with self.assertRaisesRegex(ValueError, 'zero enabled'):
@@ -103,6 +116,10 @@ class InventoryTests(unittest.TestCase):
     def test_renamed_dependency_preserves_actual_package_identity(self):
         self.metadata['packages'][0]['dependencies'] = [{'name': 'actual', 'rename': 'local_alias'}]
         self.assertEqual(['actual'], plan.inventory(self.root, self.metadata)[0]['dependencies'])
+
+    def test_optional_dependency_uses_local_alias_for_feature_resolution(self):
+        self.metadata['packages'][0]['dependencies']=[{'name':'actual','rename':'local_alias','optional':True}]
+        self.assertEqual(['local_alias'],plan.inventory(self.root,self.metadata)[0]['optional_dependencies'])
 
     def test_missing_package_identity_refuses(self):
         self.metadata['workspace_members'].append('missing-id')
