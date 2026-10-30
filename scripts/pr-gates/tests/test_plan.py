@@ -105,6 +105,116 @@ class InventoryTests(unittest.TestCase):
             'name': 'leaf', 'id': 'leaf-id', 'manifest_path': str(self.root / 'crates/leaf/Cargo.toml'),
             'features': {}, 'targets': [{'name': 'leaf', 'kind': ['lib'], 'test': True}], 'dependencies': []}]}
 
+    def add_package(self, name, directory):
+        directory = self.root / directory
+        directory.mkdir(parents=True, exist_ok=True)
+        manifest = directory / 'Cargo.toml'
+        manifest.write_text(f'[package]\nname="{name}"\nversion="0.1.0"\n')
+        package = {'name': name, 'id': name+'-id', 'manifest_path': str(manifest),
+                   'features': {}, 'targets': [{'name': name, 'kind': ['lib'], 'test': True}],
+                   'dependencies': []}
+        self.metadata['workspace_members'].append(package['id'])
+        self.metadata['packages'].append(package)
+        return package
+
+    def test_implicit_transitive_workspace_members_are_included(self):
+        auto = self.add_package('auto', 'implicit/auto')
+        nested = self.add_package('nested', 'implicit/nested')
+        self.metadata['packages'][0]['dependencies'].append(
+            {'name':'auto','path':str(self.root/'implicit/auto')})
+        auto['dependencies'].append({'name':'nested','path':str(self.root/'implicit/nested')})
+        self.assertEqual(['auto','leaf','nested'],[p['name'] for p in plan.inventory(self.root,self.metadata)])
+        self.assertEqual('nested',nested['name'])
+
+    def test_missing_reachable_implicit_member_refuses(self):
+        self.add_package('auto','implicit/auto')
+        self.metadata['packages'][0]['dependencies'].append(
+            {'name':'auto','path':str(self.root/'implicit/auto')})
+        self.metadata['workspace_members'].remove('auto-id')
+        with self.assertRaisesRegex(ValueError,'implicit path member missing'):
+            plan.inventory(self.root,self.metadata)
+
+    def test_path_dependency_must_match_target_package_identity(self):
+        self.add_package('auto','implicit/auto')
+        self.metadata['packages'][0]['dependencies'].append(
+            {'name':'different','path':str(self.root/'implicit/auto')})
+        with self.assertRaisesRegex(ValueError,'dependency identity mismatch'):
+            plan.inventory(self.root,self.metadata)
+
+    def test_unrelated_extra_member_refuses(self):
+        self.add_package('unrelated','implicit/unrelated')
+        with self.assertRaisesRegex(ValueError,'unexplained workspace member'):
+            plan.inventory(self.root,self.metadata)
+
+    def test_excluded_path_dependency_does_not_become_a_member(self):
+        excluded=self.root/'implicit/excluded';excluded.mkdir(parents=True)
+        (excluded/'Cargo.toml').write_text('[package]\nname="excluded"\nversion="0.1.0"\n')
+        (self.root/'Cargo.toml').write_text('[workspace]\nmembers=["crates/*"]\nexclude=["implicit/excluded"]\n')
+        self.metadata['packages'][0]['dependencies'].append({'name':'excluded','path':str(excluded)})
+        self.assertEqual(['leaf'],[p['name'] for p in plan.inventory(self.root,self.metadata)])
+
+    def test_descendant_of_excluded_directory_is_not_a_member(self):
+        excluded=self.root/'implicit/excluded/nested';excluded.mkdir(parents=True)
+        (excluded/'Cargo.toml').write_text('[package]\nname="nested"\nversion="0.1.0"\n')
+        (self.root/'Cargo.toml').write_text('[workspace]\nmembers=["crates/*"]\nexclude=["implicit/excluded"]\n')
+        self.metadata['packages'][0]['dependencies'].append({'name':'nested','path':str(excluded)})
+        self.assertEqual(['leaf'],[p['name'] for p in plan.inventory(self.root,self.metadata)])
+
+    def test_explicit_member_takes_precedence_over_excluded_directory(self):
+        self.add_package('nested','implicit/excluded/nested')
+        (self.root/'Cargo.toml').write_text('[workspace]\nmembers=["crates/*","implicit/excluded/nested"]\n'
+                                             'exclude=["implicit/excluded"]\n')
+        self.assertEqual(['leaf','nested'],[p['name'] for p in plan.inventory(self.root,self.metadata)])
+
+    def test_excluded_glob_match_is_not_a_member(self):
+        excluded=self.root/'implicit/excluded';excluded.mkdir(parents=True)
+        (excluded/'Cargo.toml').write_text('[package]\nname="excluded"\nversion="0.1.0"\n')
+        (self.root/'Cargo.toml').write_text('[workspace]\nmembers=["crates/*","implicit/*"]\n'
+                                             'exclude=["implicit/excluded"]\n')
+        self.assertEqual(['leaf'],[p['name'] for p in plan.inventory(self.root,self.metadata)])
+
+    def test_missing_explicit_member_refuses(self):
+        (self.root/'Cargo.toml').write_text('[workspace]\nmembers=["crates/*","missing"]\n')
+        with self.assertRaisesRegex(ValueError,'declared member missing'):
+            plan.inventory(self.root,self.metadata)
+
+    def test_recursive_member_glob_includes_deep_package(self):
+        self.add_package('deep','implicit/one/two/unit')
+        (self.root/'Cargo.toml').write_text('[workspace]\nmembers=["crates/*","implicit/**/unit"]\n')
+        self.assertEqual(['deep','leaf'],[p['name'] for p in plan.inventory(self.root,self.metadata)])
+
+    def test_glob_includes_hidden_workspace_package(self):
+        self.add_package('hidden','crates/.hidden')
+        self.assertEqual(['hidden','leaf'],[p['name'] for p in plan.inventory(self.root,self.metadata)])
+
+    def test_exclude_glob_is_a_literal_and_does_not_hide_dependency(self):
+        self.add_package('skip','implicit/one/two/skip')
+        excluded=self.root/'implicit/one/two/skip'
+        (self.root/'Cargo.toml').write_text('[workspace]\nmembers=["crates/*"]\nexclude=["implicit/**/skip"]\n')
+        self.metadata['packages'][0]['dependencies'].append({'name':'skip','path':str(excluded)})
+        self.assertEqual(['leaf','skip'],[p['name'] for p in plan.inventory(self.root,self.metadata)])
+
+    def test_root_package_is_a_workspace_member(self):
+        manifest=self.root/'Cargo.toml'
+        manifest.write_text('[package]\nname="root"\nversion="0.1.0"\n[workspace]\nmembers=["crates/*"]\n')
+        self.metadata['workspace_members'].append('root-id')
+        self.metadata['packages'].append({'name':'root','id':'root-id','manifest_path':str(manifest),
+            'features':{},'targets':[{'name':'root','kind':['lib'],'test':True}],'dependencies':[]})
+        self.assertEqual(['leaf','root'],[p['name'] for p in plan.inventory(self.root,self.metadata)])
+
+    def test_root_package_can_be_the_only_declared_member(self):
+        manifest=self.root/'Cargo.toml'
+        manifest.write_text('[package]\nname="root"\nversion="0.1.0"\n[workspace]\n')
+        self.metadata={'workspace_members':['root-id'],'packages':[{'name':'root','id':'root-id',
+            'manifest_path':str(manifest),'features':{},'targets':[{'name':'root','kind':['lib'],'test':True}],
+            'dependencies':[]}]}
+        self.assertEqual(['root'],[p['name'] for p in plan.inventory(self.root,self.metadata)])
+
+    def test_duplicate_member_identity_refuses(self):
+        self.metadata['workspace_members'].append('leaf-id')
+        with self.assertRaisesRegex(ValueError,'package identity'):
+            plan.inventory(self.root,self.metadata)
+
     def test_complete_inventory_preserves_target(self):
         self.assertEqual('leaf', plan.inventory(self.root, self.metadata)[0]['targets'][0]['name'])
 

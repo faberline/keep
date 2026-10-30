@@ -17,18 +17,64 @@ def inventory(root, metadata):
     root = Path(root).resolve()
     manifest = tomllib.loads((root / 'Cargo.toml').read_text())
     workspace = manifest['workspace']
-    excludes = {Path(p).resolve() for pattern in workspace.get('exclude', [])
-                for p in glob.glob(str(root / pattern))}
-    expected = {Path(p).resolve() / 'Cargo.toml'
-                for pattern in workspace['members']
-                for p in glob.glob(str(root / pattern))
-                if (Path(p) / 'Cargo.toml').is_file() and Path(p).resolve() not in excludes}
-    members = set(metadata['workspace_members'])
+    # Cargo treats exclude entries as paths, not member-style glob patterns.
+    excludes = {(root / pattern).resolve() for pattern in workspace.get('exclude', [])}
+    def excluded(directory):
+        return any(directory == path or directory.is_relative_to(path) for path in excludes)
+    expected = set()
+    for pattern in workspace.get('members', []):
+        candidates = glob.glob(str(root / pattern), recursive=True, include_hidden=True)
+        if not glob.has_magic(pattern) and not candidates:
+            raise ValueError('partial workspace inventory: declared member missing')
+        for candidate in candidates:
+            directory = Path(candidate).resolve()
+            member_manifest = directory / 'Cargo.toml'
+            if not member_manifest.is_file():
+                if not glob.has_magic(pattern):
+                    raise ValueError('partial workspace inventory: declared member missing')
+                continue
+            # Cargo gives an explicitly named member precedence over exclude;
+            # exclude still filters automatically expanded glob matches.
+            if not glob.has_magic(pattern) or not excluded(directory):
+                expected.add(member_manifest)
+    if 'package' in manifest:
+        expected.add(root / 'Cargo.toml')
+    member_ids = metadata['workspace_members']
+    members = set(member_ids)
     packages = [p for p in metadata['packages'] if p['id'] in members]
-    if not expected or {Path(p['manifest_path']).resolve() for p in packages} != expected:
+    by_manifest = {Path(p['manifest_path']).resolve(): p for p in packages}
+    if not expected or not expected <= set(by_manifest):
         raise ValueError('partial workspace inventory: metadata and Cargo.toml disagree')
-    if len(packages) != len(members) or len({p['name'] for p in packages}) != len(packages):
+    if (len(member_ids) != len(members) or len(packages) != len(members)
+            or len(by_manifest) != len(packages) or {p['id'] for p in packages} != members
+            or len({p['name'] for p in packages}) != len(packages)):
         raise ValueError('missing or duplicate workspace package identity')
+    # Cargo automatically includes in-workspace path dependencies, even if
+    # the manifest does not list them in workspace.members. Prove every extra
+    # member is reachable from an explicit member or root package, and refuse
+    # metadata that omits a reachable, non-excluded local dependency.
+    reachable = set(expected)
+    pending = list(expected)
+    while pending:
+        source = by_manifest[pending.pop()]
+        for dependency in source['dependencies']:
+            if not dependency.get('path'):
+                continue
+            directory = Path(dependency['path']).resolve()
+            if not directory.is_relative_to(root) or excluded(directory):
+                continue
+            target = directory / 'Cargo.toml'
+            if not target.is_file():
+                raise ValueError('partial workspace inventory: local dependency manifest missing')
+            if target not in by_manifest:
+                raise ValueError('partial workspace inventory: implicit path member missing')
+            if dependency.get('name') != by_manifest[target]['name']:
+                raise ValueError('workspace path dependency identity mismatch')
+            if target not in reachable:
+                reachable.add(target)
+                pending.append(target)
+    if reachable != set(by_manifest):
+        raise ValueError('unexplained workspace member outside declared and path dependency closure')
     result = []
     for package in sorted(packages, key=lambda p: p['name']):
         targets = [t for t in package['targets'] if set(t['kind']) & (LIB_KINDS | {'bin'})]
