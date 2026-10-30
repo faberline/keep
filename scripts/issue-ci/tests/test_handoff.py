@@ -31,7 +31,8 @@ def evidence():
 class PolicyTests(unittest.TestCase):
     def test_pinned_controller(self):
         self.assertEqual(hashlib.sha256((ROOT / "scripts/issue-ci/handoff.py").read_bytes()).hexdigest(), "c67533b39d45ad62d407af3748856be396941647c349b63464424fa6aff1c198")
-        self.assertEqual(CONFIG["aw_revision"], "67af8d020df3ca2ec4b064289408cfb0c2f8b299")
+        self.assertEqual(CONFIG["ci_handoff_policy"]["aw_revision"], "67af8d020df3ca2ec4b064289408cfb0c2f8b299")
+        self.assertEqual(CONFIG["aw_revision"], "8e2e93e5ba8feb30b6668de39139980ea3bb085c")
 
     def test_failure_only_policy_never_done_even_if_existing_gates_green(self):
         guard.check(ROOT / ".github/issue-ci-required-gates.json")
@@ -66,12 +67,16 @@ class PolicyTests(unittest.TestCase):
         source = (ROOT / expected[0]["path"]).read_text()
         self.assertEqual(re.findall(r"^    name: (.+)$", source, re.M), expected[0]["jobs"])
         workflow = (ROOT / ".github/workflows/issue-ci.yml").read_text()
-        self.assertIn('workflows: [\"keep-ci\"]', workflow)
-        self.assertLess(workflow.index("check-policy.py"), workflow.index("handoff.py"))
-        self.assertIn("ref: ${{ github.event.repository.default_branch }}", workflow)
-        self.assertIn("persist-credentials: false", workflow)
-        self.assertNotIn("pull_request_target", workflow)
-        self.assertNotIn("download-artifact", workflow)
+        self.assertIn('workflows: ["keep-ci", "Claude final review"]', workflow)
+        self.assertIn('group: issue-ci-handoff', workflow)
+        self.assertIn('branches: [main]', workflow)
+        self.assertIn('faberline/aw/.github/actions/native-auto-merge@8e2e93e5ba8feb30b6668de39139980ea3bb085c', workflow)
+        self.assertNotIn('actions/checkout@', workflow)
+        self.assertNotIn('download-artifact', workflow)
+        self.assertNotIn('CLAUDE_CODE_OAUTH_TOKEN', workflow)
+        self.assertEqual(CONFIG['ci_handoff_policy']['workflows'], GATES)
+        self.assertEqual(CONFIG['ci_handoff_policy']['lifecycle_mode'], 'failure-only')
+        self.assertEqual(CONFIG['ci_handoff_policy']['qualification_blockers'], CONFIG['qualification_blockers'])
 
     def test_missing_workflow_or_job_never_passes(self):
         self.assertEqual(ci.evaluate_policy(CONFIG, {})[0], "pending")

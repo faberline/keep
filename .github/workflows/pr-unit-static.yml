@@ -1,0 +1,122 @@
+name: PR unit and static checks
+
+on:
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  # A caller runs these checks as a prerequisite. Keep its concurrency group
+  # separate from the ordinary pull-request workflow.
+  group: keep-pr-unit-static-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Ordinary read-only PR tests execute candidate code. They do not approve
+  # trusted qualification. That independent
+  # policy, immutable identity review and failure-only boundary are unchanged.
+  unit-plan:
+    name: candidate workspace unit inventory
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: candidate
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: "1.92"
+      - name: Check nonempty PR gate fixtures
+        working-directory: candidate
+        run: |
+          python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else "Python 3.11+ required")'
+          python3 -c 'import sys,unittest; suite=unittest.defaultTestLoader.discover("scripts/pr-gates/tests"); count=suite.countTestCases(); print("fixture_count="+str(count)); sys.exit(0 if count > 0 and unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful() else 1)'
+      - name: Derive complete current-head matrix and baseline inventory
+        id: plan
+        env:
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          EXPECTED_BASE: ${{ github.event.pull_request.base.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else "Python 3.11+ required")'
+          python3 candidate/scripts/pr-gates/plan.py inventory --root candidate --baseline-root trusted --expected-head "$EXPECTED_HEAD" --expected-base "$EXPECTED_BASE"
+          echo "matrix=$(python3 candidate/scripts/pr-gates/plan.py matrix --root candidate --baseline-root trusted --expected-head "$EXPECTED_HEAD" --expected-base "$EXPECTED_BASE")" >> "$GITHUB_OUTPUT"
+
+  workspace-format:
+    name: candidate workspace format
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: "1.92"
+          components: rustfmt
+      - name: Check complete workspace formatting
+        run: cargo fmt --all -- --check
+
+  workspace-unit-static:
+    name: candidate unit-static (${{ matrix.package }}, ${{ matrix.profile }})
+    if: github.event_name == 'pull_request'
+    needs: unit-plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: ${{ fromJSON(needs.unit-plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: candidate
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c
+        with:
+          toolchain: "1.92"
+          components: clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          workspaces: candidate -> target
+          shared-key: pr-unit-static-${{ matrix.package }}
+          cache-on-failure: true
+          cache-workspace-crates: false
+      - name: Run every enabled package unit target and retain nonzero evidence
+        env:
+          PACKAGE: ${{ matrix.package }}
+          PROFILE: ${{ matrix.profile }}
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          EXPECTED_BASE: ${{ github.event.pull_request.base.sha }}
+          CARGO_INCREMENTAL: "0"
+        run: python3 candidate/scripts/pr-gates/plan.py run --root candidate --baseline-root trusted --expected-head "$EXPECTED_HEAD" --expected-base "$EXPECTED_BASE" --package "$PACKAGE" --profile "$PROFILE" --kind unit
+      - name: Check package all-target clippy
+        if: ${{ !cancelled() }}
+        env:
+          PACKAGE: ${{ matrix.package }}
+          PROFILE: ${{ matrix.profile }}
+          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
+          EXPECTED_BASE: ${{ github.event.pull_request.base.sha }}
+          CARGO_INCREMENTAL: "0"
+        run: python3 candidate/scripts/pr-gates/plan.py run --root candidate --baseline-root trusted --expected-head "$EXPECTED_HEAD" --expected-base "$EXPECTED_BASE" --package "$PACKAGE" --profile "$PROFILE" --kind clippy
