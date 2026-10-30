@@ -16,8 +16,17 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  unit-static:
+    name: required unit and static checks
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+    uses: ./.github/workflows/pr-unit-static.yml
+
   gates:
     name: fmt, clippy, tests, release contract
+    needs: unit-static
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.unit-static.result == 'success') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

@@ -41,7 +41,7 @@
     "gates": {
       ".github/workflows/keep-ci.yml": {
         "id": 393760107,
-        "definition_sha": "e10b6a613ee271c997fb72bfa8e1a352da5f471c"
+        "definition_sha": "9037e7b907efed9f49d54a5cd32f89a69e0201f0"
       }
     },
     "protected_paths": [

@@ -2,12 +2,15 @@ name: PR unit and static checks
 
 on:
   pull_request:
+  workflow_call:
 
 permissions:
   contents: read
 
 concurrency:
-  group: keep-pr-unit-static-${{ github.ref }}
+  # A caller runs these checks as a prerequisite. Keep its concurrency group
+  # separate from the ordinary pull-request workflow.
+  group: keep-pr-unit-static-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
