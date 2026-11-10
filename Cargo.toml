@@ -15,7 +15,7 @@ default-members = ["crates/keep"]
 
 [workspace.package]
 version = "0.4.13"
-authors = ["Chris Cheng <chris.cheng.c4@gmail.com>"]
+authors = ["Faberline contributors"]
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/faberline/keep"
