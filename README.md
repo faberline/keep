@@ -87,12 +87,18 @@ external Redis/Dragonfly comparison, not anecdotal local timings.
 - Root WI: #126
 - Surfaces: Meter/Vat: `vat.toml#meter-efficiency` - isolated meter
   execution for performance-relevant API and durability gates.; Example:
-  `bench_compare` - Redis/Dragonfly comparison harness.; Meter:
+  `bench_compare` - Redis/Dragonfly/KeyDB/Garnet comparison harness.;
+  Ratchet: `vat.toml#perf-gate-competitors` - keep/peer ratio ratchet
+  against `crates/keep/tests/perf-baseline.json`.; Meter:
   `external-contracts/competitor-performance/efficiency/meter-performance-gates.md`
   - engine throughput and resource gate.
 - Gate — efficiency:
   `vat run meter-efficiency` - meter-owned
   runtime evidence inside vat
+- Gate — competitors (release-only, nightly):
+  `vat run perf-gate-competitors` - keep/peer ratios must not fall below the
+  host-class baseline
+  ([competitor-ratchet.md](external-contracts/competitor-performance/efficiency/competitor-ratchet.md))
 - Gate — behavior: `cargo test -p keep` - API behavior under the
   performance-relevant surfaces
 - Source: `vat.toml`,
@@ -103,7 +109,7 @@ external Redis/Dragonfly comparison, not anecdotal local timings.
 |---|---|---:|---|
 | vat-meter-runtime-gate | epic | 126 | vat.toml#meter-efficiency |
 | engine-throughput-ratchet | epic | 126 | external-contracts/competitor-performance/efficiency/meter-performance-gates.md |
-| redis-dragonfly-comparison | epic | 126 | examples/bench_compare.rs |
+| redis-dragonfly-comparison | epic | 126 | vat.toml#perf-gate-competitors; crates/keep/tests/perf_gate_vs_kv.rs |
 
 ### Long-Running Stability
 
@@ -392,7 +398,7 @@ Images: `Dockerfile` (from-source, build context = repo root) and
 
 - ✅ HTTP/2 + OpenAPI surface, k8s-native (probes, SIGTERM drain, env config) — #114
 - ✅ durable-before-ack WAL (no-drop, group commit) — #114
-- ✅ perf-gate via meter: engine throughput ratchet + server resource gate — see [meter-performance-gates.md](external-contracts/competitor-performance/efficiency/meter-performance-gates.md) (#126). Competitor comparison (vs Redis/Dragonfly) is the separate one-off `examples/bench_compare.rs`.
+- ✅ perf-gate via meter: engine throughput ratchet + server resource gate — see [meter-performance-gates.md](external-contracts/competitor-performance/efficiency/meter-performance-gates.md) (#126). Competitor comparison (vs Redis/Dragonfly, KeyDB/Garnet report-only) is the release-only ratchet in [competitor-ratchet.md](external-contracts/competitor-performance/efficiency/competitor-ratchet.md) (#2).
 - ☐ worker-facing OpenAPI contract finalized with relay — #108
 - ◑ HA — phase A (sharded scale-out + `/cluster`) done; phase C raft via raft-runtime integrated (`--features raft`, engine-backed state machine, HTTP write propose path, proven by `tests/raft_node.rs` and the raft HTTP API test) — multi-node failover remains staged; see [.aw/tech-design/projects/keep/logic/ha-raft-sharding-roadmap.md](.aw/tech-design/projects/keep/logic/ha-raft-sharding-roadmap.md) (#121)
 - ✅ queuekit and queue-era `ion` feature consumers now use `keep::client`

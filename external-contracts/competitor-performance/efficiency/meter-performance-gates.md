@@ -73,9 +73,11 @@ non-zero with a `[gate] max_peak_rss_mb breached` finding.
 
 - `meter run --target .` is the composite (test + bench + profile,
   worst-wins) for one-shot CI use.
-- Competitor comparison (vs Redis / Dragonfly) is a separate one-off harness:
-  `examples/bench_compare.rs` (`--backend redis|dragonfly`). It is NOT part of
-  the committed gate (needs external servers); see the keep memory notes.
+- Competitor comparison (vs Redis / Dragonfly / KeyDB / Garnet) is the separate
+  release-only ratchet in [`competitor-ratchet.md`](competitor-ratchet.md)
+  (`vat run perf-gate-competitors`). It drives the same
+  `examples/bench_compare.rs` with `--format json`; the text output used by the
+  fixed load above is unchanged.
 - meter's auto baseline-store (run → compare → ratchet without a hand-saved
   baseline) is still maturing; until then the criterion `--save-baseline` flow
   above is the throughput ratchet.
