@@ -44,6 +44,7 @@ jobs:
         with:
           shared-key: keep-ci
       - run: cargo test --locked --workspace
+      - run: cargo test --locked -p keep --features operator --test operator
 
   test-features:
     name: "test: clippy all features"

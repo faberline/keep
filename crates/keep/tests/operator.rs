@@ -250,3 +250,99 @@ fn rustls_provider_install_is_idempotent() {
     install_default_crypto_provider();
     install_default_crypto_provider();
 }
+
+/// The server container's env, cloned. Panics when the StatefulSet has no env array.
+fn server_env(objs: &[Value]) -> Vec<Value> {
+    of_kind(objs, "StatefulSet")["spec"]["template"]["spec"]["containers"][0]["env"]
+        .as_array()
+        .expect("server container env array")
+        .clone()
+}
+
+/// The four operator-written ConfigMap keys that the server container must read.
+const CONFIG_KEYS: [&str; 4] = [
+    "KEEP_MAXMEMORY",
+    "KEEP_EVICTION_POLICY",
+    "KEEP_SPILL_THRESHOLD_BYTES",
+    "KEEP_MAX_DISK_BYTES",
+];
+
+/// A spec with all four ConfigMap-backed knobs set.
+fn full_spec() -> KeepSpec {
+    let mut s = spec(1, 1);
+    s.maxmemory = Some("512Mi".into());
+    s.eviction_policy = Some("noeviction".into());
+    s.spill_threshold_bytes = Some(1024);
+    s.max_disk_bytes = Some("10Gi".into());
+    s
+}
+
+/// Operator-written ConfigMap knobs reach the server container as exactly one
+/// `configMapKeyRef` env entry each when the spec sets them.
+#[test]
+fn configmap_keys_reach_the_server_container_when_set() {
+    let objs = render(&Keep::new("store", full_spec()));
+    let env = server_env(&objs);
+    for key in CONFIG_KEYS {
+        let matches: Vec<&Value> = env.iter().filter(|e| e["name"] == key).collect();
+        assert_eq!(
+            matches.len(),
+            1,
+            "server container must have exactly one {key} env entry"
+        );
+        assert_eq!(
+            matches[0]["valueFrom"]["configMapKeyRef"]["name"],
+            "store-config"
+        );
+        assert_eq!(matches[0]["valueFrom"]["configMapKeyRef"]["key"], key);
+    }
+    let data = &of_kind(&objs, "ConfigMap")["data"];
+    assert_eq!(data["KEEP_MAXMEMORY"], "512Mi");
+    assert_eq!(data["KEEP_SPILL_THRESHOLD_BYTES"], "1024");
+}
+
+/// Every ConfigMap key is consumed by the server container, and no env name
+/// appears twice, both with the knobs unset and with them set.
+#[test]
+fn every_configmap_key_is_consumed_and_env_names_are_unique() {
+    for (label, s) in [("unset", spec(1, 1)), ("set", full_spec())] {
+        let objs = render(&Keep::new("store", s));
+        let env = server_env(&objs);
+
+        let consumed: Vec<&str> = env
+            .iter()
+            .filter_map(|e| e["valueFrom"]["configMapKeyRef"]["key"].as_str())
+            .collect();
+        let data = of_kind(&objs, "ConfigMap")["data"]
+            .as_object()
+            .expect("ConfigMap data object");
+        for k in data.keys() {
+            assert!(
+                consumed.contains(&k.as_str()),
+                "ConfigMap key {k} is not consumed by the server container ({label})"
+            );
+        }
+
+        let mut names: Vec<&str> = env
+            .iter()
+            .map(|e| e["name"].as_str().expect("env name string"))
+            .collect();
+        let total = names.len();
+        names.sort();
+        names.dedup();
+        assert_eq!(
+            names.len(),
+            total,
+            "server container env names must be unique ({label})"
+        );
+
+        if label == "unset" {
+            for key in CONFIG_KEYS {
+                assert!(
+                    !names.contains(&key),
+                    "unset spec must not render {key} into the server container"
+                );
+            }
+        }
+    }
+}
