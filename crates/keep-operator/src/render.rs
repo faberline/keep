@@ -186,6 +186,8 @@ fn statefulset(keep: &Keep, cx: &RenderCtx, headless: &str) -> Value {
     let s = &keep.spec;
     let cfg = format!("{}-config", cx.name);
     let from_cfg = |key: &str| json!({ "name": key, "valueFrom": { "configMapKeyRef": { "name": cfg, "key": key } } });
+    // Optional variant for keys that `configmap()` writes only when the spec sets them.
+    let from_cfg_opt = |key: &str| json!({ "name": key, "valueFrom": { "configMapKeyRef": { "name": cfg, "key": key, "optional": true } } });
     let cpu = s.cluster.resources.cpu.as_str();
     let memory = s.cluster.resources.memory.as_str();
 
@@ -205,7 +207,7 @@ fn statefulset(keep: &Keep, cx: &RenderCtx, headless: &str) -> Value {
     // keep runtime env layered on top of the downward-API quartet the helper
     // injects: bind-all, the /data disk tier, the drain window, the cluster
     // routing fan-out + per-shard replica count, and the config-driven knobs.
-    let extra_env = vec![
+    let mut extra_env = vec![
         json!({ "name": "KEEP_HOST", "value": "0.0.0.0" }),
         json!({ "name": "KEEP_DATA_DIR", "value": "/data" }),
         json!({ "name": "KEEP_GRACE_SECS", "value": s.grace_secs.to_string() }),
@@ -218,6 +220,20 @@ fn statefulset(keep: &Keep, cx: &RenderCtx, headless: &str) -> Value {
         from_cfg("KEEP_LOG_FORMAT"),
         from_cfg("KEEP_BODY_LIMIT"),
     ];
+    // Each of these is written into the ConfigMap by `configmap()` only when the
+    // matching spec field is set; the same condition guards the env entry.
+    if s.maxmemory.is_some() {
+        extra_env.push(from_cfg_opt("KEEP_MAXMEMORY"));
+    }
+    if s.eviction_policy.is_some() {
+        extra_env.push(from_cfg_opt("KEEP_EVICTION_POLICY"));
+    }
+    if s.spill_threshold_bytes.is_some() {
+        extra_env.push(from_cfg_opt("KEEP_SPILL_THRESHOLD_BYTES"));
+    }
+    if s.max_disk_bytes.is_some() {
+        extra_env.push(from_cfg_opt("KEEP_MAX_DISK_BYTES"));
+    }
 
     let mut sts = render::sharded_statefulset(ShardedStatefulSet {
         cx,
