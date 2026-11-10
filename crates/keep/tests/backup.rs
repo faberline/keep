@@ -99,4 +99,43 @@ fn run_backup_end_to_end_local() {
         "an empty data dir yields an empty snapshot"
     );
 }
+
+/// `keep backup` fails, names the path and writes nothing when `--data-dir`
+/// does not exist, instead of reporting an empty success.
+#[test]
+fn backup_verb_fails_when_data_dir_is_missing() {
+    use std::process::Command;
+
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("no-such-dir");
+    let dest = dir.path().join("out");
+    std::fs::create_dir(&dest).unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_keep"))
+        .args([
+            "backup",
+            "--dest",
+            &format!("file://{}", dest.display()),
+            "--data-dir",
+            missing.to_str().unwrap(),
+        ])
+        .env_remove("KEEP_DATA_DIR")
+        .output()
+        .unwrap();
+
+    assert!(
+        !out.status.success(),
+        "keep backup must fail on a missing data dir"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(missing.to_str().unwrap()),
+        "stderr must name the missing path: {stderr}"
+    );
+    assert_eq!(
+        std::fs::read_dir(&dest).unwrap().count(),
+        0,
+        "no artifact may be written"
+    );
+}
 // HANDWRITE-END
