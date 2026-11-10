@@ -63,6 +63,10 @@ spec:
                 description: Per-node engine shard count (`KEEP_SHARDS`) for multi-core scaling — distinct from `shardCount` (the cluster-routing fan-out). Defaults to 256.
                 type: integer
                 minimum: 0.0
+              evictionPolicy:
+                description: Memory eviction policy (`KEEP_EVICTION_POLICY`, default `allkeys-lru`).
+                nullable: true
+                type: string
               graceSecs:
                 default: 30
                 description: Graceful drain window on SIGTERM (seconds); tracks `terminationGracePeriodSeconds`. Defaults to 30.
@@ -75,6 +79,14 @@ spec:
                 type: string
               logLevel:
                 description: Log level (`trace|debug|info|warn|error`). Defaults to `info`.
+                nullable: true
+                type: string
+              maxDiskBytes:
+                description: Optional maximum disk quota for `/data/blobs/` (`KEEP_MAX_DISK_BYTES`, e.g. `8Gi`).
+                nullable: true
+                type: string
+              maxmemory:
+                description: Optional explicit memory cap (`KEEP_MAXMEMORY`, e.g. `4Gi` or bytes). When unset, the pod auto-detects its cgroup memory limit and applies `KEEP_MAXMEMORY_RATIO` (default 0.80).
                 nullable: true
                 type: string
               replicasPerShard:
@@ -99,6 +111,11 @@ spec:
                 default: 1
                 type: integer
                 minimum: 0.0
+              spillThresholdBytes:
+                description: Byte size threshold above which `Bytes` payloads spill to `/data/blobs/` (`KEEP_SPILL_THRESHOLD_BYTES`).
+                type: integer
+                minimum: 0.0
+                nullable: true
               storage:
                 default: 10Gi
                 description: Per-pod durable disk-tier (WAL + snapshots) PVC size. Defaults to `10Gi`.

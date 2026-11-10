@@ -66,6 +66,8 @@ rustls-provider = ["keep-shared-kernel/rustls-provider"]
 claim-token.workspace = true
 criterion.workspace = true
 futures.workspace = true
+# The CRD generator, so the committed-CRD drift gate runs without `--features operator`.
+keep-operator.workspace = true
 kube.workspace = true
 redis.workspace = true
 reqwest.workspace = true

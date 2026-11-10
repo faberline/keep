@@ -1,7 +1,9 @@
-# The keep operator: a controller that watches Keep objects cluster-wide. Ships
-# in the same `keep` image (run as `keep k8s operator run`, built with
-# --features operator). HA-safe: a coordination.k8s.io Lease elects one active
-# reconciler, so this can be scaled to replicas > 1 (the others stand by).
+# The keep operator: a controller that watches Keep objects cluster-wide. Runs
+# the `keep` binary as `keep k8s operator run`, which needs an image built with
+# `--features operator` (`docker build --build-arg CARGO_FEATURES=operator`);
+# the default release image does not include it. HA-safe: a coordination.k8s.io
+# Lease elects one active reconciler, so this can be scaled to replicas > 1 (the
+# others stand by).
 apiVersion: apps/v1
 kind: Deployment
 metadata:

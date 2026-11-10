@@ -176,6 +176,7 @@ jobs:
         run: |
           set -euo pipefail
           cargo test --locked -p keep
+          cargo test --locked -p keep --features operator --test operator
           uv run --python 3.13 --no-project scripts/release/verify-release-contract.py --app keep
 
   ghcr-image-and-attest:

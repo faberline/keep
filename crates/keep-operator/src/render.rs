@@ -95,10 +95,19 @@ pub fn render(keep: &Keep) -> Vec<Value> {
 /// [--retention-secs <n>]` on the policy's schedule, so keep still owns
 /// producing the consistent snapshot bytes (the runner just schedules it). The
 /// shared [`service_k8s::render::cron_job`] helper stays manifest-only.
+///
+/// The job reads pod `<name>-0`'s data PVC (`data-<name>-0`), mounted read-only
+/// at `/data`. The claim is ReadWriteOnce, so the job is pinned to the node
+/// running pod 0 (RWO allows several pods on one node) and runs as the same
+/// non-root user so it can read the files keep wrote.
+///
+/// Limitation: with several pods (more shards or replicas) this backs up only
+/// pod 0's disk — the shards pod 0 owns.
 fn backup_cron_job(keep: &Keep, cx: &RenderCtx) -> Option<Value> {
     let policy = keep.spec.backup.as_ref()?;
     let s = &keep.spec;
     let name = format!("{}-backup", cx.name);
+    let pod0 = format!("{}-0", cx.name);
     let mut args = vec![
         "backup".to_string(),
         "--dest".to_string(),
@@ -112,7 +121,7 @@ fn backup_cron_job(keep: &Keep, cx: &RenderCtx) -> Option<Value> {
         args.push("--retention-secs".to_string());
         args.push(secs.to_string());
     }
-    Some(render::cron_job(render::CronJob {
+    let mut cj = render::cron_job(render::CronJob {
         cx,
         name: &name,
         component: BACKUP_COMPONENT,
@@ -127,14 +136,31 @@ fn backup_cron_job(keep: &Keep, cx: &RenderCtx) -> Option<Value> {
         args,
         env: vec![],
         env_from: vec![],
-        volumes: vec![],
-        volume_mounts: vec![],
+        volumes: vec![json!({
+            "name": "data",
+            "persistentVolumeClaim": { "claimName": format!("data-{pod0}"), "readOnly": true },
+        })],
+        volume_mounts: vec![json!({ "name": "data", "mountPath": "/data", "readOnly": true })],
         service_account_name: Some(cx.name),
         cpu: "100m",
         memory: "128Mi",
         successful_jobs_history_limit: 3,
         failed_jobs_history_limit: 3,
-    }))
+    });
+    // `cron_job` has no affinity or security-context fields; set them here.
+    let pod_spec = &mut cj["spec"]["jobTemplate"]["spec"]["template"]["spec"];
+    pod_spec["affinity"] = json!({
+        "podAffinity": {
+            "requiredDuringSchedulingIgnoredDuringExecution": [{
+                "labelSelector": {
+                    "matchLabels": { "statefulset.kubernetes.io/pod-name": pod0 },
+                },
+                "topologyKey": "kubernetes.io/hostname",
+            }],
+        },
+    });
+    pod_spec["securityContext"] = render::restricted_pod_security_context();
+    Some(cj)
 }
 
 // <HANDWRITE gap="missing-generator:logic" tracker="#2414" reason="logic section in render.rs is hand-written pending codegen support">

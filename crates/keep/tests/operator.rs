@@ -207,13 +207,84 @@ fn render_emits_backup_cronjob_when_configured() {
     assert!(args.contains(&"--retention-secs"));
     assert!(args.contains(&"604800"));
     // The runner runs under keep's ServiceAccount.
+    let pod = &cj["spec"]["jobTemplate"]["spec"]["template"]["spec"];
+    assert_eq!(pod["serviceAccountName"], "store");
+
+    // It reads pod 0's data PVC read-only at the `--data-dir` it passes...
+    assert_eq!(pod["volumes"][0]["name"], "data");
     assert_eq!(
-        cj["spec"]["jobTemplate"]["spec"]["template"]["spec"]["serviceAccountName"],
-        "store"
+        pod["volumes"][0]["persistentVolumeClaim"],
+        serde_json::json!({ "claimName": "data-store-0", "readOnly": true })
     );
+    assert_eq!(
+        container["volumeMounts"][0],
+        serde_json::json!({ "name": "data", "mountPath": "/data", "readOnly": true })
+    );
+    let data_dir = args.iter().position(|a| *a == "--data-dir").unwrap() + 1;
+    assert_eq!(args[data_dir], "/data");
+    // ...on pod 0's node (the claim is ReadWriteOnce), as keep's user.
+    let term = &pod["affinity"]["podAffinity"]["requiredDuringSchedulingIgnoredDuringExecution"][0];
+    assert_eq!(
+        term["labelSelector"]["matchLabels"]["statefulset.kubernetes.io/pod-name"],
+        "store-0"
+    );
+    assert_eq!(term["topologyKey"], "kubernetes.io/hostname");
+    assert_eq!(pod["securityContext"]["runAsUser"], 65532);
+    assert_eq!(pod["securityContext"]["fsGroup"], 65532);
 }
 
 /// R4 — the generated CRD is Kubernetes-OpenAPI compatible.
+/// The operator applies every rendered child with server-side apply, so the
+/// ClusterRole must grant `patch` on each child kind — a missing rule only shows
+/// up as a 403 reconcile loop on a real cluster (the backup CronJob shipped
+/// that way).
+#[test]
+fn rbac_covers_every_rendered_kind() {
+    use keep::operator::KeepBackupSpec;
+
+    let rbac: Vec<serde_yaml::Value> =
+        serde_yaml::Deserializer::from_str(include_str!("../../../k8s/operator/rbac.yaml"))
+            .map(|d| serde::Deserialize::deserialize(d).expect("rbac.yaml document"))
+            .collect();
+    let role = rbac
+        .iter()
+        .find(|d| d["kind"] == "ClusterRole")
+        .expect("ClusterRole in rbac.yaml");
+    let strs = |v: &serde_yaml::Value| -> Vec<String> {
+        v.as_sequence()
+            .map(|s| {
+                s.iter()
+                    .filter_map(|x| x.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let grants = |group: &str, resource: &str| {
+        role["rules"].as_sequence().into_iter().flatten().any(|r| {
+            strs(&r["apiGroups"]).iter().any(|g| g == group)
+                && strs(&r["resources"]).iter().any(|x| x == resource)
+                && strs(&r["verbs"]).iter().any(|v| v == "patch")
+        })
+    };
+
+    let mut s = spec(2, 3);
+    s.backup = Some(KeepBackupSpec {
+        schedule: "0 3 * * *".into(),
+        destination: "file:///tmp/keep-backups".into(),
+        retention_secs: None,
+    });
+    for obj in render(&Keep::new("store", s)) {
+        let api_version = obj["apiVersion"].as_str().expect("apiVersion");
+        let group = api_version.rsplit_once('/').map_or("", |(g, _)| g);
+        let kind = obj["kind"].as_str().expect("kind");
+        let resource = format!("{}s", kind.to_ascii_lowercase());
+        assert!(
+            grants(group, &resource),
+            "k8s/operator/rbac.yaml grants no `patch` on {group}/{resource} (rendered {kind})"
+        );
+    }
+}
+
 #[test]
 fn crd_is_openapi_compatible() {
     let yaml = crd_yaml();

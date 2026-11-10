@@ -769,13 +769,13 @@ fn dispatch_backup(args: BackupArgs) -> Result<()> {
 }
 
 /// `keep k8s` — cluster artifacts split by lifecycle layer. Only `operator run`
-/// needs kube-rs at runtime; the render paths are offline and work from the
-/// binary (the generated CRD is embedded, the operator/instance manifests are
+/// needs kube-rs at runtime; the render paths are offline (the CRD is generated
+/// from `KeepSpec` in operator builds, the operator/instance manifests are
 /// string-templated).
 async fn k8s(args: K8sArgs) -> Result<()> {
     match args.cmd {
         K8sCmd::Crd(a) => match a.cmd {
-            K8sCrdCmd::Render(a) => write_or_print(a.out.as_deref(), "crd.yaml", &crd_yaml()),
+            K8sCrdCmd::Render(a) => write_or_print(a.out.as_deref(), "crd.yaml", &crd_yaml()?),
         },
         K8sCmd::Operator(a) => match a.cmd.unwrap_or(K8sOperatorCmd::Run) {
             K8sOperatorCmd::Run => run_operator().await,
@@ -824,18 +824,23 @@ async fn run_operator() -> Result<()> {
 async fn run_operator() -> Result<()> {
     anyhow::bail!(
         "this keep build was compiled without operator support; rebuild with \
-         `--features operator` (the published image includes it)"
+         `--features operator` (e.g. `docker build --build-arg CARGO_FEATURES=operator`)"
     )
 }
 
 #[cfg(feature = "operator")]
-fn crd_yaml() -> String {
-    keep::operator::crd_yaml()
+fn crd_yaml() -> Result<String> {
+    Ok(keep::operator::crd_yaml())
 }
 
+/// Without the generator, refuse instead of echoing the checked-in file: that
+/// copy is what the generator is checked against, so echoing it would let a
+/// stale CRD regenerate itself unchanged.
 #[cfg(not(feature = "operator"))]
-fn crd_yaml() -> String {
-    cli_std::artifact::ensure_trailing_newline(include_str!("../../../../k8s/operator/crd.yaml"))
+fn crd_yaml() -> Result<String> {
+    anyhow::bail!(
+        "`keep k8s crd render` needs the CRD generator; rebuild with `--features operator`"
+    )
 }
 
 /// Render the operator control-plane manifests (RBAC + Deployment) with the
