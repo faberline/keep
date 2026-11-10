@@ -346,3 +346,17 @@ fn every_configmap_key_is_consumed_and_env_names_are_unique() {
         }
     }
 }
+
+/// #14: the committed `k8s/operator/crd.yaml` is byte-equal to the generator output.
+#[test]
+fn committed_crd_matches_generator() {
+    let crd_path =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../k8s/operator/crd.yaml");
+    let committed = std::fs::read(&crd_path).expect("read committed k8s/operator/crd.yaml");
+    let generated = cli_std::artifact::ensure_trailing_newline(&crd_yaml());
+    assert_eq!(
+        committed.as_slice(),
+        generated.as_bytes(),
+        "k8s/operator/crd.yaml does not match the generator output; regenerate with:\n  cargo run -p keep --features operator -- k8s crd render --out k8s/operator/crd.yaml"
+    );
+}
