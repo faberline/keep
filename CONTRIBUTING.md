@@ -4,25 +4,19 @@
 
 How to change `keep`. What it promises and the work roots it owns live in
 [README.md](README.md); repository-wide authoring and verification rules live
-in [AW standards](https://github.com/faberline/aw/tree/main/docs/standards).
+in the root [CONTRIBUTING.md](https://github.com/faberline/workspace/blob/main/CONTRIBUTING.md).
 
-Use the shared Faberline `issue-plan`, `issue-work`, and `issue-review`
-skills from [AW](https://github.com/faberline/aw/tree/main/plugins/faberline/skills).
-Each skill runs one pass; its `-loop` companion adds an explicit interval.
-Installing or updating a skill does not start a loop.
-
-Planning writes the bounded issue contract. Work submits one issue's PR and
-runs affected unit/static checks. CI runs the required functional, integration
-and performance checks. It alone sets `done` after all required current-input
-gates pass, leaving the issue open for independent local review. A required
-CI failure reports its evidence and returns the issue to `todo`. Review reads
-the issue, diff and current CI; it runs no tests and never merges, closes or
-changes lifecycle labels. The controller owns Git and final acceptance.
-
-Use the repository's existing complete gates for product claims. Keep local
-work limited to affected unit/static checks; functional, integration and
-performance execution belongs in authorized CI. Preserve all feature matrices,
-test selection checks, numeric limits and exact-head/base evidence.
+Work reaches `main` through the aw-worker flow of
+[faberline/aw](https://github.com/faberline/aw). An issue moves through
+three stages, shown by its label: `stage:spec` (write the spec),
+`stage:tdd` (tests first, then code; the `aw` CLI opens the pull request)
+and `stage:review` (review a pull request with green CI; `aw` merges it or
+sends it back to tdd). The stage skill is
+[aw-worker](https://github.com/faberline/aw/tree/main/plugins/faberline/skills/aw-worker);
+the CI stages (`lint`, `test`, `e2e`, `gate`) are described in
+[docs/standards](https://github.com/faberline/aw/tree/main/docs/standards).
+The required check is `gate`. Only the `aw` CLI claims issues, pushes,
+opens pull requests and merges.
 
 ## Verification
 
