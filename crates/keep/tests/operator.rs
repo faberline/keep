@@ -360,3 +360,78 @@ fn committed_crd_matches_generator() {
         "k8s/operator/crd.yaml does not match the generator output; regenerate with:\n  cargo run -p keep --features operator -- k8s crd render --out k8s/operator/crd.yaml"
     );
 }
+
+/// Maps each kind that `render()` emits to its RBAC resource name.
+fn resource_for_kind(kind: &str) -> &'static str {
+    match kind {
+        "ServiceAccount" => "serviceaccounts",
+        "ConfigMap" => "configmaps",
+        "Service" => "services",
+        "StatefulSet" => "statefulsets",
+        "PodDisruptionBudget" => "poddisruptionbudgets",
+        "CronJob" => "cronjobs",
+        other => panic!("no resource mapping for kind {other}: extend this test"),
+    }
+}
+
+/// The string items of a YAML sequence, or none when the value is absent.
+fn yaml_strings(v: &serde_yaml::Value) -> Vec<&str> {
+    v.as_sequence()
+        .map(|s| s.iter().filter_map(|x| x.as_str()).collect())
+        .unwrap_or_default()
+}
+
+/// The ClusterRole in `k8s/operator/rbac.yaml` covers every kind `render()`
+/// can emit, the backup CronJob included. Fails before `batch/cronjobs` is
+/// granted.
+#[test]
+fn cluster_role_covers_every_rendered_kind() {
+    const RBAC: &str = include_str!("../../../k8s/operator/rbac.yaml");
+    const VERBS: [&str; 7] = [
+        "create", "update", "patch", "delete", "get", "list", "watch",
+    ];
+
+    let mut s = spec(1, 1);
+    s.backup = Some(keep::operator::KeepBackupSpec {
+        schedule: "17 3 * * *".into(),
+        destination: "file:///backup".into(),
+        retention_secs: None,
+    });
+    let objs = render(&Keep::new("store", s));
+
+    let role: serde_yaml::Value = RBAC
+        .split("\n---\n")
+        .map(|doc| serde_yaml::from_str::<serde_yaml::Value>(doc).expect("valid YAML document"))
+        .find(|doc| doc["kind"].as_str() == Some("ClusterRole"))
+        .expect("rbac.yaml has a ClusterRole");
+    let rules = role["rules"].as_sequence().expect("ClusterRole has rules");
+
+    for rule in rules {
+        for field in ["apiGroups", "resources", "verbs"] {
+            assert!(
+                !yaml_strings(&rule[field]).contains(&"*"),
+                "ClusterRole keep-operator must not use a wildcard in {field}"
+            );
+        }
+    }
+
+    for o in &objs {
+        let kind = o["kind"].as_str().expect("rendered object has a kind");
+        let api_version = o["apiVersion"]
+            .as_str()
+            .expect("rendered object has an apiVersion");
+        let group = api_version.split_once('/').map(|(g, _)| g).unwrap_or("");
+        let resource = resource_for_kind(kind);
+
+        let covered = rules.iter().any(|rule| {
+            let verbs = yaml_strings(&rule["verbs"]);
+            yaml_strings(&rule["apiGroups"]).contains(&group)
+                && yaml_strings(&rule["resources"]).contains(&resource)
+                && VERBS.iter().all(|v| verbs.contains(v))
+        });
+        assert!(
+            covered,
+            "ClusterRole keep-operator does not cover {group}/{resource}"
+        );
+    }
+}

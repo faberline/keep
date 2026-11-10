@@ -758,6 +758,12 @@ fn render_release_dockerfile(version: Option<&str>) -> String {
 ///
 /// @spec .aw/tech-design/projects/keep/logic/adopt-libs-service-backup-snapshot-sink-keep-backup-verb.md
 fn dispatch_backup(args: BackupArgs) -> Result<()> {
+    if !args.data_dir.is_dir() {
+        anyhow::bail!(
+            "backup data directory `{}` does not exist or is not a directory; refusing to write an empty backup",
+            args.data_dir.display()
+        );
+    }
     let dest = keep::backup::BackupDestination::from_uri(&args.dest)?;
     let retention = match args.retention_secs {
         Some(secs) => keep::backup::RetentionPolicy::max_age_seconds(secs),
