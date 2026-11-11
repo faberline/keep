@@ -28,7 +28,7 @@ first-class domain roots.
 | Competitive KV Feature Parity | 108 | mandatory baseline: Redis/Dragonfly replacement breadth remains open on relay worker contract |
 | Competitive KV Performance | 126 | mandatory baseline: engine ratchet and external Redis/Dragonfly comparison are not release-closed |
 | Long-Running Stability | 121 | mandatory baseline: durable recovery and drain pass locally; multi-node raft remains staged |
-| Security Hardening | - | mandatory baseline: request limits exist; auth/TLS/negative gates are still open |
+| Security Hardening | - | mandatory baseline: request limits and public-API TLS exist; auth/network-policy/negative gates are still open |
 | HTTP/2 API List | - | mandatory baseline: concise HTTP/2 route list, OpenAPI pointer, probes, and metrics |
 | Kubernetes-Native Deployment | - | mandatory baseline: kustomize manifests, probes, drain, env config, and nonroot image |
 | Primary Replicas | 121 | mandatory baseline: raft-backed primary/replica topology and failover remains staged |
@@ -145,12 +145,13 @@ or oversized request handling before production readiness.
 - Gate — behavior: `cargo test -p keep --test http_api` - body-limit and
   public-route smoke
 - Source: `vat.toml`, `src/http/routes.rs`,
-  `tests/http_api.rs`
+  `tests/http_api.rs`, `tests/https_api.rs`
 
 | Work Root | Kind | WI | Gate / Evidence |
 |---|---|---:|---|
 | body-limit-and-public-route-boundary | epic | - | src/http/routes.rs; tests/http_api.rs |
-| auth-tls-network-policy-boundary | epic | - | pending guard/negative security inventory |
+| public-api-tls | epic | - | src/https.rs; tests/https_api.rs |
+| auth-network-policy-boundary | epic | - | pending guard/negative security inventory |
 | guard-static-runtime-evidence | epic | - | vat.toml#guard-security |
 | malformed-and-oversized-request-negative-tests | epic | - | vat.toml#guard-security |
 

@@ -454,6 +454,12 @@ struct ServeArgs {
     /// Optional blanket Bearer API token required on data-plane routes.
     #[arg(long, env = "KEEP_API_TOKEN")]
     api_token: Option<String>,
+    /// PEM certificate chain; with --tls-key, serve the public API over HTTPS.
+    #[arg(long, env = "KEEP_TLS_CERT")]
+    tls_cert: Option<PathBuf>,
+    /// PEM private key for --tls-cert.
+    #[arg(long, env = "KEEP_TLS_KEY")]
+    tls_key: Option<PathBuf>,
     /// Optional read-only Bearer token: may only GET/HEAD data-plane routes (403 on writes).
     #[arg(long, env = "KEEP_API_TOKEN_READONLY")]
     api_token_readonly: Option<String>,
@@ -560,6 +566,7 @@ const TOPICS: &[cli_std::llm::Topic] = &[
             - `--data-dir` (`KEEP_DATA_DIR`) — WAL + snapshot disk tier; cold start recovers it.\n\
             - `--disable-persistence` — in-memory only.\n\
             - `KEEP_API_TOKEN` (read-write) and `KEEP_API_TOKEN_READONLY` (GET/HEAD only) — Bearer tokens for the data plane.\n\
+            - `--tls-cert/--tls-key` (`KEEP_TLS_CERT` / `KEEP_TLS_KEY`) — serve the public API over HTTPS.\n\
             - `--node-id/--node-count/--shard-count/--peers` — cluster topology.\n\
             - `KEEP_TOKEN_SECRET` — enable claim-check token enforcement.\n\n\
             Cloud-native: `/healthz` + `/readyz` probes and a SIGTERM-aware graceful drain \
@@ -1045,6 +1052,13 @@ async fn serve_main(args: ServeArgs, worker_threads: usize) -> Result<()> {
     };
 
     let addr: SocketAddr = format!("{}:{}", args.host, args.port).parse()?;
+    let tls_config = match (args.tls_cert.as_deref(), args.tls_key.as_deref()) {
+        (None, None) => None,
+        (Some(cert), Some(key)) => Some(keep::https::load_server_config(cert, key)?),
+        _ => anyhow::bail!(
+            "--tls-cert and --tls-key (KEEP_TLS_CERT / KEEP_TLS_KEY) must be set together"
+        ),
+    };
     info!(
         %addr,
         worker_threads,
@@ -1186,19 +1200,23 @@ async fn serve_main(args: ServeArgs, worker_threads: usize) -> Result<()> {
     }
 
     let listener = TcpListener::bind(addr).await?;
-    info!(%addr, "listening (HTTP/1.1 + HTTP/2 cleartext)");
 
-    // Serve HTTP/1.1 + h2c on one port and drain on SIGTERM. The signal wait and
-    // the drain grace come from the shared `server-lifecycle` crate (#751):
-    // `start_drain` flips `/readyz` to 503 for the grace window before the
-    // listener closes.
+    // Serve HTTP/1.1 + h2c (or HTTPS when configured) on one port and drain on
+    // SIGTERM. The signal wait and the drain grace come from the shared
+    // `server-lifecycle` crate (#751): `start_drain` flips `/readyz` to 503 for
+    // the grace window before the listener closes.
     let grace = Duration::from_secs(args.grace_secs);
-    service_http::serve(
-        listener,
-        app,
-        server_lifecycle::shutdown_with_drain(move || state.start_drain(), grace),
-    )
-    .await;
+    let shutdown = server_lifecycle::shutdown_with_drain(move || state.start_drain(), grace);
+    match tls_config {
+        Some(cfg) => {
+            info!(%addr, "listening (HTTPS: HTTP/1.1 + HTTP/2 over TLS)");
+            keep::https::serve_tls(listener, app, cfg, shutdown).await
+        }
+        None => {
+            info!(%addr, "listening (HTTP/1.1 + HTTP/2 cleartext)");
+            service_http::serve(listener, app, shutdown).await
+        }
+    }
 
     if let Some(handle) = expiry_task {
         handle.abort();
