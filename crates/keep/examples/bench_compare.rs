@@ -257,6 +257,17 @@ fn keep_tier(info: &Value) -> BenchResult<&'static str> {
     }
 }
 
+/// Tier of a keep server and whether it is verified. A server without the
+/// field gives an unverified `unknown` tier, and an error only when `--tier`
+/// asks for a check.
+fn keep_tier_checked(info: &Value, want: Option<&str>) -> BenchResult<(&'static str, bool)> {
+    match keep_tier(info) {
+        Ok(tier) => Ok((tier, true)),
+        Err(_) if want.is_none() => Ok(("unknown", false)),
+        Err(err) => Err(err),
+    }
+}
+
 /// Tier of a RESP server from `CONFIG GET appendonly` / `appendfsync`, and
 /// whether that tier is verified. Without an AOF config surface the tier is
 /// unknown and unverified, never an error.
@@ -362,16 +373,20 @@ async fn detect_mode(args: &Args) -> BenchResult<Mode> {
                 .error_for_status()?
                 .json()
                 .await?;
-            let tier = keep_tier(&info)?;
-            check_tier(args.tier.as_deref(), tier, true, "keep")?;
+            let (tier, verified) = keep_tier_checked(&info, args.tier.as_deref())?;
+            check_tier(args.tier.as_deref(), tier, verified, "keep")?;
             Ok(Mode {
                 tier: tier.into(),
-                verified: true,
-                detail: format!(
-                    "persistence_enabled={} fsync_interval_ms={}",
-                    tier == "tiered",
-                    info["fsync_interval_ms"]
-                ),
+                verified,
+                detail: if verified {
+                    format!(
+                        "persistence_enabled={} fsync_interval_ms={}",
+                        tier == "tiered",
+                        info["fsync_interval_ms"]
+                    )
+                } else {
+                    "keep /info has no persistence_enabled".into()
+                },
             })
         }
         "keepnoop" => {
@@ -1135,6 +1150,38 @@ mod tests {
         let missing = keep_tier(&json!({})).unwrap_err().to_string();
         assert!(missing.contains("persistence_enabled"), "{missing}");
         assert!(keep_tier(&json!({"persistence_enabled": "yes"})).is_err());
+    }
+
+    #[test]
+    fn keep_tier_checked_old_server_without_tier_is_unknown() {
+        assert_eq!(
+            keep_tier_checked(&json!({}), None).unwrap(),
+            ("unknown", false)
+        );
+        assert_eq!(
+            keep_tier_checked(&json!({"persistence_enabled": "yes"}), None).unwrap(),
+            ("unknown", false)
+        );
+    }
+
+    #[test]
+    fn keep_tier_checked_old_server_with_tier_errors() {
+        let err = keep_tier_checked(&json!({}), Some("ram"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("persistence_enabled"), "{err}");
+    }
+
+    #[test]
+    fn keep_tier_checked_new_server_is_verified() {
+        assert_eq!(
+            keep_tier_checked(&json!({"persistence_enabled": true}), Some("tiered")).unwrap(),
+            ("tiered", true)
+        );
+        assert_eq!(
+            keep_tier_checked(&json!({"persistence_enabled": false}), None).unwrap(),
+            ("ram", true)
+        );
     }
 
     #[test]
