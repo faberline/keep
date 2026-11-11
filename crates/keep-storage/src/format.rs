@@ -2,9 +2,10 @@
 //!
 //! ## WAL File Format
 //!
+//! The WAL is the core `storage-durable` framed log; this module defines only the payload.
+//!
 //! ```text
-//! Header: [Magic:8 | Version:4 | Created:8 | Reserved:12] = 32 bytes
-//! Entry:  [Length:4 | Timestamp:8 | OpType:1 | Payload:N | CRC32:4]
+//! Frame:  [Seq:8 LE | Len:4 LE | CRC32:4 LE | Payload:N = bincode(WalOp)]
 //! ```
 //!
 //! ## Snapshot File Format
@@ -16,18 +17,14 @@
 //! ```
 
 use crate::error::{PersistenceError, Result};
-use crc32fast::Hasher;
 use keep_shared_kernel::types::KvValue;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::io::{Read, Write};
 use std::time::Duration;
 
-/// WAL file magic number: "KVWAL001"
+/// Magic of the retired KVWAL001 WAL format; used only to refuse such files.
 pub const WAL_MAGIC: &[u8; 8] = b"KVWAL001";
-
-/// WAL format version
-pub const WAL_VERSION: u32 = 1;
 
 /// Snapshot file magic number: "KVSNAP01"
 pub const SNAPSHOT_MAGIC: &[u8; 8] = b"KVSNAP01";
@@ -265,82 +262,14 @@ impl WalOp {
     }
 }
 
-/// WAL entry with metadata
+/// WAL entry: the operation and its sequence number
 #[derive(Debug, Clone)]
 pub struct WalEntry {
-    /// Timestamp in nanoseconds since Unix epoch
-    pub timestamp: i64,
+    /// Position of the entry in the WAL
+    pub seq: u64,
 
     /// The operation
     pub op: WalOp,
-}
-
-/// WAL file header (32 bytes)
-#[derive(Debug, Clone)]
-pub struct WalHeader {
-    pub magic: [u8; 8],
-    pub version: u32,
-    pub created_at: i64, // Unix timestamp in seconds
-}
-
-impl Default for WalHeader {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl WalHeader {
-    pub fn new() -> Self {
-        Self {
-            magic: *WAL_MAGIC,
-            version: WAL_VERSION,
-            created_at: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs() as i64,
-        }
-    }
-
-    pub fn write<W: Write>(&self, writer: &mut W) -> Result<()> {
-        writer.write_all(&self.magic)?;
-        writer.write_all(&self.version.to_be_bytes())?;
-        writer.write_all(&self.created_at.to_be_bytes())?;
-        writer.write_all(&[0u8; 12])?; // Reserved
-        Ok(())
-    }
-
-    pub fn read<R: Read>(reader: &mut R) -> Result<Self> {
-        let mut magic = [0u8; 8];
-        reader.read_exact(&mut magic)?;
-
-        if &magic != WAL_MAGIC {
-            return Err(PersistenceError::InvalidMagic {
-                expected: WAL_MAGIC.to_vec(),
-                actual: magic.to_vec(),
-            });
-        }
-
-        let mut version_bytes = [0u8; 4];
-        reader.read_exact(&mut version_bytes)?;
-        let version = u32::from_be_bytes(version_bytes);
-
-        if version != WAL_VERSION {
-            return Err(PersistenceError::UnsupportedVersion(version));
-        }
-
-        let mut created_bytes = [0u8; 8];
-        reader.read_exact(&mut created_bytes)?;
-        let created_at = i64::from_be_bytes(created_bytes);
-
-        let mut reserved = [0u8; 12];
-        reader.read_exact(&mut reserved)?;
-
-        Ok(Self {
-            magic,
-            version,
-            created_at,
-        })
-    }
 }
 
 /// Snapshot file header (72 bytes)
@@ -432,13 +361,6 @@ impl SnapshotHeader {
     }
 }
 
-/// Calculate CRC32 checksum
-pub fn calculate_crc32(data: &[u8]) -> u32 {
-    let mut hasher = Hasher::new();
-    hasher.update(data);
-    hasher.finalize()
-}
-
 /// Calculate SHA256 checksum
 pub fn calculate_sha256(data: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
@@ -446,177 +368,9 @@ pub fn calculate_sha256(data: &[u8]) -> [u8; 32] {
     hasher.finalize().into()
 }
 
-/// Encode a WAL entry with checksum
-pub fn encode_wal_entry(entry: &WalEntry) -> Result<Vec<u8>> {
-    // Serialize the operation
-    let op_bytes = bincode::serialize(&entry.op)?;
-
-    // Calculate total length (timestamp + op_type + payload + crc32)
-    let total_length = 8 + 1 + op_bytes.len() + 4;
-
-    let mut buffer = Vec::with_capacity(4 + total_length);
-
-    // Write length (4 bytes)
-    buffer.extend_from_slice(&(total_length as u32).to_be_bytes());
-
-    // Write timestamp (8 bytes)
-    buffer.extend_from_slice(&entry.timestamp.to_be_bytes());
-
-    // Write op type (1 byte)
-    buffer.push(entry.op.op_type() as u8);
-
-    // Write payload
-    buffer.extend_from_slice(&op_bytes);
-
-    // Calculate and write CRC32 checksum
-    let checksum = calculate_crc32(&buffer[4..]); // Checksum of everything except length
-    buffer.extend_from_slice(&checksum.to_be_bytes());
-
-    Ok(buffer)
-}
-
-/// Decode a WAL entry and verify checksum
-pub fn decode_wal_entry(data: &[u8], position: u64) -> Result<WalEntry> {
-    if data.len() < 4 {
-        return Err(PersistenceError::CorruptedWal {
-            pos: position,
-            reason: format!("Too short: {} bytes", data.len()),
-        });
-    }
-
-    // Read length
-    let length = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
-
-    if data.len() < 4 + length {
-        return Err(PersistenceError::CorruptedWal {
-            pos: position,
-            reason: format!(
-                "Incomplete entry: expected {} bytes, got {}",
-                4 + length,
-                data.len()
-            ),
-        });
-    }
-
-    // Verify checksum
-    let expected_checksum = u32::from_be_bytes([
-        data[4 + length - 4],
-        data[4 + length - 3],
-        data[4 + length - 2],
-        data[4 + length - 1],
-    ]);
-    let actual_checksum = calculate_crc32(&data[4..4 + length - 4]);
-
-    if expected_checksum != actual_checksum {
-        return Err(PersistenceError::ChecksumMismatch {
-            pos: position,
-            expected: expected_checksum,
-            actual: actual_checksum,
-        });
-    }
-
-    // Read timestamp
-    let timestamp = i64::from_be_bytes([
-        data[4], data[5], data[6], data[7], data[8], data[9], data[10], data[11],
-    ]);
-
-    // Read op type
-    let op_type_byte = data[12];
-    let _op_type =
-        WalOpType::from_u8(op_type_byte).ok_or_else(|| PersistenceError::CorruptedWal {
-            pos: position,
-            reason: format!("Invalid op type: {}", op_type_byte),
-        })?;
-
-    // Deserialize operation
-    let op_bytes = &data[13..4 + length - 4];
-    let op: WalOp = bincode::deserialize(op_bytes).map_err(|e| PersistenceError::CorruptedWal {
-        pos: position,
-        reason: format!("Deserialization failed: {}", e),
-    })?;
-
-    Ok(WalEntry { timestamp, op })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_wal_header_roundtrip() {
-        let header = WalHeader::new();
-        let mut buffer = Vec::new();
-        header.write(&mut buffer).unwrap();
-
-        let decoded = WalHeader::read(&mut buffer.as_slice()).unwrap();
-        assert_eq!(header.magic, decoded.magic);
-        assert_eq!(header.version, decoded.version);
-    }
-
-    #[test]
-    fn test_wal_entry_encoding() {
-        let entry = WalEntry {
-            timestamp: 1234567890,
-            op: WalOp::Set {
-                key: "test_key".to_string(),
-                value: KvValue::String("test_value".to_string()),
-                ttl: None,
-            },
-        };
-
-        let encoded = encode_wal_entry(&entry).unwrap();
-        let decoded = decode_wal_entry(&encoded, 0).unwrap();
-
-        assert_eq!(entry.timestamp, decoded.timestamp);
-        match (&entry.op, &decoded.op) {
-            (
-                WalOp::Set {
-                    key: k1,
-                    value: v1,
-                    ttl: t1,
-                },
-                WalOp::Set {
-                    key: k2,
-                    value: v2,
-                    ttl: t2,
-                },
-            ) => {
-                assert_eq!(k1, k2);
-                assert_eq!(v1, v2);
-                assert_eq!(t1, t2);
-            }
-            _ => panic!("Op type mismatch"),
-        }
-    }
-
-    #[test]
-    fn test_checksum_validation() {
-        let entry = WalEntry {
-            timestamp: 1234567890,
-            op: WalOp::Delete {
-                key: "test_key".to_string(),
-            },
-        };
-
-        let mut encoded = encode_wal_entry(&entry).unwrap();
-
-        // Corrupt a byte
-        encoded[10] ^= 0xFF;
-
-        let result = decode_wal_entry(&encoded, 0);
-        assert!(matches!(
-            result,
-            Err(PersistenceError::ChecksumMismatch { .. })
-        ));
-    }
-
-    #[test]
-    fn test_crc32_calculation() {
-        let data = b"Hello, World!";
-        let checksum1 = calculate_crc32(data);
-        let checksum2 = calculate_crc32(data);
-        assert_eq!(checksum1, checksum2);
-    }
 
     #[test]
     fn test_sha256_calculation() {
