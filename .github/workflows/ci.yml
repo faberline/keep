@@ -93,7 +93,7 @@ jobs:
         with:
           shared-key: keep-ci
       - name: Install cargo-deny
-        run: cargo install --locked cargo-deny --version 0.18.3
+        run: cargo install --locked cargo-deny --version 0.20.2
       - run: cargo deny --locked check advisories licenses bans sources
 
   gate:
