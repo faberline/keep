@@ -5,10 +5,12 @@
 //! `ratio < max(min_ratio, ratchet × baseline)`; a `report` cell never fails.
 //! The gate fails closed on malformed cells.
 
-#![allow(dead_code)] // the live-runner slice (keep#37) uses the rest of these items
+#![allow(dead_code)] // the report-check and live-runner slices (keep#35, keep#43, keep#44) use the rest of these items
 
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
+use std::process::Command;
+use std::str::FromStr;
 
 const BASELINE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/perf-baseline.json");
 const BASELINE_SCHEMA: &str = "keep.perf_baseline/1";
@@ -981,4 +983,405 @@ fn committed_baseline_is_well_formed() {
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Live-runner helpers (keep#43): pure tests only, no Docker, no env writes.
+// ---------------------------------------------------------------------------
+
+fn has_pair(args: &[String], key: &str, value: &str) -> bool {
+    args.windows(2).any(|w| w[0] == key && w[1] == value)
+}
+
+#[test]
+fn normalize_arch_maps_docker_names() {
+    assert_eq!(normalize_arch("aarch64"), "arm64");
+    assert_eq!(normalize_arch("x86_64"), "amd64");
+    assert_eq!(normalize_arch("riscv64"), "riscv64");
+}
+
+#[test]
+fn env_or_uses_default_when_unset() {
+    assert_eq!(env_or("KEEP_PERF_TEST_UNSET_VAR", 7u32), 7);
+    assert_eq!(env_or("KEEP_PERF_TEST_UNSET_VAR", String::from("a")), "a");
+}
+
+#[test]
+fn env_list_uses_default_when_unset() {
+    assert_eq!(
+        env_list("KEEP_PERF_TEST_UNSET_LIST", &["a", "b"]),
+        vec!["a".to_string(), "b".to_string()]
+    );
+}
+
+#[test]
+fn server_args_ram_tier() {
+    let (port, args) = server_args("redis", "ram", 4).unwrap();
+    assert_eq!(port, 16379);
+    assert!(has_pair(&args, "--appendonly", "no"));
+    assert!(has_pair(&args, "--io-threads", "4"));
+
+    let (port, args) = server_args("keep", "ram", 1).unwrap();
+    assert_eq!(port, 7117);
+    assert!(args.iter().any(|a| a == "--disable-persistence"));
+
+    assert_eq!(server_args("dragonfly", "ram", 1).unwrap().0, 16380);
+    assert_eq!(server_args("keydb", "ram", 1).unwrap().0, 16381);
+    assert_eq!(server_args("garnet", "ram", 1).unwrap().0, 16382);
+}
+
+#[test]
+fn server_args_tiered_tier() {
+    let (_, args) = server_args("redis", "tiered", 1).unwrap();
+    assert!(has_pair(&args, "--appendfsync", "always"));
+
+    let (_, args) = server_args("keep", "tiered", 1).unwrap();
+    assert!(!args.iter().any(|a| a == "--disable-persistence"));
+
+    let (_, args) = server_args("garnet", "tiered", 1).unwrap();
+    assert!(args.iter().any(|a| a == "--aof"));
+    assert!(args.iter().any(|a| a == "--aof-commit-wait"));
+}
+
+#[test]
+fn server_args_unknown_or_unsupported_is_none() {
+    // Dragonfly has no fsync-per-write AOF, so it has no tiered cell.
+    assert!(server_args("dragonfly", "tiered", 1).is_none());
+    assert!(server_args("memcached", "ram", 1).is_none());
+}
+
+#[test]
+fn problems_split_fatal_from_report_only() {
+    let mut p = Problems::default();
+    p.fail("keep", "k".into());
+    p.fail("redis", "r".into());
+    p.fail("garnet", "g".into());
+    assert_eq!(p.fatal, vec!["k".to_string(), "r".to_string()]);
+    assert_eq!(p.unavailable, vec!["g".to_string()]);
+}
+
+// ===========================================================================
+// Live gate (Docker)
+// ===========================================================================
+
+fn env_or<T: FromStr>(key: &str, default: T) -> T {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
+}
+
+fn env_list(key: &str, default: &[&str]) -> Vec<String> {
+    match std::env::var(key) {
+        Ok(v) if !v.trim().is_empty() => v.split(',').map(|s| s.trim().to_string()).collect(),
+        _ => default.iter().map(|s| s.to_string()).collect(),
+    }
+}
+
+fn docker<S: AsRef<str>>(args: &[S]) -> Result<String, String> {
+    let args: Vec<&str> = args.iter().map(AsRef::as_ref).collect();
+    let out = Command::new("docker")
+        .args(&args)
+        .output()
+        .map_err(|e| format!("docker: {e}"))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    } else {
+        Err(format!(
+            "docker {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
+    }
+}
+
+fn normalize_arch(arch: &str) -> &str {
+    match arch {
+        "aarch64" => "arm64",
+        "x86_64" => "amd64",
+        other => other,
+    }
+}
+
+struct Host {
+    class: String,
+    arch: String,
+    ncpu: u32,
+}
+
+fn host() -> Result<Host, String> {
+    let info = docker(&[
+        "info",
+        "--format",
+        "{{.Architecture}}|{{.NCPU}}|{{.OperatingSystem}}",
+    ])?;
+    let mut parts = info.splitn(3, '|');
+    let arch = normalize_arch(parts.next().unwrap_or("")).to_string();
+    let ncpu: u32 = parts
+        .next()
+        .and_then(|n| n.parse().ok())
+        .ok_or("docker info: no NCPU")?;
+    let os = parts.next().unwrap_or("");
+    let runtime = if os.contains("OrbStack") {
+        "orbstack"
+    } else if os.contains("Docker Desktop") {
+        "docker-desktop"
+    } else {
+        "docker"
+    };
+    let host_os = match std::env::consts::OS {
+        "macos" => "darwin",
+        other => other,
+    };
+    let class = std::env::var("KEEP_PERF_HOST_CLASS")
+        .unwrap_or_else(|_| format!("{host_os}-{}-{runtime}-{ncpu}c", std::env::consts::ARCH));
+    Ok(Host { class, arch, ncpu })
+}
+
+/// Pulls `image` if absent and refuses one built for another architecture
+/// (an emulated server would gate on QEMU, not on the server).
+fn ensure_image(image: &str, arch: &str) -> Result<String, String> {
+    let inspect = |img: &str| {
+        docker(&[
+            "image",
+            "inspect",
+            "--format",
+            "{{.Architecture}} {{.Id}}",
+            img,
+        ])
+    };
+    let found = match inspect(image) {
+        Ok(found) => found,
+        Err(_) => {
+            docker(&["pull", "--quiet", image])?;
+            inspect(image)?
+        }
+    };
+    let (image_arch, id) = found.split_once(' ').unwrap_or((&found, ""));
+    if normalize_arch(image_arch) != arch {
+        return Err(format!(
+            "{image} is {image_arch}, host is {arch} (emulated)"
+        ));
+    }
+    Ok(id.chars().take(19).collect())
+}
+
+/// The server container's args for `target`, or `None` when the target does
+/// not run at this tier.
+fn server_args(target: &str, tier: &str, cores: u32) -> Option<(u16, Vec<String>)> {
+    let durable = tier == "tiered";
+    let n = cores.to_string();
+    let aof: &[&str] = if durable {
+        &["--appendonly", "yes", "--appendfsync", "always"]
+    } else {
+        &["--appendonly", "no"]
+    };
+    let (port, args): (u16, Vec<&str>) = match target {
+        // Durable-before-ack group commit (the default) vs RAM-only.
+        "keep" => {
+            let mut a = vec![
+                "keep",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "7117",
+                "--log-level",
+                "warn",
+                "--worker-threads",
+                &n,
+                "--data-dir",
+                "/home/keep/data",
+            ];
+            if !durable {
+                a.push("--disable-persistence");
+            }
+            (7117, a)
+        }
+        "redis" => {
+            let mut a = vec![
+                "redis-server",
+                "--port",
+                "16379",
+                "--protected-mode",
+                "no",
+                "--save",
+                "",
+                "--io-threads",
+                &n,
+            ];
+            a.extend_from_slice(aof);
+            (16379, a)
+        }
+        "keydb" => {
+            let mut a = vec![
+                "keydb-server",
+                "--port",
+                "16381",
+                "--protected-mode",
+                "no",
+                "--save",
+                "",
+                "--server-threads",
+                &n,
+            ];
+            a.extend_from_slice(aof);
+            (16381, a)
+        }
+        // Dragonfly has no fsync-per-write AOF, so it has no tiered cell.
+        "dragonfly" if durable => return None,
+        "dragonfly" => (
+            16380,
+            vec![
+                "dragonfly",
+                "--logtostderr",
+                "--port",
+                "16380",
+                "--proactor_threads",
+                &n,
+                "--dbfilename",
+                "",
+            ],
+        ),
+        "garnet" => {
+            let mut a = vec!["--port", "16382", "--bind", "0.0.0.0", "--lua"];
+            if durable {
+                a.extend_from_slice(&[
+                    "--aof",
+                    "--aof-commit-freq",
+                    "0",
+                    "--aof-commit-wait",
+                    "--checkpointdir",
+                    "/data",
+                ]);
+            }
+            (16382, a)
+        }
+        _ => return None,
+    };
+    Some((port, args.into_iter().map(str::to_string).collect()))
+}
+
+/// Removes the server container (and its anonymous data volume) on drop.
+struct Server;
+
+impl Server {
+    fn start(net: &str, cpus: &str, image: &str, args: &[String]) -> Result<Self, String> {
+        let _ = docker(&["rm", "-f", "-v", SERVER_NAME]);
+        let mut run: Vec<String> = [
+            "run",
+            "-d",
+            "--name",
+            SERVER_NAME,
+            "--network",
+            net,
+            "--cpuset-cpus",
+            cpus,
+            "--ulimit",
+            "nofile=65536:65536",
+            // Every server's data dir is a fresh anonymous volume (not overlayfs).
+            "-v",
+            "/data",
+            "-v",
+            "/home/keep",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        run.push(image.to_string());
+        run.extend(args.iter().cloned());
+        docker(&run)?;
+        Ok(Self)
+    }
+    fn logs() -> String {
+        docker(&["logs", "--tail", "15", SERVER_NAME]).unwrap_or_default()
+    }
+}
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        let _ = docker(&["rm", "-f", "-v", SERVER_NAME]);
+    }
+}
+
+struct Load<'a> {
+    net: &'a str,
+    cpus: String,
+    image: &'a str,
+    addr_host: &'a str,
+    ops: usize,
+    warmup: usize,
+    concurrency: usize,
+}
+
+impl Load<'_> {
+    fn run(&self, target: &str, tier: &str, port: u16, label: &str) -> Result<Value, String> {
+        let keep_url = format!("http://{}:{port}", self.addr_host);
+        let addr = format!("redis://{}:{port}", self.addr_host);
+        let args = [
+            "run",
+            "--rm",
+            "--network",
+            self.net,
+            "--cpuset-cpus",
+            &self.cpus,
+            self.image,
+            "bench_compare",
+            "--backend",
+            target,
+            "--keep-url",
+            &keep_url,
+            "--addr",
+            &addr,
+            "--tier",
+            tier,
+            "--phases",
+            "set,get,cas",
+            "--format",
+            "json",
+            "--wait-ready-secs",
+            "60",
+            "--ops",
+            &self.ops.to_string(),
+            "--warmup-ops",
+            &self.warmup.to_string(),
+            "--concurrency",
+            &self.concurrency.to_string(),
+            "--label",
+            label,
+        ];
+        let out = docker(&args)?;
+        let line = out
+            .lines()
+            .rev()
+            .find(|l| l.starts_with('{'))
+            .ok_or_else(|| format!("{target}: bench_compare printed no JSON report: {out}"))?;
+        serde_json::from_str(line).map_err(|e| format!("{target}: bad report: {e}"))
+    }
+}
+
+/// Fatal problems (keep or a ratchet peer cannot be measured) vs report-only
+/// peers that are simply shown UNAVAILABLE.
+#[derive(Default)]
+struct Problems {
+    fatal: Vec<String>,
+    unavailable: Vec<String>,
+}
+
+impl Problems {
+    fn fail(&mut self, target: &str, msg: String) {
+        if target != "keep" && role_for(target) == "report" {
+            self.unavailable.push(msg);
+        } else {
+            self.fatal.push(msg);
+        }
+    }
+}
+
+fn today() -> String {
+    Command::new("date")
+        .arg("+%F")
+        .output()
+        .ok()
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_default()
 }
