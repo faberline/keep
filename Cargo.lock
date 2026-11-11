@@ -1976,6 +1976,7 @@ dependencies = [
  "keep-shared-kernel",
  "serde",
  "sha2",
+ "storage-durable",
  "tempfile",
  "thiserror 2.0.18",
  "tracing",

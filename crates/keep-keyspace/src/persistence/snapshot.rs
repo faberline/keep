@@ -15,7 +15,9 @@ use tracing::{debug, info};
 
 /// Snapshot file magic: "KVSN0001"
 pub const SNAPSHOT_MAGIC: &[u8; 8] = b"KVSN0001";
-pub const SNAPSHOT_VERSION: u32 = 1;
+/// Version 2: `wal_position` is the last WAL `seq` covered by the snapshot.
+/// Version 1 (byte offsets) is not supported and is refused on load.
+pub const SNAPSHOT_VERSION: u32 = 2;
 
 /// Snapshot file header (64 bytes)
 #[derive(Debug, Clone)]
@@ -30,7 +32,7 @@ pub struct SnapshotHeader {
     pub num_shards: u32,
     /// Total number of entries across all shards
     pub total_entries: u64,
-    /// WAL position at time of snapshot (for recovery)
+    /// Last WAL seq covered by the snapshot (for recovery)
     pub wal_position: u64,
     /// SHA256 checksum of snapshot data
     pub checksum: [u8; 32],
@@ -305,6 +307,17 @@ impl SnapshotWriter {
 pub struct SnapshotLoader;
 
 impl SnapshotLoader {
+    /// Last WAL seq covered by the latest snapshot, or `None` when there is no snapshot
+    pub fn latest_wal_seq(data_dir: impl AsRef<Path>) -> Result<Option<u64>> {
+        let snapshots = find_snapshot_files(data_dir.as_ref())?;
+        let Some(latest) = snapshots.last() else {
+            return Ok(None);
+        };
+        let mut reader = BufReader::new(File::open(latest)?);
+        let header = SnapshotHeader::read(&mut reader)?;
+        Ok(Some(header.wal_position))
+    }
+
     /// Load the latest snapshot from data directory
     pub fn load_latest(data_dir: impl AsRef<Path>) -> Result<Option<(SnapshotData, u64)>> {
         let data_dir = data_dir.as_ref();
@@ -549,5 +562,26 @@ mod tests {
 
         let result = SnapshotHeader::read(&mut &buffer[..]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_latest_wal_seq() {
+        use crate::engine::KvEngine;
+        use crate::persistence::SnapshotConfig;
+
+        let temp_dir = TempDir::new().unwrap();
+        assert_eq!(
+            SnapshotLoader::latest_wal_seq(temp_dir.path()).unwrap(),
+            None
+        );
+
+        let engine = KvEngine::with_shards(4);
+        SnapshotWriter::new(SnapshotConfig::default())
+            .create_snapshot(&engine, temp_dir.path(), 5)
+            .unwrap();
+        assert_eq!(
+            SnapshotLoader::latest_wal_seq(temp_dir.path()).unwrap(),
+            Some(5)
+        );
     }
 }
