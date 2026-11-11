@@ -14,6 +14,12 @@
 //! per-batch.
 //!
 //! Connections are pre-established / pre-warmed OUTSIDE the timed region.
+//!
+//! Phases (`--phases`, default `set,get`): SET, GET, and CAS. CAS is single-key
+//! compare-and-swap with one round trip per op: keep `POST /kv/{k}/cas`, RESP
+//! `EVALSHA` of a GET-compare-SET Lua script (atomic on every RESP server).
+//! CAS keys are seeded before the timed region and each worker owns its keys,
+//! so every swap is expected to apply; a swap that does not apply is an error.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -27,6 +33,8 @@ type BenchResult<T> = Result<T, BoxError>;
 
 const SCHEMA: &str = "keep.bench_compare/1";
 const RESP_BACKENDS: [&str; 4] = ["redis", "dragonfly", "keydb", "garnet"];
+const CAS_LUA: &str = "if redis.call('GET', KEYS[1]) == ARGV[1] then \
+     redis.call('SET', KEYS[1], ARGV[2]) return 1 else return 0 end";
 
 #[derive(Parser, Debug, Clone)]
 struct Args {
@@ -63,6 +71,9 @@ struct Args {
     /// engine backend: enable WAL persistence into this dir (durable path).
     #[arg(long)]
     persist: Option<String>,
+    /// Comma-separated phases, run in order: set, get, cas.
+    #[arg(long, default_value = "set,get", value_delimiter = ',')]
+    phases: Vec<String>,
     /// Output: `text` (human) or `json` (one keep.bench_compare/1 line on stdout).
     #[arg(long, default_value = "text", value_parser = ["text", "json"])]
     format: String,
@@ -86,6 +97,31 @@ macro_rules! note {
     ($args:expr, $($fmt:tt)*) => {
         if $args.json() { eprintln!($($fmt)*) } else { println!($($fmt)*) }
     };
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Phase {
+    Set,
+    Get,
+    Cas,
+}
+
+impl Phase {
+    fn parse(s: &str) -> BenchResult<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "set" => Ok(Self::Set),
+            "get" => Ok(Self::Get),
+            "cas" => Ok(Self::Cas),
+            other => Err(format!("unknown phase `{other}` (expected set|get|cas)").into()),
+        }
+    }
+    fn label(self) -> &'static str {
+        match self {
+            Self::Set => "SET",
+            Self::Get => "GET",
+            Self::Cas => "CAS",
+        }
+    }
 }
 
 /// One worker's latencies (µs per request) and failed-request count.
@@ -209,6 +245,15 @@ async fn main() {
 
 /// Runs the benchmark and returns the total failed-request count.
 async fn run(args: &Args) -> BenchResult<u64> {
+    let phases = args
+        .phases
+        .iter()
+        .filter(|p| !p.trim().is_empty())
+        .map(|p| Phase::parse(p))
+        .collect::<BenchResult<Vec<_>>>()?;
+    if phases.is_empty() {
+        return Err("--phases selected nothing".into());
+    }
     let val = "x".repeat(args.value_size);
     note!(
         args,
@@ -221,12 +266,12 @@ async fn run(args: &Args) -> BenchResult<u64> {
         args.keyspace
     );
     let results = match args.backend.as_str() {
-        "engine" => bench_engine(args, &val).await?,
-        "keep" => bench_keep(args, &val).await?,
+        "engine" => bench_engine(args, &val, &phases).await?,
+        "keep" => bench_keep(args, &val, &phases).await?,
         // Pure HTTP/2 framework floor: hits /healthz (no key, no engine, no
         // JSON) so the gap vs `keep` GET isolates our app-code cost.
         "keepnoop" => bench_keep_noop(args).await?,
-        b if RESP_BACKENDS.contains(&b) => bench_resp(args, &val).await?,
+        b if RESP_BACKENDS.contains(&b) => bench_resp(args, &val, &phases).await?,
         other => return Err(format!("unknown backend: {other}").into()),
     };
     // The storage tier is verified by a later slice; until then it is reported as unknown.
@@ -278,10 +323,28 @@ fn plan(args: &Args) -> (usize, usize) {
     (n_req, actual_ops)
 }
 
+/// CAS keys are worker-owned: `benchcas:<tag>:<worker>:<slot>`.
+fn cas_key(tag: &str, worker: usize, slot: usize) -> String {
+    format!("benchcas:{tag}:{worker}:{slot}")
+}
+
+/// The value a CAS key holds after `n` swaps, padded to `size`.
+fn cas_value(n: u64, size: usize) -> String {
+    format!("{n:0>size$}")
+}
+
+/// CAS keys per worker: the worker cycles through these, one swap per op.
+fn cas_slots(args: &Args, n_req: usize) -> usize {
+    (args.keyspace / args.concurrency).clamp(1, n_req.max(1))
+}
+
 // --------------------------------------------------------------------------
 // engine
 // --------------------------------------------------------------------------
-async fn bench_engine(args: &Args, val: &str) -> BenchResult<Vec<PhaseResult>> {
+async fn bench_engine(args: &Args, val: &str, phases: &[Phase]) -> BenchResult<Vec<PhaseResult>> {
+    if phases.contains(&Phase::Cas) {
+        return Err("the engine backend measures set/get only".into());
+    }
     use keep::persistence::{PersistenceConfig, PersistenceHandle};
     use keep::{KvEngine, KvKey, KvValue};
     let engine = Arc::new(KvEngine::with_shards(args.shards));
@@ -295,7 +358,7 @@ async fn bench_engine(args: &Args, val: &str) -> BenchResult<Vec<PhaseResult>> {
     let batch = args.batch.max(1);
     let mut results = Vec::new();
 
-    for phase in ["SET", "GET"] {
+    for &phase in phases {
         let start = Instant::now();
         let mut handles = Vec::new();
         for w in 0..args.concurrency {
@@ -310,7 +373,7 @@ async fn bench_engine(args: &Args, val: &str) -> BenchResult<Vec<PhaseResult>> {
                         .map(|j| KvKey::new(key_for(base + j, keyspace)).unwrap())
                         .collect();
                     let t = Instant::now();
-                    let ok = if phase == "SET" {
+                    let ok = if phase == Phase::Set {
                         let pairs: Vec<(&KvKey, KvValue)> = keys
                             .iter()
                             .map(|k| (k, KvValue::String(val.clone())))
@@ -332,7 +395,7 @@ async fn bench_engine(args: &Args, val: &str) -> BenchResult<Vec<PhaseResult>> {
         }
         emit(
             args,
-            PhaseResult::new(phase, actual, batch, start.elapsed(), all),
+            PhaseResult::new(phase.label(), actual, batch, start.elapsed(), all),
             &mut results,
         );
     }
@@ -342,7 +405,7 @@ async fn bench_engine(args: &Args, val: &str) -> BenchResult<Vec<PhaseResult>> {
 // --------------------------------------------------------------------------
 // keep over HTTP/2 + JSON
 // --------------------------------------------------------------------------
-async fn bench_keep(args: &Args, val: &str) -> BenchResult<Vec<PhaseResult>> {
+async fn bench_keep(args: &Args, val: &str, phases: &[Phase]) -> BenchResult<Vec<PhaseResult>> {
     let n_clients = args.keep_clients.unwrap_or(args.concurrency).max(1);
     // Shared h2c pool: N single-connection clients, round-robin dispatch (#467).
     // The 10s timeout bounds a single request so a stalled stream can't hang the run.
@@ -364,7 +427,15 @@ async fn bench_keep(args: &Args, val: &str) -> BenchResult<Vec<PhaseResult>> {
     let batch = args.batch.max(1);
     let mut results = Vec::new();
 
-    for phase in ["SET", "GET"] {
+    for &phase in phases {
+        if phase == Phase::Cas {
+            emit(
+                args,
+                keep_cas_phase(args, &pool, args.value_size).await?,
+                &mut results,
+            );
+            continue;
+        }
         let start = Instant::now();
         let mut handles = Vec::new();
         for w in 0..args.concurrency {
@@ -381,13 +452,13 @@ async fn bench_keep(args: &Args, val: &str) -> BenchResult<Vec<PhaseResult>> {
                     let t = Instant::now();
                     let ok = if batch == 1 {
                         let url = format!("{base_url}/kv/{}", keys[0]);
-                        let resp = if phase == "SET" {
+                        let resp = if phase == Phase::Set {
                             client.put(&url).json(&json!({ "value": val })).send().await
                         } else {
                             client.get(&url).send().await
                         };
                         matches!(&resp, Ok(r) if r.status().is_success())
-                    } else if phase == "SET" {
+                    } else if phase == Phase::Set {
                         let entries: HashMap<&str, &str> =
                             keys.iter().map(|k| (k.as_str(), val.as_str())).collect();
                         let resp = client
@@ -415,7 +486,7 @@ async fn bench_keep(args: &Args, val: &str) -> BenchResult<Vec<PhaseResult>> {
         }
         emit(
             args,
-            PhaseResult::new(phase, actual, batch, start.elapsed(), all),
+            PhaseResult::new(phase.label(), actual, batch, start.elapsed(), all),
             &mut results,
         );
     }
@@ -470,7 +541,7 @@ async fn bench_keep_noop(args: &Args) -> BenchResult<Vec<PhaseResult>> {
 // --------------------------------------------------------------------------
 // redis / dragonfly / keydb / garnet (RESP)
 // --------------------------------------------------------------------------
-async fn bench_resp(args: &Args, val: &str) -> BenchResult<Vec<PhaseResult>> {
+async fn bench_resp(args: &Args, val: &str, phases: &[Phase]) -> BenchResult<Vec<PhaseResult>> {
     let client = redis::Client::open(args.addr.clone())?;
     {
         let mut c = client.get_multiplexed_async_connection().await?;
@@ -480,7 +551,15 @@ async fn bench_resp(args: &Args, val: &str) -> BenchResult<Vec<PhaseResult>> {
     let batch = args.batch.max(1);
     let mut results = Vec::new();
 
-    for phase in ["SET", "GET"] {
+    for &phase in phases {
+        if phase == Phase::Cas {
+            emit(
+                args,
+                resp_cas_phase(args, &client, args.value_size).await?,
+                &mut results,
+            );
+            continue;
+        }
         // pre-establish one connection per worker, OUTSIDE the timed region.
         let conns: Vec<_> = futures::future::join_all(
             (0..args.concurrency).map(|_| client.get_multiplexed_async_connection()),
@@ -502,7 +581,7 @@ async fn bench_resp(args: &Args, val: &str) -> BenchResult<Vec<PhaseResult>> {
                     let keys: Vec<String> =
                         (0..batch).map(|j| key_for(kbase + j, keyspace)).collect();
                     let t = Instant::now();
-                    let ok = if phase == "SET" {
+                    let ok = if phase == Phase::Set {
                         let mut cmd = redis::cmd(if batch == 1 { "SET" } else { "MSET" });
                         for k in &keys {
                             cmd.arg(k).arg(&val);
@@ -534,11 +613,145 @@ async fn bench_resp(args: &Args, val: &str) -> BenchResult<Vec<PhaseResult>> {
         }
         emit(
             args,
-            PhaseResult::new(phase, actual, batch, start.elapsed(), all),
+            PhaseResult::new(phase.label(), actual, batch, start.elapsed(), all),
             &mut results,
         );
     }
     Ok(results)
+}
+
+// --------------------------------------------------------------------------
+// CAS: single key, one round trip per op, every swap expected to apply
+// --------------------------------------------------------------------------
+async fn keep_cas_phase(
+    args: &Args,
+    pool: &transport_h2c::H2cPool,
+    size: usize,
+) -> BenchResult<PhaseResult> {
+    let one = Args {
+        batch: 1,
+        ..args.clone()
+    };
+    let (n_req, actual) = plan(&one);
+    let slots = cas_slots(args, n_req);
+    // Seed every worker-owned key outside the timed region.
+    for w in 0..args.concurrency {
+        for s in 0..slots {
+            let url = format!("{}/kv/{}", args.keep_url, cas_key("timed", w, s));
+            pool.client()
+                .put(&url)
+                .json(&json!({ "value": cas_value(0, size) }))
+                .send()
+                .await?
+                .error_for_status()?;
+        }
+    }
+    let start = Instant::now();
+    let mut handles = Vec::new();
+    for w in 0..args.concurrency {
+        let client = pool.client().clone();
+        let base_url = args.keep_url.clone();
+        handles.push(tokio::spawn(async move {
+            let mut out = WorkerOut::with_capacity(n_req);
+            let mut counters = vec![0u64; slots];
+            for r in 0..n_req {
+                let s = r % slots;
+                let url = format!("{base_url}/kv/{}/cas", cas_key("timed", w, s));
+                let body = json!({
+                    "expected": cas_value(counters[s], size),
+                    "new": cas_value(counters[s] + 1, size),
+                });
+                let t = Instant::now();
+                let swapped = match client.post(&url).json(&body).send().await {
+                    Ok(resp) if resp.status().is_success() => resp
+                        .json::<Value>()
+                        .await
+                        .is_ok_and(|v| v["swapped"] == true),
+                    _ => false,
+                };
+                out.record(t, swapped);
+                if swapped {
+                    counters[s] += 1;
+                }
+            }
+            out
+        }));
+    }
+    let mut outs = Vec::new();
+    for h in handles {
+        outs.push(h.await?);
+    }
+    Ok(PhaseResult::new("CAS", actual, 1, start.elapsed(), outs))
+}
+
+async fn resp_cas_phase(
+    args: &Args,
+    client: &redis::Client,
+    size: usize,
+) -> BenchResult<PhaseResult> {
+    let one = Args {
+        batch: 1,
+        ..args.clone()
+    };
+    let (n_req, actual) = plan(&one);
+    let slots = cas_slots(args, n_req);
+    let sha: String = {
+        let mut c = client.get_multiplexed_async_connection().await?;
+        // Seed every worker-owned key outside the timed region.
+        for w in 0..args.concurrency {
+            let mut cmd = redis::cmd("MSET");
+            for s in 0..slots {
+                cmd.arg(cas_key("timed", w, s)).arg(cas_value(0, size));
+            }
+            cmd.query_async::<()>(&mut c).await?;
+        }
+        redis::cmd("SCRIPT")
+            .arg("LOAD")
+            .arg(CAS_LUA)
+            .query_async(&mut c)
+            .await?
+    };
+    // pre-establish one connection per worker, OUTSIDE the timed region.
+    let conns: Vec<_> = futures::future::join_all(
+        (0..args.concurrency).map(|_| client.get_multiplexed_async_connection()),
+    )
+    .await
+    .into_iter()
+    .collect::<Result<_, _>>()?;
+    let start = Instant::now();
+    let mut handles = Vec::new();
+    for (w, mut con) in conns.into_iter().enumerate() {
+        let sha = sha.clone();
+        handles.push(tokio::spawn(async move {
+            let mut out = WorkerOut::with_capacity(n_req);
+            let mut counters = vec![0u64; slots];
+            for r in 0..n_req {
+                let s = r % slots;
+                let t = Instant::now();
+                let swapped = matches!(
+                    redis::cmd("EVALSHA")
+                        .arg(&sha)
+                        .arg(1)
+                        .arg(cas_key("timed", w, s))
+                        .arg(cas_value(counters[s], size))
+                        .arg(cas_value(counters[s] + 1, size))
+                        .query_async::<i64>(&mut con)
+                        .await,
+                    Ok(1)
+                );
+                out.record(t, swapped);
+                if swapped {
+                    counters[s] += 1;
+                }
+            }
+            out
+        }));
+    }
+    let mut outs = Vec::new();
+    for h in handles {
+        outs.push(h.await?);
+    }
+    Ok(PhaseResult::new("CAS", actual, 1, start.elapsed(), outs))
 }
 
 #[cfg(test)]
@@ -631,5 +844,91 @@ mod tests {
             Args::try_parse_from(["bench_compare", "--backend", "engine", "--format", "xml"])
                 .is_err()
         );
+    }
+
+    #[test]
+    fn phase_parse_accepts_set_get_cas() {
+        assert_eq!(Phase::parse("set").unwrap(), Phase::Set);
+        assert_eq!(Phase::parse(" GET ").unwrap(), Phase::Get);
+        assert_eq!(Phase::parse("Cas").unwrap(), Phase::Cas);
+        assert_eq!(Phase::Set.label(), "SET");
+        assert_eq!(Phase::Get.label(), "GET");
+        assert_eq!(Phase::Cas.label(), "CAS");
+    }
+
+    #[test]
+    fn phase_parse_rejects_other_words() {
+        let err = Phase::parse("del").unwrap_err();
+        assert!(err.to_string().contains("unknown phase"));
+    }
+
+    #[test]
+    fn phases_default_and_list() {
+        let a = Args::parse_from(["bench_compare", "--backend", "engine"]);
+        assert_eq!(a.phases, ["set", "get"]);
+        let b = Args::parse_from([
+            "bench_compare",
+            "--backend",
+            "engine",
+            "--phases",
+            "set,get,cas",
+        ]);
+        assert_eq!(b.phases, ["set", "get", "cas"]);
+    }
+
+    #[test]
+    fn cas_key_is_worker_owned() {
+        assert_eq!(cas_key("timed", 3, 7), "benchcas:timed:3:7");
+    }
+
+    #[test]
+    fn cas_value_pads_to_size() {
+        assert_eq!(cas_value(5, 4), "0005");
+        assert_eq!(cas_value(12345, 3), "12345");
+    }
+
+    #[test]
+    fn cas_slots_clamps() {
+        let a = Args::parse_from([
+            "bench_compare",
+            "--backend",
+            "engine",
+            "--keyspace",
+            "100",
+            "--concurrency",
+            "10",
+        ]);
+        assert_eq!(cas_slots(&a, 50), 10);
+        assert_eq!(cas_slots(&a, 4), 4);
+        let b = Args::parse_from([
+            "bench_compare",
+            "--backend",
+            "engine",
+            "--keyspace",
+            "5",
+            "--concurrency",
+            "10",
+        ]);
+        assert_eq!(cas_slots(&b, 50), 1);
+    }
+
+    #[test]
+    fn plan_counts_requests_and_ops() {
+        let make = |ops: &str, batch: &str| {
+            Args::parse_from([
+                "bench_compare",
+                "--backend",
+                "engine",
+                "--ops",
+                ops,
+                "--concurrency",
+                "10",
+                "--batch",
+                batch,
+            ])
+        };
+        assert_eq!(plan(&make("1000", "5")), (20, 1000));
+        assert_eq!(plan(&make("1000", "0")), (100, 1000));
+        assert_eq!(plan(&make("10", "5")), (1, 50));
     }
 }
