@@ -1,7 +1,7 @@
 //! keep — cloud-native, multi-core key-value / claim-check store.
 //!
 //! # Workspace crates
-//! - [`keep_shared_kernel`] (`cluster`, `error`, `metrics`, `tls`, `types`) — foundational types, topology, and metrics
+//! - [`keep_shared_kernel`] (`cluster`, `error`, `tls`, `types`) — foundational types and topology
 //! - [`keep_storage`] — the WAL, the binary file formats, and the blob store
 //! - [`keep_keyspace`] (`engine`, `persistence`) — the sharded in-memory store, snapshots, and recovery
 //! - [`keep_replication`] (`backup`, `raft`) — backup/restore and the Raft state machine
@@ -23,7 +23,7 @@ pub use keep_keyspace::{engine, persistence, EvictionPolicy, KvEngine};
 pub use keep_replication::raft;
 pub use keep_replication::{self as replication, backup};
 pub use keep_shared_kernel::{
-    cluster, error, metrics, tls, types, ClusterConfig, ClusterState, KvError, KvKey, KvValue,
+    cluster, error, tls, types, ClusterConfig, ClusterState, KvError, KvKey, KvValue,
 };
 pub use keep_storage as storage;
 

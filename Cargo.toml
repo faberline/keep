@@ -35,6 +35,7 @@ keep-storage = { path = "crates/keep-storage", version = "0.4.13" }
 build-stamp = { git = "https://github.com/faberline/core", tag = "v0.4.14" }
 claim-token = { git = "https://github.com/faberline/core", tag = "v0.4.14" }
 cli-std = { git = "https://github.com/faberline/core", tag = "v0.4.14", default-features = false }
+metrics-prometheus = { git = "https://github.com/faberline/core", tag = "v0.4.14" }
 openapi-codegen = { git = "https://github.com/faberline/core", tag = "v0.4.14", version = "0.5" }
 peer-tls = { git = "https://github.com/faberline/core", tag = "v0.4.14" }
 raft-runtime = { git = "https://github.com/faberline/core", tag = "v0.4.14" }
