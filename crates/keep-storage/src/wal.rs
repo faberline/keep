@@ -1,113 +1,131 @@
-//! Write-Ahead Log (WAL) implementation
+//! Write-Ahead Log (WAL) on the core `storage-durable` framed log
 //!
 //! Provides append-only logging of all write operations with batched fsync.
 //!
 //! ## Architecture
 //!
-//! - Single WAL file grows until rotation threshold (1GB default)
-//! - Background thread flushes every 100ms (batched fsync)
-//! - CRC32 checksum on every entry for corruption detection
-//! - File rotation creates new file with timestamp suffix
+//! - Each entry is one frame of the core framed log:
+//!   `[seq: u64 LE | len: u32 LE | crc32: u32 LE | payload]`, where the payload
+//!   is `bincode(WalOp)`. `seq` is the entry's position in the WAL.
+//! - A single WAL file grows until the rotation threshold, then rotates
+//! - Background thread flushes periodically (batched fsync)
+//! - The core writer drops a torn tail when a file is opened; a bad frame ends
+//!   the log on read
+//! - A file in the retired `KVWAL001` format is refused: never truncated, never read
 //!
 //! ## File Naming
 //!
 //! - Active WAL: `wal-current.log`
 //! - Rotated WAL: `wal-{timestamp}.log`
 
-use crate::format::{decode_wal_entry, encode_wal_entry, WalEntry, WalHeader, WalOp};
-use crate::{PersistenceError, Result, WalConfig};
-use std::fs::{self, File, OpenOptions};
-use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
+use std::fs::{self, File};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
+
+use storage_durable::{FramedLogCursor, FramedLogReader, FramedLogWriter, FsyncPolicy};
 use tracing::{debug, info, warn};
+
+use crate::format::{WalEntry, WalOp, WAL_MAGIC};
+use crate::{PersistenceError, Result, WalConfig};
+
+/// Name of the active WAL file.
+const CURRENT_FILE: &str = "wal-current.log";
+
+/// Bytes a frame adds around its payload: seq (8) + len (4) + crc32 (4).
+const FRAME_OVERHEAD: u64 = 16;
+
+fn wal_err<E: std::fmt::Display>(err: E) -> PersistenceError {
+    PersistenceError::Wal(format!("{err:#}"))
+}
+
+/// Refuse a file in the retired `KVWAL001` format. Reads only its first 8 bytes.
+fn refuse_legacy(path: &Path) -> Result<()> {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e.into()),
+    };
+    let mut magic = Vec::with_capacity(8);
+    file.take(8).read_to_end(&mut magic)?;
+    if magic.as_slice() == WAL_MAGIC {
+        return Err(PersistenceError::LegacyWalFormat {
+            path: path.display().to_string(),
+        });
+    }
+    Ok(())
+}
 
 /// WAL writer with batched fsync
 pub struct WalWriter {
-    file: BufWriter<File>,
+    log: FramedLogWriter,
     path: PathBuf,
-    position: u64,
-    unflushed_bytes: usize,
+    data_dir: PathBuf,
+    /// Sequence number of the next entry.
+    next_seq: u64,
+    /// Bytes in the active file; drives the rotation threshold.
+    bytes: u64,
+    unflushed: bool,
     last_fsync: Instant,
     config: WalConfig,
-    data_dir: PathBuf,
 }
 
 impl WalWriter {
-    /// Create a new WAL writer
+    /// Create a new WAL writer. The sequence continues after the highest `seq`
+    /// found in the existing WAL files.
     pub fn new(data_dir: PathBuf, config: WalConfig) -> Result<Self> {
         // Ensure data directory exists
         fs::create_dir_all(&data_dir).map_err(|e| {
             PersistenceError::DataDirectory(format!("Failed to create directory: {}", e))
         })?;
 
-        let wal_path = data_dir.join("wal-current.log");
-
-        // Open or create WAL file
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&wal_path)?;
-
-        let metadata = file.metadata()?;
-        let position = metadata.len();
-
-        let mut writer = BufWriter::with_capacity(64 * 1024, file); // 64KB buffer
-
-        // Write header if new file
-        if position == 0 {
-            let header = WalHeader::new();
-            header.write(&mut writer)?;
-            writer.flush()?;
-            debug!("Created new WAL file: {}", wal_path.display());
+        let mut max_seq = 0u64;
+        for file in find_wal_files(&data_dir)? {
+            refuse_legacy(&file)?;
+            let last = FramedLogReader::visit_frames(&file, 0, |_| Ok(())).map_err(wal_err)?;
+            max_seq = max_seq.max(last);
         }
 
-        let position = writer.seek(SeekFrom::End(0))?;
+        // Refuse before `open`: `open` truncates a bad tail, which would drop a legacy file.
+        let path = data_dir.join(CURRENT_FILE);
+        refuse_legacy(&path)?;
+        let log = FramedLogWriter::open(&path, FsyncPolicy::Os).map_err(wal_err)?;
+        let bytes = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
 
         Ok(Self {
-            file: writer,
-            path: wal_path,
-            position,
-            unflushed_bytes: 0,
+            log,
+            path,
+            data_dir,
+            next_seq: max_seq + 1,
+            bytes,
+            unflushed: false,
             last_fsync: Instant::now(),
             config,
-            data_dir,
         })
     }
 
-    /// Append an operation to the WAL
+    /// Append an operation to the WAL and return its sequence number
     pub fn append(&mut self, op: WalOp) -> Result<u64> {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos() as i64;
-
-        let entry = WalEntry { timestamp, op };
-        let encoded = encode_wal_entry(&entry)?;
-
-        let position = self.position;
-        self.file.write_all(&encoded)?;
-        self.position += encoded.len() as u64;
-        self.unflushed_bytes += encoded.len();
-
-        Ok(position)
+        let payload = bincode::serialize(&op)?;
+        let seq = self.next_seq;
+        self.log.append(seq, &payload).map_err(wal_err)?;
+        self.next_seq += 1;
+        self.bytes += FRAME_OVERHEAD + payload.len() as u64;
+        self.unflushed = true;
+        Ok(seq)
     }
 
     /// Flush pending writes to disk (fsync)
     pub fn flush(&mut self) -> Result<()> {
-        if self.unflushed_bytes == 0 {
+        if !self.unflushed {
             return Ok(());
         }
 
-        self.file.flush()?;
-        self.file.get_ref().sync_data()?;
-        self.unflushed_bytes = 0;
+        self.log.sync().map_err(wal_err)?;
+        self.unflushed = false;
         self.last_fsync = Instant::now();
 
-        debug!(
-            "WAL fsynced at position {}, {} bytes",
-            self.position, self.unflushed_bytes
-        );
+        debug!("WAL fsynced through seq {}", self.last_seq());
 
         Ok(())
     }
@@ -119,12 +137,12 @@ impl WalWriter {
 
     /// Check if rotation is needed based on file size
     pub fn should_rotate(&self) -> bool {
-        self.position >= self.config.max_file_size
+        self.bytes >= self.config.max_file_size
     }
 
     /// Rotate to a new WAL file
     pub fn rotate(&mut self) -> Result<PathBuf> {
-        // Flush and close current file
+        // Flush pending writes before the file is renamed
         self.flush()?;
 
         // Get millisecond timestamp for rotated file (with monotonic suffix if same ms)
@@ -138,26 +156,9 @@ impl WalWriter {
             self.data_dir
                 .join(format!("wal-{:015}-{:04}.log", timestamp_ms, seq % 10000));
 
-        // Create new WAL file first (before renaming old one)
-        let new_path = self.data_dir.join("wal-current-new.log");
-        let new_file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&new_path)?;
-
-        let mut new_writer = BufWriter::with_capacity(64 * 1024, new_file);
-
-        // Write header to new file
-        let header = WalHeader::new();
-        header.write(&mut new_writer)?;
-        new_writer.flush()?;
-
-        // Now rename old file
         fs::rename(&self.path, &rotated_path)?;
-
-        // Rename new file to current
-        fs::rename(&new_path, &self.path)?;
+        // Opening creates the new, empty active file
+        self.log = FramedLogWriter::open(&self.path, FsyncPolicy::Os).map_err(wal_err)?;
 
         info!(
             "Rotated WAL: {} -> {}",
@@ -165,18 +166,23 @@ impl WalWriter {
             rotated_path.display()
         );
 
-        // Update writer
-        self.file = new_writer;
-        self.position = 32; // Header size
-        self.unflushed_bytes = 0;
+        self.bytes = 0;
+        self.unflushed = false;
         self.last_fsync = Instant::now();
 
         Ok(rotated_path)
     }
 
-    /// Get current file position
-    pub fn position(&self) -> u64 {
-        self.position
+    /// Sequence number of the last entry written; 0 when none was ever written
+    pub fn last_seq(&self) -> u64 {
+        self.next_seq - 1
+    }
+
+    /// Make sure the next entry gets a sequence number after `seq`.
+    /// Recovery calls this with the snapshot's `seq`, so no number is reused
+    /// after the rotated files that held it were deleted.
+    pub fn ensure_next_seq_after(&mut self, seq: u64) {
+        self.next_seq = self.next_seq.max(seq + 1);
     }
 
     /// Get the WAL file path
@@ -187,91 +193,41 @@ impl WalWriter {
 
 /// WAL reader for replaying entries
 pub struct WalReader {
-    file: File,
+    cursor: FramedLogCursor,
     path: PathBuf,
-    position: u64,
-    file_size: u64,
 }
 
 impl WalReader {
-    /// Open a WAL file for reading
+    /// Open a WAL file for reading. A file in the retired `KVWAL001` format is refused.
     pub fn new(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
-        let mut file = File::open(&path)?;
+        refuse_legacy(&path)?;
+        let cursor = FramedLogCursor::open(&path).map_err(wal_err)?;
 
-        // Read and validate header
-        let _header = WalHeader::read(&mut file)?;
+        debug!("Opened WAL for reading: {}", path.display());
 
-        let position = file.stream_position()?;
-        let file_size = file.metadata()?.len();
-
-        debug!(
-            "Opened WAL for reading: {} ({} bytes)",
-            path.display(),
-            file_size
-        );
-
-        Ok(Self {
-            file,
-            path,
-            position,
-            file_size,
-        })
+        Ok(Self { cursor, path })
     }
 
-    /// Read the next entry from the WAL
+    /// Read the next entry. Returns `None` at the end of the log and at the
+    /// first bad frame (torn tail or CRC mismatch).
     pub fn read_entry(&mut self) -> Result<Option<WalEntry>> {
-        if self.position >= self.file_size {
-            return Ok(None); // EOF
-        }
+        let Some(frame) = self.cursor.next_frame().map_err(wal_err)? else {
+            return Ok(None);
+        };
 
-        // Read entry length (4 bytes)
-        let mut length_bytes = [0u8; 4];
-        match self.file.read_exact(&mut length_bytes) {
-            Ok(_) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                return Ok(None); // Graceful EOF
-            }
-            Err(e) => return Err(e.into()),
-        }
+        let op: WalOp =
+            bincode::deserialize(&frame.payload).map_err(|e| PersistenceError::CorruptedWal {
+                pos: frame.seq,
+                reason: format!("Deserialization failed: {}", e),
+            })?;
 
-        let length = u32::from_be_bytes(length_bytes) as usize;
-
-        // Validate length is reasonable (< 10MB)
-        if length > 10 * 1024 * 1024 {
-            return Err(PersistenceError::CorruptedWal {
-                pos: self.position,
-                reason: format!("Entry length too large: {} bytes", length),
-            });
-        }
-
-        // Read full entry (including length prefix)
-        let mut entry_bytes = vec![0u8; 4 + length];
-        entry_bytes[0..4].copy_from_slice(&length_bytes);
-        self.file.read_exact(&mut entry_bytes[4..])?;
-
-        let entry_pos = self.position;
-        self.position += (4 + length) as u64;
-
-        // Decode and verify checksum
-        let entry = decode_wal_entry(&entry_bytes, entry_pos)?;
-
-        Ok(Some(entry))
-    }
-
-    /// Get current read position
-    pub fn position(&self) -> u64 {
-        self.position
+        Ok(Some(WalEntry { seq: frame.seq, op }))
     }
 
     /// Get the WAL file path
     pub fn path(&self) -> &Path {
         &self.path
-    }
-
-    /// Get file size
-    pub fn file_size(&self) -> u64 {
-        self.file_size
     }
 }
 
@@ -312,7 +268,7 @@ pub fn cleanup_old_wal_files(data_dir: impl AsRef<Path>, keep_count: usize) -> R
     wal_files.retain(|p| {
         !p.file_name()
             .and_then(|n| n.to_str())
-            .map(|s| s == "wal-current.log")
+            .map(|s| s == CURRENT_FILE)
             .unwrap_or(false)
     });
 
@@ -494,35 +450,6 @@ mod tests {
     }
 
     #[test]
-    fn test_wal_corrupted_entry() {
-        let (temp_dir, config) = create_test_config();
-        let data_dir = temp_dir.path().to_path_buf();
-
-        let mut writer = WalWriter::new(data_dir.clone(), config).unwrap();
-        writer
-            .append(WalOp::Set {
-                key: "test".to_string(),
-                value: KvValue::String("value".to_string()),
-                ttl: None,
-            })
-            .unwrap();
-        writer.flush().unwrap();
-        drop(writer);
-
-        // Corrupt the WAL file
-        let wal_path = data_dir.join("wal-current.log");
-        let mut file = OpenOptions::new().write(true).open(&wal_path).unwrap();
-        file.seek(SeekFrom::Start(50)).unwrap();
-        file.write_all(&[0xFF, 0xFF, 0xFF, 0xFF]).unwrap();
-        drop(file);
-
-        // Try to read - should detect corruption
-        let mut reader = WalReader::new(&wal_path).unwrap();
-        let result = reader.read_entry();
-        assert!(result.is_err());
-    }
-
-    #[test]
     fn test_wal_batch_operations() {
         let (temp_dir, config) = create_test_config();
         let data_dir = temp_dir.path().to_path_buf();
@@ -553,16 +480,178 @@ mod tests {
         let mut reader = WalReader::new(data_dir.join("wal-current.log")).unwrap();
 
         let entry1 = reader.read_entry().unwrap().unwrap();
+        assert_eq!(entry1.seq, 1);
         match entry1.op {
             WalOp::MSet { pairs, .. } => assert_eq!(pairs.len(), 2),
             _ => panic!("Expected MSet"),
         }
 
         let entry2 = reader.read_entry().unwrap().unwrap();
+        assert_eq!(entry2.seq, 2);
         match entry2.op {
             WalOp::MDel { keys } => assert_eq!(keys.len(), 2),
             _ => panic!("Expected MDel"),
         }
+    }
+
+    #[test]
+    fn test_wal_seq_is_monotonic_across_reopen() {
+        let (temp_dir, config) = create_test_config();
+        let data_dir = temp_dir.path().to_path_buf();
+
+        let mut writer = WalWriter::new(data_dir.clone(), config.clone()).unwrap();
+        writer
+            .append(WalOp::Delete {
+                key: "a".to_string(),
+            })
+            .unwrap();
+        writer
+            .append(WalOp::Delete {
+                key: "b".to_string(),
+            })
+            .unwrap();
+        writer.flush().unwrap();
+        drop(writer);
+
+        let mut writer = WalWriter::new(data_dir.clone(), config).unwrap();
+        assert_eq!(
+            writer
+                .append(WalOp::Delete {
+                    key: "c".to_string()
+                })
+                .unwrap(),
+            3
+        );
+        assert_eq!(writer.last_seq(), 3);
+        writer.flush().unwrap();
+        drop(writer);
+
+        let mut reader = WalReader::new(data_dir.join("wal-current.log")).unwrap();
+        let mut seqs = Vec::new();
+        while let Some(entry) = reader.read_entry().unwrap() {
+            seqs.push(entry.seq);
+        }
+        assert_eq!(seqs, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn test_wal_seq_continues_across_rotation() {
+        let (temp_dir, config) = create_test_config();
+        let data_dir = temp_dir.path().to_path_buf();
+
+        let mut writer = WalWriter::new(data_dir.clone(), config).unwrap();
+        writer
+            .append(WalOp::Delete {
+                key: "a".to_string(),
+            })
+            .unwrap();
+        writer
+            .append(WalOp::Delete {
+                key: "b".to_string(),
+            })
+            .unwrap();
+        let rotated = writer.rotate().unwrap();
+        assert_eq!(
+            writer
+                .append(WalOp::Delete {
+                    key: "c".to_string()
+                })
+                .unwrap(),
+            3
+        );
+        writer.flush().unwrap();
+        drop(writer);
+
+        let mut reader = WalReader::new(&rotated).unwrap();
+        let mut seqs = Vec::new();
+        while let Some(entry) = reader.read_entry().unwrap() {
+            seqs.push(entry.seq);
+        }
+        assert_eq!(seqs, vec![1, 2]);
+
+        let mut reader = WalReader::new(data_dir.join("wal-current.log")).unwrap();
+        assert_eq!(reader.read_entry().unwrap().unwrap().seq, 3);
+        assert!(reader.read_entry().unwrap().is_none());
+    }
+
+    #[test]
+    fn test_wal_corrupted_frame_ends_the_log() {
+        let (temp_dir, config) = create_test_config();
+        let data_dir = temp_dir.path().to_path_buf();
+
+        let mut writer = WalWriter::new(data_dir.clone(), config).unwrap();
+        for key in ["a", "b", "c"] {
+            writer
+                .append(WalOp::Set {
+                    key: key.to_string(),
+                    value: KvValue::String("value".to_string()),
+                    ttl: None,
+                })
+                .unwrap();
+        }
+        writer.flush().unwrap();
+        drop(writer);
+
+        // Flip one payload byte of the last frame.
+        let wal_path = data_dir.join("wal-current.log");
+        let mut bytes = fs::read(&wal_path).unwrap();
+        let idx = bytes.len() - 3;
+        bytes[idx] ^= 0xFF;
+        fs::write(&wal_path, &bytes).unwrap();
+
+        let mut reader = WalReader::new(&wal_path).unwrap();
+        let first = reader.read_entry().unwrap().unwrap();
+        let second = reader.read_entry().unwrap().unwrap();
+        assert_eq!((first.seq, second.seq), (1, 2));
+        assert!(reader.read_entry().unwrap().is_none());
+    }
+
+    #[test]
+    fn test_wal_refuses_legacy_file() {
+        let (temp_dir, config) = create_test_config();
+        let data_dir = temp_dir.path().to_path_buf();
+        let wal_path = data_dir.join("wal-current.log");
+
+        let mut legacy = b"KVWAL001".to_vec();
+        legacy.extend_from_slice(&[0u8; 24]);
+        fs::write(&wal_path, &legacy).unwrap();
+
+        assert!(matches!(
+            WalWriter::new(data_dir.clone(), config),
+            Err(PersistenceError::LegacyWalFormat { .. })
+        ));
+        assert!(matches!(
+            WalReader::new(&wal_path),
+            Err(PersistenceError::LegacyWalFormat { .. })
+        ));
+        // Not truncated, not read as data.
+        assert_eq!(fs::read(&wal_path).unwrap(), legacy);
+    }
+
+    #[test]
+    fn test_wal_ensure_next_seq_after() {
+        let (temp_dir, config) = create_test_config();
+        let mut writer = WalWriter::new(temp_dir.path().to_path_buf(), config).unwrap();
+
+        writer.ensure_next_seq_after(41);
+        assert_eq!(
+            writer
+                .append(WalOp::Delete {
+                    key: "x".to_string()
+                })
+                .unwrap(),
+            42
+        );
+
+        writer.ensure_next_seq_after(3);
+        assert_eq!(
+            writer
+                .append(WalOp::Delete {
+                    key: "y".to_string()
+                })
+                .unwrap(),
+            43
+        );
     }
 
     #[test]

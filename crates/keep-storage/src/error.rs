@@ -32,6 +32,12 @@ pub enum PersistenceError {
 
     #[error("Data directory error: {0}")]
     DataDirectory(String),
+
+    #[error("Unsupported legacy WAL file {path}: the KVWAL001 format is no longer supported; remove the data directory or restore from a backup")]
+    LegacyWalFormat { path: String },
+
+    #[error("WAL error: {0}")]
+    Wal(String),
 }
 
 pub type Result<T> = std::result::Result<T, PersistenceError>;
