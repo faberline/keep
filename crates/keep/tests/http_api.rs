@@ -999,3 +999,26 @@ async fn info_and_metrics_expose_resource_utilization_fields() {
     assert!(text.contains("keep_spilled_keys_total 1"));
     assert!(text.contains("keep_evicted_keys_total 0"));
 }
+
+#[tokio::test]
+async fn info_reports_persistence_disabled_for_ram_engine() {
+    let (app, _) = app();
+    let (status, info) = send_json(&app, "GET", "/info", Value::Null).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(info["persistence_enabled"], json!(false));
+    assert_eq!(info["fsync_interval_ms"], Value::Null);
+}
+
+#[tokio::test]
+async fn info_reports_persistence_enabled_with_fsync_interval() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = Arc::new(KvEngine::with_shards(4));
+    let cfg = keep::persistence::PersistenceConfig::new(dir.path()).with_fsync_interval_ms(25);
+    let handle = Arc::new(keep::persistence::PersistenceHandle::new(cfg, engine.clone()).unwrap());
+    engine.enable_persistence(handle);
+    let app = router(AppState::new(engine));
+    let (status, info) = send_json(&app, "GET", "/info", Value::Null).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(info["persistence_enabled"], json!(true));
+    assert_eq!(info["fsync_interval_ms"], json!(25));
+}
