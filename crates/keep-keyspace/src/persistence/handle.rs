@@ -1,5 +1,5 @@
 use super::format::WalOp;
-use super::snapshot::SnapshotWriter;
+use super::snapshot::{SnapshotLoader, SnapshotWriter};
 use super::wal::WalWriter;
 ///! Persistence handle for background WAL and snapshot management
 ///!
@@ -124,6 +124,10 @@ impl PersistenceHandle {
     ) -> Result<()> {
         // Initialize WAL writer
         let mut wal_writer = WalWriter::new(config.data_dir.clone(), config.wal_config.clone())?;
+        // Never reuse a seq that the latest snapshot covers, even if its WAL files are gone
+        if let Some(seq) = SnapshotLoader::latest_wal_seq(&config.data_dir)? {
+            wal_writer.ensure_next_seq_after(seq);
+        }
 
         // Initialize snapshot writer
         let snapshot_writer = SnapshotWriter::new(config.snapshot_config.clone());
@@ -219,7 +223,7 @@ impl PersistenceHandle {
                     &snapshot_writer,
                     &engine,
                     &config,
-                    wal_writer.position(),
+                    wal_writer.last_seq(),
                 );
                 ops_since_snapshot = 0;
                 last_snapshot = Instant::now();
@@ -246,9 +250,9 @@ impl PersistenceHandle {
         snapshot_writer: &SnapshotWriter,
         engine: &Arc<KvEngine>,
         config: &PersistenceConfig,
-        wal_position: u64,
+        wal_seq: u64,
     ) {
-        match snapshot_writer.create_snapshot(engine.as_ref(), &config.data_dir, wal_position) {
+        match snapshot_writer.create_snapshot(engine.as_ref(), &config.data_dir, wal_seq) {
             Ok(path) => {
                 info!("Snapshot created: {}", path.display());
             }
