@@ -41,6 +41,83 @@ license-files = [
     { path = "LICENSE", hash = 0xbd0eed23 },
 ]
 
+# The faberline/core crates at tag v0.4.14 do not set a `license` field.
+# The core repository is MIT (its workspace `license = "MIT"`).
+[[licenses.clarify]]
+name = "cli-std"
+expression = "MIT"
+license-files = []
+
+[[licenses.clarify]]
+name = "metrics-prometheus"
+expression = "MIT"
+license-files = []
+
+[[licenses.clarify]]
+name = "peer-tls"
+expression = "MIT"
+license-files = []
+
+[[licenses.clarify]]
+name = "raft-runtime"
+expression = "MIT"
+license-files = []
+
+[[licenses.clarify]]
+name = "server-http"
+expression = "MIT"
+license-files = []
+
+[[licenses.clarify]]
+name = "server-lifecycle"
+expression = "MIT"
+license-files = []
+
+[[licenses.clarify]]
+name = "server-tcp"
+expression = "MIT"
+license-files = []
+
+[[licenses.clarify]]
+name = "service-auth"
+expression = "MIT"
+license-files = []
+
+[[licenses.clarify]]
+name = "service-backup"
+expression = "MIT"
+license-files = []
+
+[[licenses.clarify]]
+name = "service-http"
+expression = "MIT"
+license-files = []
+
+[[licenses.clarify]]
+name = "service-k8s"
+expression = "MIT"
+license-files = []
+
+[[licenses.clarify]]
+name = "service-observability"
+expression = "MIT"
+license-files = []
+
+[[licenses.clarify]]
+name = "storage-durable"
+expression = "MIT"
+license-files = []
+
+[[licenses.clarify]]
+name = "storage-object"
+expression = "MIT"
+license-files = []
+
+[[licenses.clarify]]
+name = "transport-h2c"
+expression = "MIT"
+license-files = []
+
 [bans]
 multiple-versions = "warn"
 wildcards = "allow"  # Allow path dependencies in workspace
@@ -52,3 +129,5 @@ external-default-features = "allow"
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# faberline/core is pinned by git (tag v0.4.14) for the shared crates.
+allow-git = ["https://github.com/faberline/core"]
