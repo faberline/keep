@@ -30,6 +30,7 @@ keep-operator = { workspace = true, optional = true }
 cli-std.workspace = true
 openapi-codegen.workspace = true
 raft-runtime.workspace = true
+server-lifecycle.workspace = true
 service-http.workspace = true
 
 # Runtime & CLI

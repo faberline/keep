@@ -1178,14 +1178,15 @@ async fn serve_main(args: ServeArgs, worker_threads: usize) -> Result<()> {
     let listener = TcpListener::bind(addr).await?;
     info!(%addr, "listening (HTTP/1.1 + HTTP/2 cleartext)");
 
-    // Serve HTTP/1.1 + h2c on one port and drain on SIGTERM through the shared
-    // service shell (#751): `start_drain` flips `/readyz` to 503 for the grace
-    // window before the listener closes.
+    // Serve HTTP/1.1 + h2c on one port and drain on SIGTERM. The signal wait and
+    // the drain grace come from the shared `server-lifecycle` crate (#751):
+    // `start_drain` flips `/readyz` to 503 for the grace window before the
+    // listener closes.
     let grace = Duration::from_secs(args.grace_secs);
     service_http::serve(
         listener,
         app,
-        service_http::shutdown_with_drain(move || state.start_drain(), grace),
+        server_lifecycle::shutdown_with_drain(move || state.start_drain(), grace),
     )
     .await;
 

@@ -1841,6 +1841,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "server-lifecycle",
  "service-http",
  "service-k8s",
  "tempfile",
