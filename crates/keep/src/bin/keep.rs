@@ -65,6 +65,8 @@ enum Command {
     /// `gs://` route to the shared placeholder sink until a cloud adapter
     /// feature is linked), applying optional age retention.
     Backup(BackupArgs),
+    /// Load the newest backup artifact written by `keep backup` into a data directory (offline, no server). Refuses a non-empty `--data-dir` unless `--force` is given.
+    Restore(RestoreArgs),
     /// Print keep's machine-readable integration spec — offline, no server. The
     /// default emits the OpenAPI 3 JSON document (the offline twin of
     /// `/openapi.json`); `--format openapi-yaml` for LLM-readable YAML,
@@ -303,6 +305,23 @@ struct BackupArgs {
     /// (omit to keep everything).
     #[arg(long)]
     retention_secs: Option<u64>,
+}
+
+/// `keep restore --source <uri> --data-dir <dir>` flags.
+#[derive(clap::Args, Debug)]
+struct RestoreArgs {
+    /// Backup source: `file:///dir` (the newest `<prefix>-<seconds>.json` in it) or `file:///dir/backup-123.json`.
+    #[arg(long)]
+    source: String,
+    /// Data directory to restore into; created when missing.
+    #[arg(long, env = "KEEP_DATA_DIR", default_value = "./data")]
+    data_dir: PathBuf,
+    /// Engine shard count — match the server's `--shards`.
+    #[arg(long, env = "KEEP_SHARDS", default_value_t = 256)]
+    shards: usize,
+    /// Replace the files of a non-empty data directory.
+    #[arg(long)]
+    force: bool,
 }
 
 /// `keep spec [--format ...] [--shapes] [--fields]` or `keep spec gen ...`.
@@ -629,6 +648,7 @@ async fn dispatch(cmd: Command) -> Result<()> {
         Command::Issue(args) => dispatch_issue(args).await,
         Command::K8s(args) => k8s(args).await,
         Command::Backup(args) => dispatch_backup(args),
+        Command::Restore(args) => dispatch_restore(args),
         Command::Spec(args) => spec(args),
         Command::Dockerfile(args) => dockerfile(args),
     }
@@ -781,6 +801,14 @@ fn dispatch_backup(args: BackupArgs) -> Result<()> {
         None => keep::backup::RetentionPolicy::default(),
     };
     let result = keep::backup::run_backup(&args.data_dir, args.shards, &dest, &retention)?;
+    println!("{}", serde_json::to_string_pretty(&result)?);
+    Ok(())
+}
+
+/// `keep restore` — load the newest backup artifact into a data directory.
+fn dispatch_restore(args: RestoreArgs) -> Result<()> {
+    let result =
+        keep::backup::restore_to_data_dir(&args.source, &args.data_dir, args.shards, args.force)?;
     println!("{}", serde_json::to_string_pretty(&result)?);
     Ok(())
 }
