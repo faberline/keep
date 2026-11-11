@@ -885,6 +885,8 @@ pub async fn info(State(st): State<AppState>) -> Json<InfoResponse> {
         evicted_keys: st.engine.evicted_keys(),
         spilled_keys: st.engine.spilled_keys(),
         eviction_policy: st.engine.get_eviction_policy().as_str().to_string(),
+        persistence_enabled: st.engine.persistence_enabled(),
+        fsync_interval_ms: st.engine.fsync_interval_ms(),
         version: env!("CARGO_PKG_VERSION").to_string(),
     })
 }

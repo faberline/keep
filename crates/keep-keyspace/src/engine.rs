@@ -1807,6 +1807,22 @@ impl KvEngine {
         self.persistence_enabled.store(true, Ordering::Release);
     }
 
+    /// Whether writes go through the WAL (durable-before-ack) or stay RAM-only.
+    pub fn persistence_enabled(&self) -> bool {
+        self.persistence_enabled.load(Ordering::Acquire)
+    }
+
+    /// The WAL group-commit fsync interval, when persistence is enabled.
+    pub fn fsync_interval_ms(&self) -> Option<u64> {
+        if !self.persistence_enabled() {
+            return None;
+        }
+        self.persistence
+            .load()
+            .as_ref()
+            .map(|p| p.config().wal_config.flush_interval_ms)
+    }
+
     /// Log an operation to WAL (if persistence is enabled).
     #[inline]
     fn log_wal(&self, op: crate::persistence::format::WalOp) {
