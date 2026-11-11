@@ -27,11 +27,11 @@ first-class domain roots.
 | CLI Interface | - | mandatory baseline: binary, OpenAPI, probes, metrics, and graceful drain |
 | Competitive KV Feature Parity | 108 | mandatory baseline: Redis/Dragonfly replacement breadth remains open on relay worker contract |
 | Competitive KV Performance | 126 | mandatory baseline: engine ratchet and external Redis/Dragonfly comparison are not release-closed |
-| Long-Running Stability | 121 | mandatory baseline: durable recovery and drain pass locally; multi-node raft remains staged |
+| Long-Running Stability | 121 | mandatory baseline: durable recovery and drain pass locally; multi-replica raft failover passes the process gate; membership changes remain staged |
 | Security Hardening | - | mandatory baseline: request limits exist; auth/TLS/negative gates are still open |
 | HTTP/2 API List | - | mandatory baseline: concise HTTP/2 route list, OpenAPI pointer, probes, and metrics |
 | Kubernetes-Native Deployment | - | mandatory baseline: kustomize manifests, probes, drain, env config, and nonroot image |
-| Primary Replicas | 121 | mandatory baseline: raft-backed primary/replica topology and failover remains staged |
+| Primary Replicas | 121 | mandatory baseline: raft-backed primary/replica topology, failover, and learner replicas pass the process gate; membership changes remain staged |
 | KV API | - | domain: scalar KV, batch, scan, locks, probes, metrics, and claim-check blobs |
 | Collections | - | domain: hash, set, sorted-set, and list APIs |
 | Durability | - | domain: WAL-backed durable-before-ack recovery |
@@ -220,12 +220,13 @@ names the replica requirement.
 - Root WI: #121
 - Surfaces: Rust API: `keep::raft` - raft-runtime-backed state machine for
   primary/replica convergence.; K8s: StatefulSet - stable network identity and
-  PVC-backed replica pods.; HTTP: future raft network - primary write ownership
-  with replica failover.
+  PVC-backed replica pods.; HTTP: `x-read-consistency` reads and `/cluster`
+  shard state - leader-owned writes with replica failover.
 - Gate — stability: `cargo test -p keep --test raft_node` - current raft
   state-machine conformance
-- Gate — behavior: multi-node HTTP/2 raft network - staged failover gate
-- Source: `tests/raft_node.rs`,
+- Gate — behavior: `cargo test -p keep --test raft_cluster_process` - failover,
+  catch-up, fenced reads, and learner replicas across real processes
+- Source: `tests/raft_node.rs`, `tests/raft_cluster_process.rs`,
   `.aw/tech-design/projects/keep/logic/ha-raft-sharding-roadmap.md`,
   `k8s`
 
@@ -293,7 +294,10 @@ changing the public KV API.
   StatefulSet - PVC-backed instances.
 - Gate — stability: `cargo test -p keep --test raft_node` - raft state-machine
   conformance
-- Source: `tests/raft_node.rs`,
+- Gate — behavior: `cargo test -p keep --test raft_cluster_process` -
+  multi-process failover gate (`-- --ignored` adds the nightly tail-truncation
+  case)
+- Source: `tests/raft_node.rs`, `tests/raft_cluster_process.rs`,
   `.aw/tech-design/projects/keep/logic/ha-raft-sharding-roadmap.md`
 
 | Work Root | Kind | WI | Gate / Evidence |
@@ -361,6 +365,15 @@ sorted-set / list push+pop), and TTL ops (expire/persist). A write returns 200
 only after its op is fsynced (group-committed); committed state survives a cold
 recovery (see `tests/durability.rs`).
 
+**Read consistency (raft replica mode).** Reads accept
+`x-read-consistency: leader | bounded(<ms>) | any`. `leader` (the default) is
+linearizable on every replica, including followers and learners, and answers
+503 `read_fence_failed` when no quorum confirms it. `bounded(<ms>)` answers from
+a replica proven at most `<ms>` behind, else 503 `replica_too_stale`. `any`
+always answers locally. `bounded` and `any` responses carry
+`x-keep-staleness-ms`. `GET /cluster` lists each shard group's raft role,
+leader, indexes, voters, and learners.
+
 **Blocking pops.** `BLPOP`/`BRPOP` long-poll up to `timeout_ms` (capped at 60 s)
 for an element, waking immediately on a concurrent push via a per-key notifier.
 
@@ -394,7 +407,7 @@ Images: `Dockerfile` (from-source, build context = repo root) and
 - ✅ durable-before-ack WAL (no-drop, group commit) — #114
 - ✅ perf-gate via meter: engine throughput ratchet + server resource gate — see [meter-performance-gates.md](external-contracts/competitor-performance/efficiency/meter-performance-gates.md) (#126). Competitor comparison (vs Redis/Dragonfly) is the separate one-off `examples/bench_compare.rs`.
 - ☐ worker-facing OpenAPI contract finalized with relay — #108
-- ◑ HA — phase A (sharded scale-out + `/cluster`) done; phase C raft via raft-runtime integrated (`--features raft`, engine-backed state machine, HTTP write propose path, proven by `tests/raft_node.rs` and the raft HTTP API test) — multi-node failover remains staged; see [.aw/tech-design/projects/keep/logic/ha-raft-sharding-roadmap.md](.aw/tech-design/projects/keep/logic/ha-raft-sharding-roadmap.md) (#121)
+- ◑ HA — phase A (sharded scale-out + `/cluster`) done; phase C raft via raft-runtime done (replicated writes, SIGTERM leadership handoff, fenced `x-read-consistency` reads, proven across real processes by `tests/raft_cluster_process.rs`); phase B read replicas ship as raft learners (`VOTER_COUNT < REPLICAS_PER_SHARD`) — membership changes on scale events remain staged; see [.aw/tech-design/projects/keep/logic/ha-raft-sharding-roadmap.md](.aw/tech-design/projects/keep/logic/ha-raft-sharding-roadmap.md) (#121)
 - ✅ queuekit and queue-era `ion` feature consumers now use `keep::client`
   instead of the retired raw-TCP `cclab-kv` client; remaining cleanup is
   deduping legacy `cclab-kv` copies.

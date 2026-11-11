@@ -37,6 +37,7 @@ claim-token = { git = "https://github.com/faberline/core", tag = "v0.4.14" }
 cli-std = { git = "https://github.com/faberline/core", tag = "v0.4.14", default-features = false }
 openapi-codegen = { git = "https://github.com/faberline/core", tag = "v0.4.14", version = "0.5" }
 raft-runtime = { git = "https://github.com/faberline/core", tag = "v0.4.14" }
+server-lifecycle = { git = "https://github.com/faberline/core", tag = "v0.4.14" }
 service-auth = { git = "https://github.com/faberline/core", tag = "v0.4.14" }
 service-backup = { git = "https://github.com/faberline/core", tag = "v0.4.14" }
 service-http = { git = "https://github.com/faberline/core", tag = "v0.4.14" }

@@ -18,12 +18,13 @@
 
 pub use keep_access as access;
 pub use keep_commands::{http, router, spec, ApiDoc, AppState};
-pub use keep_keyspace::{engine, persistence, EvictionPolicy, KvEngine};
+pub use keep_keyspace::{apply, engine, persistence, EvictionPolicy, KvEngine};
 #[cfg(feature = "raft")]
 pub use keep_replication::raft;
 pub use keep_replication::{self as replication, backup};
 pub use keep_shared_kernel::{
     cluster, error, metrics, tls, types, ClusterConfig, ClusterState, KvError, KvKey, KvValue,
+    ReplicaPlacement,
 };
 pub use keep_storage as storage;
 

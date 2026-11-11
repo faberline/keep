@@ -6,10 +6,12 @@ fill_sections: [logic, e2e-test]
 
 # TD: Keep HA / Raft Sharding Roadmap (#121)
 
-HA lands in phases. **Phase A is implemented**; Phase C's raft-host substrate
-and HTTP write propose path are implemented behind the `raft` feature; the
-remaining staged work is failover/read-consistency hardening. The phases share
-one substrate: node identity + the keyspace split (`src/cluster.rs`).
+HA lands in phases. **Phase A is implemented.** Phase C (raft per shard group)
+is implemented behind the `raft` feature (on by default): replicated writes,
+the failover gate, and read consistency. Phase B is delivered as raft learners
+inside the Phase C groups. Membership changes on scale events remain. The
+phases share one substrate: node identity + the keyspace split
+(`keep-shared-kernel/src/cluster.rs`).
 
 ## Phase A — sharded scale-out (DONE)
 
@@ -33,52 +35,125 @@ Config: `KEEP_NODE_ID` (pod ordinal), `KEEP_NODE_COUNT`, `KEEP_SHARD_COUNT`,
 **Gives:** capacity + throughput scale-out, blast-radius isolation.
 **Does not give:** redundancy — a node loss makes its shards unavailable.
 
-## Phase B — async replicas (planned)
+## Phase B — async replicas as raft learners (DONE)
 
-Per shard: 1 primary + R read replicas. The primary streams its WAL (already the
-ordered mutation log) to replicas over HTTP/2; replicas apply and may serve
-bounded-staleness reads. Failover = promote a replica. Cheap, but a crash loses
-the unreplicated tail → does **not** meet #114 "durable before ack" under node
-loss. A middle ground, optional.
+The original sketch streamed a primary's WAL to read replicas. That design
+loses the unreplicated tail on primary loss and would be a second replication
+protocol next to raft. Phase B instead runs read replicas as **raft learners**
+of the shard group: `VOTER_COUNT < REPLICAS_PER_SHARD` makes replicas
+`VOTER_COUNT..REPLICAS_PER_SHARD` learners.
 
-## Phase C — raft / quorum via `raft-host` (per-shard groups)
+- A learner receives every committed entry (and InstallSnapshot when behind),
+  so it loses nothing a voter would have; it never counts toward quorum, so a
+  slow or stopped learner does not slow writes.
+- A learner never becomes leader; failover is among voters only.
+- Learners serve `bounded(<ms>)` and `any` reads locally, and `leader` reads
+  through a forwarded barrier (see read consistency below). Writes sent to a
+  learner are forwarded to the leader.
+- `/cluster` reports a learner's `role` as `learner`.
 
-**Consensus core + per-shard structure: implemented** (behind the `raft`
-feature, `src/raft.rs`). keep uses the shared **`raft-host`** driver over
-`raft-core`, with h2c peer transport, snapshots, compaction, and read-your-write
-`propose`. Proven by `tests/raft_node.rs` and the feature-gated HTTP API raft
-replication test (`cargo test -p keep --features raft`). What's implemented:
+Proven by `raft_cluster_process.rs::learner_replicates_without_joining_quorum`.
 
-- **Command = `WalOp`** (the logical mutation — same type the WAL/recovery use),
-  serialized as the Raft log entry; `Response { applied }`.
-- **`KvStateMachine`** — one raft state machine fronting a shard of the engine.
-  `ShardHosts::write()` proposes → commits → applies via
-  `RecoveryManager::apply_one` (the exact WAL-replay path). `snapshot()` dumps
-  the engine (`KvEngine::dump_values`) and filters to the shard keyspace; a
-  follower that has fallen behind is shipped the snapshot (InstallSnapshot) and
-  loads it via `load_values`.
-- **`ShardHosts`** — one `RaftHost` per shard group hosted by this node. A write
-  routes by `crc32(key) % shard_count → shard → group`, so each shard is its own
-  independently replicated consensus group. In replica mode, every participating
-  replica node hosts the shard group; single node = one sole-voter group per
-  shard.
-- **HTTP write path** — replica-mode `AppState` carries `ShardHosts`; data-plane
-  mutations are encoded as `WalOp` and routed through `host.propose` before the
-  handler acknowledges. Default/single-node mode keeps the direct engine path.
-- voter/learner membership comes from the StatefulSet-derived topology and
-  `raft-host` membership wiring.
+## Phase C — raft / quorum via `raft-runtime` (per-shard groups, DONE)
 
-**Remaining staged work:**
-1. **Failover gate** — promote a surviving replica under real process loss and
-   prove committed data survives under the service-level HTTP path.
-2. **Read consistency** — leader reads + bounded-lag follower reads via
-   `x-read-consistency`.
-3. **Membership changes** — promote/demote on scale events beyond the initial
-   StatefulSet ordinal-derived set (`keep-<i>.keep-headless`).
+keep uses the shared **`raft-runtime`** `RaftHost` over `raft-core`, with h2c
+peer transport on the service port, snapshots and compaction.
 
-The consensus core, per-shard structure, peer transport, snapshot/compaction,
-apply path, and HTTP write propose path are implemented + validated. The
-remaining slice is service-level failover/read-consistency hardening.
+### Topology
+
+raft-runtime's `ClusterDims` model: the StatefulSet has
+`SHARD_COUNT × REPLICAS_PER_SHARD` pods; pod `keep-<i>` hosts exactly one shard
+group (`shard = i % SHARD_COUNT`) as replica `i / SHARD_COUNT`, which is its
+raft id. Voters are `0..VOTER_COUNT`, learners the rest. Without
+replica placement (single node) the node runs one sole-voter group per owned
+shard. `KEEP_REPLICAS_PER_SHARD` is accepted as a deprecated alias.
+
+Replica mode keeps all state in raft (its own log, hard state and snapshots
+under the data dir); the engine's own WAL recovery is skipped so no entry is
+applied twice on restart.
+
+### State machine
+
+- **Command = `RaftCmd`**: `Op(WalOp)` or `Barrier`, tagged JSON; a bare
+  legacy `WalOp` payload still decodes as `Op`. Relative TTLs are rewritten to
+  absolute deadlines before proposing so every replica expires the same key at
+  the same instant.
+- **`KvStateMachine`** applies an `Op` through the WAL-replay apply path and
+  records its `ApplyOutcome` per log index (`OutcomeWindow`), so the HTTP
+  response is the replicated outcome rather than a racing local read.
+- **Snapshot** = the shard's keys with absolute expiry; restore clears the shard
+  first so deleted keys do not survive.
+- A new leader proposes a `Barrier` so entries from earlier terms commit.
+- Batches that span shards are rejected with `400 cross_shard_batch`.
+
+### Failover
+
+SIGTERM drains HTTP, then `ShardHosts::shutdown_within(KEEP_RAFT_HANDOFF_SECS)`
+transfers leadership to a caught-up voter. `KEEP_RAFT_SNAPSHOT_EVERY` sets the
+compaction interval. `terminationGracePeriodSeconds` must cover the HTTP grace
+plus the handoff budget.
+
+The gate is `crates/keep/tests/raft_cluster_process.rs`: three real `keep`
+processes, real signals.
+
+| case | proves |
+|---|---|
+| `sigkilled_leader_keeps_committed_writes` | acknowledged writes survive leader crash; rejoin applies nothing twice |
+| `wiped_follower_catches_up_via_install_snapshot` | a replica with an empty disk catches up from a snapshot |
+| `restarted_follower_snapshot_drops_deleted_keys` | snapshot restore replaces, not merges |
+| `stopped_leader_is_deposed_and_converges` | a hung leader is replaced and never serves a stale default read after resuming |
+| `reads_fail_closed_without_quorum` | without quorum a default read is 503, `any` still answers |
+| `learner_replicates_without_joining_quorum` | Phase B learners (above) |
+| `sigterm_leader_hands_off_leadership` | rolling restart transfers leadership |
+| `uncommitted_tail_is_truncated_on_rejoin` (nightly, `--ignored`) | unacknowledged entries never become visible |
+
+### Read consistency
+
+Every data-plane read on a replicated group honors raft-runtime's
+`x-read-consistency` header (`keep-commands/src/http/consistency.rs`,
+`keep-replication/src/raft_read.rs`):
+
+| level | served when | else |
+|---|---|---|
+| `leader` (default, also for unknown values) | a barrier that started after the request is applied on this replica | 503 `read_fence_failed` (3s) |
+| `bounded(<ms>)` | this replica's proven staleness ≤ ms; a leader over the bound fences first | 503 `replica_too_stale` |
+| `any` | always | — |
+
+- `leader` reads are linearizable on **any** replica: a follower's or learner's
+  barrier is forwarded to the leader, and the replica answers once it has
+  applied the barrier. A deposed leader cannot commit its barrier, so it cannot
+  answer. Concurrent reads share one barrier.
+- Staleness is the time since this replica last provably held every committed
+  entry: a completed barrier, or (on non-leaders) a sample of the leader's
+  `/raftz` commit index, polled every 100ms, once applied locally.
+- `bounded` and `any` responses carry `x-keep-staleness-ms` when known.
+- Reads are served instead of redirected (no `421`): forwarding the barrier
+  gives the same guarantee without a client round trip.
+- `GET /cluster` adds `shards[]`: role, term, leader, commit/applied/snapshot
+  index, voters, learners and `staleness_ms` per hosted group.
+
+### Known limits
+
+- A non-leader's `leader` read costs about one heartbeat (~60–100ms): raft-core
+  tells followers the commit index only on the next heartbeat.
+- No leader lease: in a minority partition that can still reach the old leader,
+  a follower's `bounded` staleness may be optimistic. `leader` reads stay safe.
+- Lazy TTL expiry is evaluated against each replica's clock, so clock skew
+  shifts when a key disappears on different replicas.
+- Reads do not check that the key belongs to the node's shard; clients route
+  by `/cluster`.
+- `/info` reports `maxmemory=0` in replica mode.
+
+### Remaining staged work
+
+- **Membership changes** — add/remove replicas on scale events
+  (`upsert_peer → add_learner → catch up → promote`, and the reverse with a
+  leadership transfer), an admin endpoint, and operator reconcile ordering.
+- **raft-runtime follow-ups** (faberline/core): a public `RaftHost::status()`
+  (keep reads `/raftz` in-process today), commit of a no-op on
+  `become_leader` (keep proposes `Barrier`), `read_index()` or a leader lease
+  (keep fences every read batch), and learner lag in status (keep polls the
+  leader).
 
 ### Original design notes (historical openraft 0.9 sketch)
 
@@ -107,8 +182,5 @@ remaining slice is service-level failover/read-consistency hardening.
 6. **Reads**: leader reads by default; bounded-lag follower reads via a
    `x-read-consistency` header (mirror lumen's `ReadConsistency`).
 
-**Current staged risk:** the raft-host substrate and HTTP write propose path are
-implemented, but service-level failover and read-consistency semantics still
-need the dedicated multi-process harness for partition, leader-loss, and
-log-truncation cases. Those gates remain tracked under the HA / Raft and Primary
-Replicas capability work roots.
+These notes predate the move to `raft-runtime`; the sections above describe
+what shipped.

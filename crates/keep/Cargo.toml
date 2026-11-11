@@ -47,7 +47,9 @@ tracing.workspace = true
 build-stamp.workspace = true
 
 [features]
-default = []
+# raft is on by default so every image/release binary can serve a replicated
+# StatefulSet (REPLICAS_PER_SHARD > 1); single-replica pods never start a host.
+default = ["raft"]
 # keep::client — HTTP/2 client for Rust callers.
 client = ["dep:keep-client", "rustls-provider"]
 # raft — raft-runtime-backed consensus (HA phase C; per-shard hosts + h2c peer transport).
