@@ -373,7 +373,15 @@ mod tests {
         let _ = handle.shutdown();
 
         // Verify snapshot was created
-        let snapshots = super::super::snapshot::find_snapshot_files(temp_dir.path()).unwrap();
-        assert!(!snapshots.is_empty(), "Snapshot should be created");
+        let names: Vec<String> = std::fs::read_dir(temp_dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            names
+                .iter()
+                .any(|n| n.starts_with("snapshot-") && n.ends_with(".snap")),
+            "Snapshot should be created"
+        );
     }
 }

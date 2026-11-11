@@ -12,6 +12,7 @@ keep-shared-kernel.workspace = true
 keep-storage.workspace = true
 
 # faberline/core shared crates
+storage-durable.workspace = true
 
 # Runtime & storage
 anyhow.workspace = true
