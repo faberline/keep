@@ -992,6 +992,121 @@ async fn blanket_api_token_gates_data_plane_and_leaves_probes_open() {
     assert_eq!(st, StatusCode::OK);
 }
 
+/// Send `method path` with a JSON body and an optional bearer token.
+async fn send_with_token(
+    app: &Router,
+    method: &str,
+    path: &str,
+    token: Option<&str>,
+) -> (StatusCode, Vec<u8>) {
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(path)
+        .header(header::CONTENT_TYPE, "application/json");
+    if let Some(token) = token {
+        builder = builder.header(header::AUTHORIZATION, format!("Bearer {token}"));
+    }
+    let req = builder
+        .body(Body::from(
+            serde_json::to_vec(&json!({"value": 1})).unwrap(),
+        ))
+        .unwrap();
+    send(app, req).await
+}
+
+fn token_state() -> AppState {
+    AppState::new(Arc::new(KvEngine::with_shards(16)))
+        .with_api_token("rw-secret")
+        .with_read_only_token("ro-secret")
+}
+
+#[tokio::test]
+async fn read_only_token_can_read_but_not_write() {
+    let app = router(token_state());
+
+    let (st, _) = send_with_token(&app, "PUT", "/kv/k1", Some("rw-secret")).await;
+    assert_eq!(st, StatusCode::OK);
+
+    let (st, _) = send_with_token(&app, "GET", "/kv/k1", Some("ro-secret")).await;
+    assert_eq!(st, StatusCode::OK);
+    let (st, _) = send_with_token(&app, "HEAD", "/kv/k1", Some("ro-secret")).await;
+    assert_eq!(st, StatusCode::OK);
+    let (st, _) = send_with_token(&app, "GET", "/kv", Some("ro-secret")).await;
+    assert_eq!(st, StatusCode::OK);
+
+    let (st, body) = send_with_token(&app, "PUT", "/kv/k1", Some("ro-secret")).await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+    let envelope: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(envelope["code"], json!("forbidden"));
+    let (st, _) = send_with_token(&app, "POST", "/kv/k1/incr", Some("ro-secret")).await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+    let (st, _) = send_with_token(&app, "DELETE", "/kv/k1", Some("ro-secret")).await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+
+    // The refused writes left the stored value alone.
+    let (st, body) = send_with_token(&app, "GET", "/kv/k1", Some("rw-secret")).await;
+    assert_eq!(st, StatusCode::OK);
+    let value: Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(value["value"], json!(1));
+}
+
+#[tokio::test]
+async fn read_write_token_still_writes_and_deletes() {
+    let app = router(token_state());
+
+    let (st, _) = send_with_token(&app, "PUT", "/kv/k2", Some("rw-secret")).await;
+    assert_eq!(st, StatusCode::OK);
+    let (st, _) = send_with_token(&app, "DELETE", "/kv/k2", Some("rw-secret")).await;
+    assert_eq!(st, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn missing_or_wrong_token_is_401_when_read_only_token_is_set() {
+    let app = router(token_state());
+
+    let (st, _) = send_with_token(&app, "GET", "/kv/k1", None).await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+    let (st, _) = send_with_token(&app, "GET", "/kv/k1", Some("nope")).await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+    // 403 is only for a valid read-only token; no token on a write is 401.
+    let (st, _) = send_with_token(&app, "PUT", "/kv/k1", None).await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn probe_and_admin_routes_stay_open_with_tokens() {
+    let app = router(token_state());
+
+    for path in ["/healthz", "/readyz", "/metrics", "/info", "/cluster"] {
+        let (st, _) = send_with_token(&app, "GET", path, None).await;
+        assert_eq!(st, StatusCode::OK, "{path} must stay open");
+    }
+}
+
+#[tokio::test]
+async fn read_only_token_alone_enforces_auth() {
+    let state =
+        AppState::new(Arc::new(KvEngine::with_shards(16))).with_read_only_token("ro-secret");
+    let app = router(state);
+
+    let (st, _) = send_with_token(&app, "GET", "/kv", Some("ro-secret")).await;
+    assert_eq!(st, StatusCode::OK);
+    let (st, _) = send_with_token(&app, "PUT", "/kv/k3", Some("ro-secret")).await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+    let (st, _) = send_with_token(&app, "GET", "/kv", None).await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn empty_read_only_token_is_ignored() {
+    let state = AppState::new(Arc::new(KvEngine::with_shards(16))).with_read_only_token("");
+    assert!(state.read_only_token.is_none());
+    let app = router(state);
+
+    let (st, _) = send_with_token(&app, "GET", "/kv", None).await;
+    assert_eq!(st, StatusCode::OK);
+}
+
 #[tokio::test]
 async fn info_and_metrics_expose_resource_utilization_fields() {
     let dir = tempfile::tempdir().unwrap();

@@ -454,6 +454,9 @@ struct ServeArgs {
     /// Optional blanket Bearer API token required on data-plane routes.
     #[arg(long, env = "KEEP_API_TOKEN")]
     api_token: Option<String>,
+    /// Optional read-only Bearer token: may only GET/HEAD data-plane routes (403 on writes).
+    #[arg(long, env = "KEEP_API_TOKEN_READONLY")]
+    api_token_readonly: Option<String>,
     /// `trace|debug|info|warn|error` (RUST_LOG overrides this).
     #[arg(long, env = "KEEP_LOG_LEVEL", default_value = "info")]
     log_level: String,
@@ -556,6 +559,7 @@ const TOPICS: &[cli_std::llm::Topic] = &[
             - `--shards` (`KEEP_SHARDS`) — engine shard count for multi-core scaling.\n\
             - `--data-dir` (`KEEP_DATA_DIR`) — WAL + snapshot disk tier; cold start recovers it.\n\
             - `--disable-persistence` — in-memory only.\n\
+            - `KEEP_API_TOKEN` (read-write) and `KEEP_API_TOKEN_READONLY` (GET/HEAD only) — Bearer tokens for the data plane.\n\
             - `--node-id/--node-count/--shard-count/--peers` — cluster topology.\n\
             - `KEEP_TOKEN_SECRET` — enable claim-check token enforcement.\n\n\
             Cloud-native: `/healthz` + `/readyz` probes and a SIGTERM-aware graceful drain \
@@ -1125,6 +1129,12 @@ async fn serve_main(args: ServeArgs, worker_threads: usize) -> Result<()> {
         if !token.is_empty() {
             state = state.with_api_token(token);
             tracing::info!("blanket API token enforcement ON");
+        }
+    }
+    if let Some(token) = args.api_token_readonly.as_deref() {
+        if !token.is_empty() {
+            state = state.with_read_only_token(token);
+            tracing::info!("read-only API token enforcement ON");
         }
     }
     // Scoped claim-check tokens (#446): enforce when KEEP_TOKEN_SECRET is set.

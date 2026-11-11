@@ -47,6 +47,8 @@ pub struct AppState {
     pub verifier: Option<Arc<auth::KeepVerifier>>,
     /// Optional blanket API token (`KEEP_API_TOKEN`) for data-plane endpoints.
     pub api_token: Option<Arc<String>>,
+    /// Optional read-only bearer token (KEEP_API_TOKEN_READONLY): GET/HEAD data-plane routes only.
+    pub read_only_token: Option<Arc<String>>,
     /// Per-shard raft hosts used by replica-mode write handlers. Absent in the
     /// default/single-node fast path.
     #[cfg(feature = "raft")]
@@ -64,6 +66,7 @@ impl AppState {
             cluster: Arc::new(crate::cluster::ClusterConfig::default()),
             verifier: None,
             api_token: None,
+            read_only_token: None,
             #[cfg(feature = "raft")]
             raft_hosts: None,
             draining: Arc::new(AtomicBool::new(false)),
@@ -89,6 +92,15 @@ impl AppState {
         let token = token.into();
         if !token.is_empty() {
             self.api_token = Some(Arc::new(token));
+        }
+        self
+    }
+
+    /// Enable the read-only bearer token: it may call GET/HEAD data-plane routes only.
+    pub fn with_read_only_token(mut self, token: impl Into<String>) -> Self {
+        let token = token.into();
+        if !token.is_empty() {
+            self.read_only_token = Some(Arc::new(token));
         }
         self
     }
