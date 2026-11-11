@@ -44,13 +44,13 @@ impl RecoveryManager {
         let mut snapshot_entries = 0;
         let mut wal_entries_replayed = 0;
         let mut corrupted_entries = 0;
-        let mut wal_position_start = 0u64;
+        let mut snapshot_seq = 0u64;
 
         // Step 1: Load latest snapshot (if exists)
-        if let Some((snapshot_data, wal_position)) = SnapshotLoader::load_latest(data_dir)? {
+        if let Some((snapshot_data, wal_seq)) = SnapshotLoader::load_latest(data_dir)? {
             info!(
-                "Found snapshot with {} entries at WAL position {}",
-                snapshot_data.total_entries, wal_position
+                "Found snapshot with {} entries covering WAL seq {}",
+                snapshot_data.total_entries, wal_seq
             );
 
             // Validate shard count matches
@@ -81,7 +81,7 @@ impl RecoveryManager {
                 }
             }
 
-            wal_position_start = wal_position;
+            snapshot_seq = wal_seq;
             info!("Loaded {} entries from snapshot", snapshot_entries);
         } else {
             info!("No snapshot found, starting from empty state");
@@ -95,19 +95,17 @@ impl RecoveryManager {
         } else {
             info!("Found {} WAL file(s) to replay", wal_files.len());
 
-            for (idx, wal_path) in wal_files.into_iter().enumerate() {
+            for wal_path in wal_files {
                 debug!("Replaying WAL: {}", wal_path.display());
 
-                // Only the WAL segment that was active when the snapshot was taken
-                // starts at `wal_position_start`; any segments rotated after that
-                // must be replayed from their beginning (offset 0).
-                let skip_before = if idx == 0 { wal_position_start } else { 0 };
-
-                match Self::replay_wal(engine, &wal_path, skip_before) {
+                // Entries carry their own seq, so every file is replayed and the
+                // ones the snapshot covers are skipped by seq.
+                match Self::replay_wal(engine, &wal_path, snapshot_seq) {
                     Ok((replayed, corrupted)) => {
                         wal_entries_replayed += replayed;
                         corrupted_entries += corrupted;
                     }
+                    Err(e @ PersistenceError::LegacyWalFormat { .. }) => return Err(e),
                     Err(e) => {
                         warn!("Failed to replay WAL {}: {}", wal_path.display(), e);
                         // Continue with other WAL files
@@ -141,34 +139,25 @@ impl RecoveryManager {
         Ok(stats)
     }
 
-    /// Replay a single WAL file
+    /// Replay a single WAL file, applying the entries with `seq > skip_through_seq`
     ///
     /// Returns (entries_replayed, corrupted_entries)
     fn replay_wal(
         engine: &KvEngine,
         wal_path: impl AsRef<Path>,
-        skip_before_position: u64,
+        skip_through_seq: u64,
     ) -> Result<(usize, usize)> {
         let mut reader = WalReader::new(wal_path)?;
         let mut replayed = 0;
         let mut corrupted = 0;
 
         loop {
-            // Skip entries before snapshot position
-            if reader.position() < skip_before_position {
-                match reader.read_entry() {
-                    Ok(Some(_)) => continue,
-                    Ok(None) => break,
-                    Err(_) => {
-                        corrupted += 1;
-                        continue;
-                    }
-                }
-            }
-
-            // Read and apply entry
             match reader.read_entry() {
                 Ok(Some(entry)) => {
+                    // Covered by the snapshot
+                    if entry.seq <= skip_through_seq {
+                        continue;
+                    }
                     // Apply operation to engine
                     if let Err(e) = Self::apply_wal_operation(engine, &entry.op) {
                         warn!("Failed to apply WAL operation: {}", e);
@@ -182,10 +171,10 @@ impl RecoveryManager {
                     break;
                 }
                 Err(e) => {
-                    // Corrupted entry - log and skip
+                    // Undecodable entry - log and stop this file
                     warn!("Corrupted WAL entry: {}", e);
                     corrupted += 1;
-                    // Try to continue reading
+                    break;
                 }
             }
         }
@@ -592,12 +581,12 @@ mod tests {
             .unwrap();
         wal_writer.flush().unwrap();
 
-        // 2. Take snapshot at current wal_writer.position() (which is > 200 bytes)
-        let snap_pos = wal_writer.position();
-        assert!(snap_pos > 150);
+        // 2. Take snapshot at the last WAL seq (6 entries were written so far)
+        let snap_seq = wal_writer.last_seq();
+        assert_eq!(snap_seq, 6);
         let snap_writer = SnapshotWriter::new(SnapshotConfig::default());
         snap_writer
-            .create_snapshot(&engine, data_dir, snap_pos)
+            .create_snapshot(&engine, data_dir, snap_seq)
             .unwrap();
 
         // Pre-snapshot rotated WAL must have been cleaned up by create_snapshot
@@ -654,6 +643,99 @@ mod tests {
         assert_eq!(
             recovered.get(&KvKey::new("post_rotate_2").unwrap()),
             Some(KvValue::Int(300))
+        );
+    }
+
+    #[test]
+    fn test_recovery_refuses_legacy_wal() {
+        let temp_dir = TempDir::new().unwrap();
+        let data_dir = temp_dir.path();
+
+        let mut legacy = b"KVWAL001".to_vec();
+        legacy.extend_from_slice(&[0u8; 24]);
+        let wal_path = data_dir.join("wal-current.log");
+        std::fs::write(&wal_path, &legacy).unwrap();
+
+        let result = RecoveryManager::recover(data_dir, 16);
+        assert!(matches!(
+            result,
+            Err(PersistenceError::LegacyWalFormat { .. })
+        ));
+        // Not truncated, not read as data.
+        assert_eq!(std::fs::read(&wal_path).unwrap(), legacy);
+    }
+
+    #[test]
+    fn test_recovery_refuses_old_snapshot() {
+        let temp_dir = TempDir::new().unwrap();
+        let data_dir = temp_dir.path();
+
+        // Version 1 snapshot header, zero padded to the 72-byte header size.
+        let mut old = b"KVSN0001".to_vec();
+        old.extend_from_slice(&1u32.to_be_bytes());
+        old.resize(72, 0);
+        std::fs::write(data_dir.join("snapshot-1.snap"), &old).unwrap();
+
+        let result = RecoveryManager::recover(data_dir, 16);
+        assert!(matches!(
+            result,
+            Err(PersistenceError::UnsupportedVersion(1))
+        ));
+    }
+
+    #[test]
+    fn test_recovery_seq_floor_after_snapshot() {
+        use super::super::format::WalOp;
+        use crate::persistence::snapshot::{SnapshotLoader, SnapshotWriter};
+        use crate::persistence::SnapshotConfig;
+
+        let temp_dir = TempDir::new().unwrap();
+        let data_dir = temp_dir.path();
+
+        // Three writes, then a rotation and a snapshot, which deletes the rotated segment.
+        let engine = KvEngine::with_shards(16);
+        let mut wal_writer = WalWriter::new(data_dir.to_path_buf(), WalConfig::default()).unwrap();
+        for i in 0..3 {
+            engine
+                .set(&KvKey::new(format!("k{i}")).unwrap(), KvValue::Int(i), None)
+                .unwrap();
+            wal_writer
+                .append(WalOp::Set {
+                    key: format!("k{i}"),
+                    value: KvValue::Int(i),
+                    ttl: None,
+                })
+                .unwrap();
+        }
+        wal_writer.flush().unwrap();
+        wal_writer.rotate().unwrap();
+        SnapshotWriter::new(SnapshotConfig::default())
+            .create_snapshot(&engine, data_dir, wal_writer.last_seq())
+            .unwrap();
+        assert_eq!(find_wal_files(data_dir).unwrap().len(), 1);
+        drop(wal_writer);
+
+        // A restarted writer must not reuse seq 1..3, which the snapshot covers.
+        let snap_seq = SnapshotLoader::latest_wal_seq(data_dir).unwrap().unwrap();
+        let mut wal_writer = WalWriter::new(data_dir.to_path_buf(), WalConfig::default()).unwrap();
+        wal_writer.ensure_next_seq_after(snap_seq);
+        let seq = wal_writer
+            .append(WalOp::Set {
+                key: "after".to_string(),
+                value: KvValue::Int(99),
+                ttl: None,
+            })
+            .unwrap();
+        assert_eq!(seq, 4);
+        wal_writer.flush().unwrap();
+        drop(wal_writer);
+
+        let (recovered, stats) = RecoveryManager::recover(data_dir, 16).unwrap();
+        assert!(stats.snapshot_loaded);
+        assert_eq!(stats.wal_entries_replayed, 1);
+        assert_eq!(
+            recovered.get(&KvKey::new("after").unwrap()),
+            Some(KvValue::Int(99))
         );
     }
 }

@@ -139,32 +139,53 @@ async fn enforce_api_token(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Result<axum::response::Response, crate::http::error::ApiErr> {
-    if let Some(expected) = &st.api_token {
-        let headers = req.headers();
-        let bearer = service_auth::bearer_token(headers).unwrap_or("");
-        let api_ok = !bearer.is_empty() && bearer == expected.as_str();
-        // Also allow a valid scoped claim-check token when verifier is active
-        // on worker claim-check endpoints (/inputs/* or /results/*).
-        let claim_ok = if !api_ok {
-            use service_auth::Verifier;
-            let path = req.uri().path();
-            let is_claim_route = path.starts_with("/inputs/") || path.starts_with("/results/");
-            is_claim_route
-                && st
-                    .verifier
-                    .as_ref()
-                    .map(|v| v.authenticate(headers).is_ok())
-                    .unwrap_or(false)
-        } else {
-            false
-        };
-        if !api_ok && !claim_ok {
-            return Err(crate::http::error::ApiErr::new(
-                axum::http::StatusCode::UNAUTHORIZED,
-                "unauthorized",
-                "missing or invalid API token",
-            ));
-        }
+    if st.api_token.is_none() && st.read_only_token.is_none() {
+        return Ok(next.run(req).await);
     }
-    Ok(next.run(req).await)
+    let headers = req.headers();
+    let bearer = service_auth::bearer_token(headers).unwrap_or("");
+    let api_ok = match &st.api_token {
+        Some(expected) => !bearer.is_empty() && bearer == expected.as_str(),
+        None => false,
+    };
+    if api_ok {
+        return Ok(next.run(req).await);
+    }
+    let ro_ok = match &st.read_only_token {
+        Some(ro) => !bearer.is_empty() && bearer == ro.as_str(),
+        None => false,
+    };
+    if ro_ok {
+        // Read the method before `req` is moved into the next layer.
+        let method = req.method().clone();
+        if method == axum::http::Method::GET || method == axum::http::Method::HEAD {
+            return Ok(next.run(req).await);
+        }
+        return Err(crate::http::error::ApiErr::new(
+            axum::http::StatusCode::FORBIDDEN,
+            "forbidden",
+            "read-only API token cannot modify data",
+        ));
+    }
+    // Also allow a valid scoped claim-check token when verifier is active
+    // on worker claim-check endpoints (/inputs/* or /results/*).
+    let claim_ok = {
+        use service_auth::Verifier;
+        let path = req.uri().path();
+        let is_claim_route = path.starts_with("/inputs/") || path.starts_with("/results/");
+        is_claim_route
+            && st
+                .verifier
+                .as_ref()
+                .map(|v| v.authenticate(headers).is_ok())
+                .unwrap_or(false)
+    };
+    if claim_ok {
+        return Ok(next.run(req).await);
+    }
+    Err(crate::http::error::ApiErr::new(
+        axum::http::StatusCode::UNAUTHORIZED,
+        "unauthorized",
+        "missing or invalid API token",
+    ))
 }
