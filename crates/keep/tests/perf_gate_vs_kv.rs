@@ -5,9 +5,10 @@
 //! `ratio < max(min_ratio, ratchet × baseline)`; a `report` cell never fails.
 //! The gate fails closed on malformed cells.
 
-#![allow(dead_code)] // the evaluate/record/live-runner slices (keep#34, #35, #37) use the rest of these items
+#![allow(dead_code)] // the report-check and live-runner slices (keep#35, #37) use the rest of these items
 
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 
 const BASELINE_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/perf-baseline.json");
 const BASELINE_SCHEMA: &str = "keep.perf_baseline/1";
@@ -194,6 +195,198 @@ fn cv(xs: &[f64]) -> f64 {
     var.sqrt() / mean
 }
 
+/// One measured cell: the median-of-trials ratio and keep's own trial-to-trial
+/// variation on that metric.
+#[derive(Debug, Clone)]
+struct Measured {
+    ratio: f64,
+    keep_cv: f64,
+    detail: String,
+}
+
+#[derive(Default, Debug)]
+struct Outcome {
+    lines: Vec<String>,
+    /// Ratchet cells below threshold with a stable keep measurement.
+    regressions: Vec<String>,
+    /// Ratchet cells below threshold while keep itself was noisy (CV > max_cv):
+    /// still a failure, reported apart so a rerun is the first response.
+    unstable: Vec<String>,
+    /// Anything that makes the verdict untrustworthy (fail closed).
+    errors: Vec<String>,
+}
+
+impl Outcome {
+    fn passed(&self) -> bool {
+        self.regressions.is_empty() && self.unstable.is_empty() && self.errors.is_empty()
+    }
+}
+
+fn evaluate(baseline: &Value, host: &str, measured: &BTreeMap<String, Measured>) -> Outcome {
+    let mut out = Outcome::default();
+    let policy = match Policy::from_baseline(baseline) {
+        Ok(p) => p,
+        Err(e) => {
+            out.errors.push(e);
+            return out;
+        }
+    };
+    let Some(cells) = baseline["hosts"][host]["cells"].as_object() else {
+        out.errors.push(format!(
+            "no baseline for host class `{host}`; record one on this host with KEEP_PERF_RECORD=1"
+        ));
+        return out;
+    };
+    for (key, cell) in cells {
+        let metric = match parse_cell_key(key) {
+            Ok(id) => id.metric,
+            Err(e) => {
+                out.errors.push(e);
+                continue;
+            }
+        };
+        let Some(m) = measured.get(key) else {
+            if cell["gate"] == "report" {
+                out.lines
+                    .push(format!("{key:<34} {:>8} {:>8}  UNAVAILABLE", "-", "-"));
+            } else {
+                out.errors
+                    .push(format!("{key}: baseline cell was not measured"));
+            }
+            continue;
+        };
+        if !(m.ratio.is_finite() && m.ratio > 0.0) {
+            out.errors.push(format!(
+                "{key}: non-finite ratio {} ({})",
+                m.ratio, m.detail
+            ));
+            continue;
+        }
+        let unstable = m.keep_cv > policy.max_cv;
+        let flag = if unstable {
+            format!("  UNSTABLE keep cv={:.1}%", m.keep_cv * 100.0)
+        } else {
+            String::new()
+        };
+        match judge(cell, metric, m.ratio, &policy) {
+            Ok(Verdict::Pass { threshold }) => out.lines.push(format!(
+                "{key:<34} {:>8.3} {threshold:>8.3}  ok{flag}",
+                m.ratio
+            )),
+            Ok(Verdict::Fail { threshold }) => {
+                out.lines.push(format!(
+                    "{key:<34} {:>8.3} {threshold:>8.3}  FAIL{flag}",
+                    m.ratio
+                ));
+                let msg = format!(
+                    "{key}: ratio {:.3} < threshold {threshold:.3} ({})",
+                    m.ratio, m.detail
+                );
+                if unstable {
+                    out.unstable
+                        .push(format!("{msg}; keep cv {:.1}%", m.keep_cv * 100.0));
+                } else {
+                    out.regressions.push(msg);
+                }
+            }
+            Ok(Verdict::Report) => out.lines.push(format!(
+                "{key:<34} {:>8.3} {:>8}  report{flag}",
+                m.ratio, "-"
+            )),
+            Err(e) => out.errors.push(format!("{key}: {e}")),
+        }
+    }
+    for (key, m) in measured.iter().filter(|(k, _)| !cells.contains_key(*k)) {
+        out.lines.push(format!(
+            "{key:<34} {:>8.3} {:>8}  NEW (not in baseline)",
+            m.ratio, "-"
+        ));
+    }
+    out
+}
+
+/// Rounds down to 4 decimals (the epsilon absorbs `0.7 * 0.8 = 0.5599…`).
+fn floor4(x: f64) -> f64 {
+    (x * 10_000.0 + 1e-6).floor() / 10_000.0
+}
+
+/// The next baseline after recording `measured` for `host`. Raise-only: an
+/// existing cell's baseline only moves up and its `min_ratio` never moves,
+/// unless `force_note` is given (then both are reset from this measurement
+/// and the note is stored). New cells get `min_ratio = factor × measured`.
+fn record(
+    baseline: &Value,
+    host: &str,
+    measured: &BTreeMap<String, Measured>,
+    force_note: Option<&str>,
+    date: &str,
+) -> Result<Value, String> {
+    let policy = Policy::from_baseline(baseline)?;
+    let mut next = baseline.clone();
+    if !next["hosts"].is_object() {
+        next["hosts"] = json!({});
+    }
+    let entry = next["hosts"]
+        .as_object_mut()
+        .expect("hosts is an object")
+        .entry(host.to_string())
+        .or_insert_with(|| json!({ "cores": [], "cells": {} }));
+    entry["recorded"] = json!(date);
+    let mut cores = host_cores(entry);
+    for key in measured.keys() {
+        let c = parse_cell_key(key)?.cores;
+        if !cores.contains(&c) {
+            cores.push(c);
+        }
+    }
+    cores.sort_unstable();
+    entry["cores"] = json!(cores);
+    if let Some(note) = force_note {
+        entry["note"] = json!(note);
+    }
+    let cells = entry["cells"]
+        .as_object_mut()
+        .ok_or_else(|| format!("hosts.{host}.cells is not an object"))?;
+    for (key, m) in measured {
+        let id = parse_cell_key(key)?;
+        let value = floor4(m.ratio);
+        if !(value.is_finite() && value > 0.0) {
+            return Err(format!("{key}: cannot record ratio {}", m.ratio));
+        }
+        let min_ratio = floor4(value * policy.floor(id.metric)).max(0.0001);
+        match cells.get_mut(key) {
+            None => {
+                cells.insert(
+                    key.clone(),
+                    json!({ "gate": role_for(id.peer), "baseline": value, "min_ratio": min_ratio }),
+                );
+            }
+            Some(cell) if force_note.is_some() => {
+                cell["baseline"] = json!(value);
+                cell["min_ratio"] = json!(min_ratio);
+            }
+            Some(cell) => {
+                if value > positive(cell, "baseline").map_err(|e| format!("{key}: {e}"))? {
+                    cell["baseline"] = json!(value);
+                }
+            }
+        }
+    }
+    Ok(next)
+}
+
+/// The server core counts a host class is gated at (`cores` in its entry;
+/// hosts too small for the 4-core cells record `[1]`).
+fn host_cores(entry: &Value) -> Vec<u32> {
+    match entry["cores"].as_array() {
+        Some(cs) => cs
+            .iter()
+            .filter_map(|c| c.as_u64().and_then(|c| u32::try_from(c).ok()))
+            .collect(),
+        None => CORES.to_vec(),
+    }
+}
+
 // ===========================================================================
 // Unit tests (synthetic data)
 // ===========================================================================
@@ -220,6 +413,14 @@ fn synthetic_baseline(cells: Value) -> Value {
 
 fn policy() -> Policy {
     Policy::from_baseline(&synthetic_baseline(json!({}))).unwrap()
+}
+
+fn m(ratio: f64) -> Measured {
+    Measured {
+        ratio,
+        keep_cv: 0.01,
+        detail: "synthetic".into(),
+    }
 }
 
 #[test]
@@ -319,4 +520,111 @@ fn role_for_ratchets_only_the_hard_peers() {
     assert_eq!(role_for("keydb"), "report");
     assert_eq!(role_for("garnet"), "report");
     assert_eq!(role_for("keep-1c"), "report");
+}
+
+#[test]
+fn evaluate_passes_when_every_cell_holds() {
+    let baseline = synthetic_baseline(json!({
+        "ram/1c/SET/ops/redis": { "gate": "ratchet", "baseline": 1.0, "min_ratio": 0.8 },
+        "ram/1c/SET/ops/keydb": { "gate": "report", "baseline": 1.0, "min_ratio": 0.8 }
+    }));
+    let measured = BTreeMap::from([
+        ("ram/1c/SET/ops/redis".to_string(), m(0.9)),
+        ("ram/1c/SET/ops/keydb".to_string(), m(0.1)),
+        ("ram/1c/GET/ops/garnet".to_string(), m(2.0)),
+    ]);
+    let out = evaluate(&baseline, "h", &measured);
+    assert!(out.passed(), "{out:?}");
+    assert!(out.lines.iter().any(|l| l.contains("NEW")));
+}
+
+#[test]
+fn evaluate_fails_closed() {
+    let cells = json!({
+        "ram/1c/SET/ops/redis": { "gate": "ratchet", "baseline": 1.0, "min_ratio": 0.8 },
+        "ram/1c/GET/ops/garnet": { "gate": "report", "baseline": 1.0, "min_ratio": 0.8 }
+    });
+    let baseline = synthetic_baseline(cells);
+
+    // No baseline for this host class.
+    let out = evaluate(&baseline, "other-host", &BTreeMap::new());
+    assert!(!out.passed() && out.errors[0].contains("other-host"));
+
+    // A ratchet cell that was not measured fails; an unmeasured report cell does not.
+    let out = evaluate(&baseline, "h", &BTreeMap::new());
+    assert_eq!(out.errors.len(), 1, "{out:?}");
+    assert!(out.errors[0].contains("not measured"));
+    assert!(out.lines.iter().any(|l| l.contains("UNAVAILABLE")));
+
+    // A non-finite ratio fails.
+    let nan = BTreeMap::from([("ram/1c/SET/ops/redis".to_string(), m(f64::NAN))]);
+    assert!(!evaluate(&baseline, "h", &nan).errors.is_empty());
+
+    // A regression fails; with a noisy keep it is reported as UNSTABLE instead.
+    let low = BTreeMap::from([("ram/1c/SET/ops/redis".to_string(), m(0.5))]);
+    let out = evaluate(&baseline, "h", &low);
+    assert_eq!(out.regressions.len(), 1);
+    let mut noisy = m(0.5);
+    noisy.keep_cv = 0.25;
+    let out = evaluate(
+        &baseline,
+        "h",
+        &BTreeMap::from([("ram/1c/SET/ops/redis".to_string(), noisy)]),
+    );
+    assert!(out.regressions.is_empty() && out.unstable.len() == 1 && !out.passed());
+
+    // A broken policy fails everything.
+    let mut broken = baseline.clone();
+    broken["policy"]["max_cv"] = json!(null);
+    assert!(!evaluate(&broken, "h", &low).errors.is_empty());
+}
+
+#[test]
+fn record_is_raise_only_unless_forced() {
+    let baseline = synthetic_baseline(json!({
+        "ram/1c/SET/ops/redis": { "gate": "ratchet", "baseline": 1.0, "min_ratio": 0.8 }
+    }));
+    let key = "ram/1c/SET/ops/redis".to_string();
+
+    let lower = BTreeMap::from([(key.clone(), m(0.7))]);
+    let next = record(&baseline, "h", &lower, None, "2026-10-22").unwrap();
+    assert_eq!(next["hosts"]["h"]["cells"][&key]["baseline"], json!(1.0));
+    assert_eq!(next["hosts"]["h"]["cells"][&key]["min_ratio"], json!(0.8));
+
+    let higher = BTreeMap::from([(key.clone(), m(1.23456))]);
+    let next = record(&baseline, "h", &higher, None, "2026-10-22").unwrap();
+    assert_eq!(next["hosts"]["h"]["cells"][&key]["baseline"], json!(1.2345));
+    assert_eq!(next["hosts"]["h"]["cells"][&key]["min_ratio"], json!(0.8));
+    assert_eq!(next["hosts"]["h"]["recorded"], json!("2026-10-22"));
+    assert_eq!(next["hosts"]["h"]["cores"], json!([1, 4]));
+
+    let next = record(&baseline, "h", &lower, Some("new host image"), "2026-10-22").unwrap();
+    assert_eq!(next["hosts"]["h"]["cells"][&key]["baseline"], json!(0.7));
+    assert_eq!(next["hosts"]["h"]["cells"][&key]["min_ratio"], json!(0.56));
+    assert_eq!(next["hosts"]["h"]["note"], json!("new host image"));
+}
+
+#[test]
+fn record_creates_hosts_and_cells_with_their_role() {
+    let mut baseline = synthetic_baseline(json!({}));
+    baseline["hosts"] = json!({});
+    let measured = BTreeMap::from([
+        ("tiered/4c/CAS/p99/dragonfly".to_string(), m(2.0)),
+        ("tiered/4c/CAS/ops/garnet".to_string(), m(0.5)),
+        ("ram/4c/SET/ops/keep-1c".to_string(), m(3.0)),
+    ]);
+    let next = record(&baseline, "new", &measured, None, "2026-10-22").unwrap();
+    assert_eq!(next["hosts"]["new"]["cores"], json!([4]));
+    let cells = &next["hosts"]["new"]["cells"];
+    assert_eq!(
+        cells["tiered/4c/CAS/p99/dragonfly"],
+        json!({ "gate": "ratchet", "baseline": 2.0, "min_ratio": 1.2 })
+    );
+    assert_eq!(cells["tiered/4c/CAS/ops/garnet"]["gate"], json!("report"));
+    assert_eq!(cells["ram/4c/SET/ops/keep-1c"]["gate"], json!("report"));
+    // A freshly recorded host passes its own measurement.
+    assert!(evaluate(&next, "new", &measured).passed());
+
+    let bad = BTreeMap::from([("ram/1c/SET/ops/redis".to_string(), m(f64::INFINITY))]);
+    assert!(record(&baseline, "h", &bad, None, "d").is_err());
 }
