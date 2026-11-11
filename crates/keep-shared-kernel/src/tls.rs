@@ -17,7 +17,8 @@
 //!
 //! @spec .aw/tech-design/projects/keep/interfaces/cli/adopt-libs-operator-keep-k8s-crd-operator-instance-cli.md
 
-/// Install the aws-lc-rs rustls crypto provider as the process default, once.
+/// Install the process default rustls crypto provider, once, by delegating to
+/// core `peer-tls`, which installs it once for every peer-mTLS path.
 ///
 /// Idempotent: a second call — or a provider a dependency installed first — is
 /// ignored (we only need *a* default present). A no-op in builds without a
