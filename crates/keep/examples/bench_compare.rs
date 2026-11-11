@@ -20,6 +20,9 @@
 //! `EVALSHA` of a GET-compare-SET Lua script (atomic on every RESP server).
 //! CAS keys are seeded before the timed region and each worker owns its keys,
 //! so every swap is expected to apply; a swap that does not apply is an error.
+//!
+//! `--tier ram|tiered` checks the server's actual storage mode before measuring
+//! (keep `/info`, RESP `CONFIG GET appendonly/appendfsync`) and fails on a mismatch.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -83,6 +86,13 @@ struct Args {
     /// Exit 0 even when requests failed (errors are still reported).
     #[arg(long, default_value_t = false)]
     allow_errors: bool,
+    /// Required server storage mode: `ram` (no durable log) or `tiered`
+    /// (durable-before-ack log). Checked before measuring; unset = not checked.
+    #[arg(long, value_parser = ["ram", "tiered"])]
+    tier: Option<String>,
+    /// Poll the server for up to this many seconds before measuring.
+    #[arg(long, default_value_t = 0)]
+    wait_ready_secs: u64,
 }
 
 impl Args {
@@ -227,6 +237,195 @@ struct Mode {
     detail: String,
 }
 
+/// Tier of the in-process engine: durable when it has a persist dir.
+fn engine_tier(persist: bool) -> &'static str {
+    if persist {
+        "tiered"
+    } else {
+        "ram"
+    }
+}
+
+/// Tier of a keep server from its `/info` JSON.
+fn keep_tier(info: &Value) -> BenchResult<&'static str> {
+    match info["persistence_enabled"].as_bool() {
+        Some(true) => Ok("tiered"),
+        Some(false) => Ok("ram"),
+        None => {
+            Err("keep /info has no persistence_enabled (server predates the tier check)".into())
+        }
+    }
+}
+
+/// Tier of a keep server and whether it is verified. A server without the
+/// field gives an unverified `unknown` tier, and an error only when `--tier`
+/// asks for a check.
+fn keep_tier_checked(info: &Value, want: Option<&str>) -> BenchResult<(&'static str, bool)> {
+    match keep_tier(info) {
+        Ok(tier) => Ok((tier, true)),
+        Err(_) if want.is_none() => Ok(("unknown", false)),
+        Err(err) => Err(err),
+    }
+}
+
+/// Tier of a RESP server from `CONFIG GET appendonly` / `appendfsync`, and
+/// whether that tier is verified. Without an AOF config surface the tier is
+/// unknown and unverified, never an error.
+fn resp_tier(appendonly: Option<&str>, appendfsync: Option<&str>) -> (&'static str, bool) {
+    match (appendonly, appendfsync) {
+        (Some("yes"), Some("always")) => ("tiered", true),
+        (Some("yes"), Some(_)) => ("tiered-relaxed", true),
+        (Some("no"), _) => ("ram", true),
+        _ => ("unknown", false),
+    }
+}
+
+/// Fails only when a tier was asked for and the server verifiably reports another.
+fn check_tier(want: Option<&str>, tier: &str, verified: bool, who: &str) -> BenchResult<()> {
+    match want {
+        Some(want) if verified && want != tier => {
+            Err(format!("--tier {want} but {who} reports {tier}").into())
+        }
+        _ => Ok(()),
+    }
+}
+
+fn keep_pool(args: &Args) -> BenchResult<transport_h2c::H2cPool> {
+    let n_clients = args.keep_clients.unwrap_or(args.concurrency).max(1);
+    // The 10s timeout bounds a single request so a stalled stream can't hang the run.
+    Ok(transport_h2c::H2cPool::with_connections_and(
+        n_clients,
+        Some(Duration::from_secs(10)),
+        None,
+    )?)
+}
+
+/// Polls keep `/readyz` every 200 ms until it succeeds or `--wait-ready-secs` passes.
+async fn keep_wait_ready(args: &Args, pool: &transport_h2c::H2cPool) -> BenchResult<()> {
+    let deadline = Instant::now() + Duration::from_secs(args.wait_ready_secs);
+    let url = format!("{}/readyz", args.keep_url);
+    loop {
+        match pool.get(&url).send().await {
+            Ok(resp) if resp.status().is_success() => return Ok(()),
+            _ if Instant::now() < deadline => tokio::time::sleep(Duration::from_millis(200)).await,
+            Ok(resp) => return Err(format!("keep not ready: {url} -> {}", resp.status()).into()),
+            Err(e) => return Err(format!("keep not reachable at {url}: {e}").into()),
+        }
+    }
+}
+
+/// Pings the RESP server every 200 ms until it answers or `--wait-ready-secs` passes.
+async fn resp_wait_ready(args: &Args, client: &redis::Client) -> BenchResult<()> {
+    let deadline = Instant::now() + Duration::from_secs(args.wait_ready_secs);
+    loop {
+        let attempt = async {
+            let mut c = client.get_multiplexed_async_connection().await?;
+            redis::cmd("PING").query_async::<String>(&mut c).await
+        };
+        match attempt.await {
+            Ok(_) => return Ok(()),
+            Err(_) if Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(200)).await
+            }
+            Err(e) => {
+                return Err(format!("{} not reachable at {}: {e}", args.backend, args.addr).into())
+            }
+        }
+    }
+}
+
+/// `CONFIG GET name` as a plain value; `None` when the server does not expose it.
+async fn config_get(con: &mut redis::aio::MultiplexedConnection, name: &str) -> Option<String> {
+    let pairs: Vec<String> = redis::cmd("CONFIG")
+        .arg("GET")
+        .arg(name)
+        .query_async(con)
+        .await
+        .ok()?;
+    pairs.get(1).cloned()
+}
+
+/// Reads the server's storage mode and checks it against `--tier`.
+async fn detect_mode(args: &Args) -> BenchResult<Mode> {
+    match args.backend.as_str() {
+        "engine" => {
+            let persist = args.persist.is_some();
+            let tier = engine_tier(persist);
+            check_tier(
+                args.tier.as_deref(),
+                tier,
+                true,
+                "the engine (see --persist)",
+            )?;
+            Ok(Mode {
+                tier: tier.into(),
+                verified: true,
+                detail: format!("in-process engine, persist={persist}"),
+            })
+        }
+        "keep" => {
+            let pool = keep_pool(args)?;
+            keep_wait_ready(args, &pool).await?;
+            let info: Value = pool
+                .get(format!("{}/info", args.keep_url))
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?;
+            let (tier, verified) = keep_tier_checked(&info, args.tier.as_deref())?;
+            check_tier(args.tier.as_deref(), tier, verified, "keep")?;
+            Ok(Mode {
+                tier: tier.into(),
+                verified,
+                detail: if verified {
+                    format!(
+                        "persistence_enabled={} fsync_interval_ms={}",
+                        tier == "tiered",
+                        info["fsync_interval_ms"]
+                    )
+                } else {
+                    "keep /info has no persistence_enabled".into()
+                },
+            })
+        }
+        "keepnoop" => {
+            let pool = keep_pool(args)?;
+            keep_wait_ready(args, &pool).await?;
+            Ok(Mode {
+                tier: "unknown".into(),
+                verified: false,
+                detail: "backend=keepnoop".into(),
+            })
+        }
+        b if RESP_BACKENDS.contains(&b) => {
+            let client = redis::Client::open(args.addr.clone())?;
+            resp_wait_ready(args, &client).await?;
+            let mut con = client.get_multiplexed_async_connection().await?;
+            let appendonly = config_get(&mut con, "appendonly").await;
+            let appendfsync = config_get(&mut con, "appendfsync").await;
+            let (tier, verified) = resp_tier(appendonly.as_deref(), appendfsync.as_deref());
+            // Unverified: the tier is whatever the server was launched with.
+            let tier = if verified {
+                tier
+            } else {
+                args.tier.as_deref().unwrap_or("unknown")
+            };
+            check_tier(args.tier.as_deref(), tier, verified, &args.backend)?;
+            Ok(Mode {
+                tier: tier.into(),
+                verified,
+                detail: format!(
+                    "appendonly={} appendfsync={}",
+                    appendonly.as_deref().unwrap_or("unsupported"),
+                    appendfsync.as_deref().unwrap_or("unsupported")
+                ),
+            })
+        }
+        other => Err(format!("unknown backend: {other}").into()),
+    }
+}
+
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
@@ -265,6 +464,8 @@ async fn run(args: &Args) -> BenchResult<u64> {
         args.value_size,
         args.keyspace
     );
+    // Checked before any load, so a wrong storage mode fails before measuring.
+    let mode = detect_mode(args).await?;
     let results = match args.backend.as_str() {
         "engine" => bench_engine(args, &val, &phases).await?,
         "keep" => bench_keep(args, &val, &phases).await?,
@@ -273,12 +474,6 @@ async fn run(args: &Args) -> BenchResult<u64> {
         "keepnoop" => bench_keep_noop(args).await?,
         b if RESP_BACKENDS.contains(&b) => bench_resp(args, &val, &phases).await?,
         other => return Err(format!("unknown backend: {other}").into()),
-    };
-    // The storage tier is verified by a later slice; until then it is reported as unknown.
-    let mode = Mode {
-        tier: "unknown".into(),
-        verified: false,
-        detail: format!("backend={}", args.backend),
     };
     let errors = results.iter().map(|r| r.errors).sum();
     if args.json() {
@@ -930,5 +1125,107 @@ mod tests {
         assert_eq!(plan(&make("1000", "5")), (20, 1000));
         assert_eq!(plan(&make("1000", "0")), (100, 1000));
         assert_eq!(plan(&make("10", "5")), (1, 50));
+    }
+
+    #[test]
+    fn engine_tier_follows_persist() {
+        assert_eq!(engine_tier(true), "tiered");
+        assert_eq!(engine_tier(false), "ram");
+    }
+
+    #[test]
+    fn keep_tier_reads_persistence_enabled() {
+        assert_eq!(
+            keep_tier(&json!({"persistence_enabled": true})).unwrap(),
+            "tiered"
+        );
+        assert_eq!(
+            keep_tier(&json!({"persistence_enabled": false})).unwrap(),
+            "ram"
+        );
+    }
+
+    #[test]
+    fn keep_tier_rejects_old_servers() {
+        let missing = keep_tier(&json!({})).unwrap_err().to_string();
+        assert!(missing.contains("persistence_enabled"), "{missing}");
+        assert!(keep_tier(&json!({"persistence_enabled": "yes"})).is_err());
+    }
+
+    #[test]
+    fn keep_tier_checked_old_server_without_tier_is_unknown() {
+        assert_eq!(
+            keep_tier_checked(&json!({}), None).unwrap(),
+            ("unknown", false)
+        );
+        assert_eq!(
+            keep_tier_checked(&json!({"persistence_enabled": "yes"}), None).unwrap(),
+            ("unknown", false)
+        );
+    }
+
+    #[test]
+    fn keep_tier_checked_old_server_with_tier_errors() {
+        let err = keep_tier_checked(&json!({}), Some("ram"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("persistence_enabled"), "{err}");
+    }
+
+    #[test]
+    fn keep_tier_checked_new_server_is_verified() {
+        assert_eq!(
+            keep_tier_checked(&json!({"persistence_enabled": true}), Some("tiered")).unwrap(),
+            ("tiered", true)
+        );
+        assert_eq!(
+            keep_tier_checked(&json!({"persistence_enabled": false}), None).unwrap(),
+            ("ram", true)
+        );
+    }
+
+    #[test]
+    fn resp_tier_decisions() {
+        assert_eq!(resp_tier(Some("yes"), Some("always")), ("tiered", true));
+        assert_eq!(
+            resp_tier(Some("yes"), Some("everysec")),
+            ("tiered-relaxed", true)
+        );
+        assert_eq!(resp_tier(Some("no"), None), ("ram", true));
+        assert_eq!(resp_tier(None, None), ("unknown", false));
+        assert_eq!(resp_tier(Some("yes"), None), ("unknown", false));
+    }
+
+    #[test]
+    fn check_tier_fails_only_on_verified_mismatch() {
+        let err = check_tier(Some("ram"), "tiered", true, "keep")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("--tier ram"), "{err}");
+        assert!(err.contains("tiered"), "{err}");
+        assert!(check_tier(Some("ram"), "ram", true, "keep").is_ok());
+        assert!(check_tier(None, "tiered", true, "keep").is_ok());
+        assert!(check_tier(Some("ram"), "unknown", false, "redis").is_ok());
+    }
+
+    #[test]
+    fn tier_and_wait_ready_args() {
+        let a = Args::parse_from([
+            "bench_compare",
+            "--backend",
+            "keep",
+            "--tier",
+            "ram",
+            "--wait-ready-secs",
+            "5",
+        ]);
+        assert_eq!(a.tier.as_deref(), Some("ram"));
+        assert_eq!(a.wait_ready_secs, 5);
+        let d = Args::parse_from(["bench_compare", "--backend", "keep"]);
+        assert_eq!(d.tier, None);
+        assert_eq!(d.wait_ready_secs, 0);
+        assert!(
+            Args::try_parse_from(["bench_compare", "--backend", "keep", "--tier", "disk"]).is_err()
+        );
     }
 }
