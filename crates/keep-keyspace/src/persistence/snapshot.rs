@@ -309,11 +309,17 @@ pub struct SnapshotLoader;
 impl SnapshotLoader {
     /// Last WAL seq covered by the latest snapshot, or `None` when there is no snapshot
     pub fn latest_wal_seq(data_dir: impl AsRef<Path>) -> Result<Option<u64>> {
-        let snapshots = find_snapshot_files(data_dir.as_ref())?;
+        let data_dir = data_dir.as_ref();
+        if !data_dir.exists() {
+            // The store would create the directory; a missing one holds no snapshot
+            return Ok(None);
+        }
+
+        let snapshots = snapshot_store(data_dir)?.snapshots().map_err(store_err)?;
         let Some(latest) = snapshots.last() else {
             return Ok(None);
         };
-        let mut reader = BufReader::new(File::open(latest)?);
+        let mut reader = std::io::BufReader::new(std::fs::File::open(&latest.path)?);
         let header = SnapshotHeader::read(&mut reader)?;
         Ok(Some(header.wal_position))
     }
