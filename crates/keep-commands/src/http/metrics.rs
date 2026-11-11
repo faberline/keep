@@ -30,6 +30,7 @@ struct RouteStat {
     count: u64,
 }
 
+// Stays local: core metrics-prometheus (v0.4.14) has no labeled histogram and keeps _sum as an integer.
 /// Per-(method, route-pattern) request metrics.
 #[derive(Default)]
 pub struct HttpMetrics {
@@ -63,7 +64,7 @@ impl HttpMetrics {
                 out.push_str(&format!(
                     "keep_http_requests_total{{method=\"{}\",route=\"{}\",status=\"{}\"}} {}\n",
                     method,
-                    esc(route),
+                    metrics_prometheus::escape_label_value(route),
                     status,
                     n
                 ));
@@ -72,7 +73,7 @@ impl HttpMetrics {
         out.push_str("# HELP keep_http_request_duration_seconds HTTP request latency by route.\n");
         out.push_str("# TYPE keep_http_request_duration_seconds histogram\n");
         for ((method, route), stat) in g.iter() {
-            let r = esc(route);
+            let r = metrics_prometheus::escape_label_value(route);
             let mut cum = 0u64;
             for (i, b) in BUCKETS.iter().enumerate() {
                 cum += stat.bucket[i];
@@ -99,13 +100,6 @@ impl HttpMetrics {
     }
 }
 
-/// Escape a Prometheus label value (backslash, quote, newline).
-fn esc(s: &str) -> String {
-    s.replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace('\n', "\\n")
-}
-
 /// `route_layer` middleware: time the request and record it against its matched
 /// route pattern (so high-cardinality keys collapse to `/kv/{key}` etc.).
 pub async fn track(
@@ -128,4 +122,22 @@ pub async fn track(
         start.elapsed().as_secs_f64(),
     );
     resp
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HttpMetrics;
+
+    #[test]
+    fn render_escapes_route_label() {
+        let m = HttpMetrics::default();
+        m.record("GET", "/a\"b\\c\nd", 200, 0.001);
+        let text = m.render();
+        let expected = r#"route="/a\"b\\c\nd""#;
+        let line = text
+            .lines()
+            .find(|l| l.starts_with("keep_http_requests_total{method=\"GET\",route="))
+            .expect("request counter line");
+        assert!(line.contains(expected), "bad escaping: {line}");
+    }
 }

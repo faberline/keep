@@ -5,7 +5,7 @@ edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "keep-shared-kernel — the types, errors, cluster topology, metrics, and TLS helpers every keep context uses"
+description = "keep-shared-kernel — the types, errors, cluster topology, and TLS helpers every keep context uses"
 
 [dependencies]
 crc32fast.workspace = true

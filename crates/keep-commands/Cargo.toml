@@ -15,6 +15,7 @@ keep-shared-kernel.workspace = true
 
 # faberline/core shared crates
 claim-token.workspace = true
+metrics-prometheus.workspace = true
 service-auth.workspace = true
 service-http.workspace = true
 

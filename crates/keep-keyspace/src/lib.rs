@@ -4,8 +4,7 @@
 #![allow(clippy::all)]
 
 pub use keep_shared_kernel::{
-    cluster, error, metrics, tls, types, Cluster, ClusterConfig, ClusterState, KvError, KvKey,
-    KvValue,
+    cluster, error, tls, types, Cluster, ClusterConfig, ClusterState, KvError, KvKey, KvValue,
 };
 
 pub mod engine;

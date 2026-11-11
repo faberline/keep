@@ -455,6 +455,43 @@ async fn metrics_records_per_route_requests() {
 }
 
 #[tokio::test]
+async fn metrics_engine_block_is_byte_identical() {
+    let (app, _) = app();
+    let req = Request::builder()
+        .uri("/metrics")
+        .body(Body::empty())
+        .unwrap();
+    let (st, bytes) = send(&app, req).await;
+    assert_eq!(st, StatusCode::OK);
+    let text = String::from_utf8_lossy(&bytes);
+    let head = "# HELP keep_keys_total Number of keys across all shards.\n\
+                # TYPE keep_keys_total gauge\n\
+                keep_keys_total 0\n\
+                # HELP keep_shards Number of engine shards.\n\
+                # TYPE keep_shards gauge\n\
+                keep_shards 16\n";
+    assert!(text.starts_with(head), "engine block changed:\n{text}");
+    let ordered = [
+        "# TYPE keep_memory_bytes gauge",
+        "# TYPE keep_maxmemory_bytes gauge",
+        "# HELP keep_disk_blob_bytes Bytes stored in tiered disk blob spill files.",
+        "# TYPE keep_evicted_keys_total counter",
+        "keep_spilled_keys_total 0",
+        "# TYPE keep_http_requests_total counter",
+    ];
+    let mut prev = text
+        .find(head.lines().last().unwrap())
+        .expect("engine block");
+    for line in ordered {
+        let pos = text
+            .find(line)
+            .unwrap_or_else(|| panic!("missing line `{line}`:\n{text}"));
+        assert!(pos > prev, "`{line}` out of order:\n{text}");
+        prev = pos;
+    }
+}
+
+#[tokio::test]
 async fn cluster_endpoint_reports_topology() {
     let (app, _) = app();
     let req = Request::builder()
