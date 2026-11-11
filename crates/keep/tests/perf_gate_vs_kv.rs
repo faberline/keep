@@ -5,7 +5,7 @@
 //! `ratio < max(min_ratio, ratchet × baseline)`; a `report` cell never fails.
 //! The gate fails closed on malformed cells.
 
-#![allow(dead_code)] // the report-check and live-runner slices (keep#35, #37) use the rest of these items
+#![allow(dead_code)] // the live-runner slice (keep#37) uses the rest of these items
 
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -388,6 +388,219 @@ fn host_cores(entry: &Value) -> Vec<u32> {
 }
 
 // ===========================================================================
+/// Validates one `bench_compare --format json` report for `target` at `tier`.
+/// `gated` targets (keep and ratchet peers) must prove their storage mode.
+fn check_report(report: &Value, target: &str, tier: &str, gated: bool) -> Result<(), String> {
+    if report["schema"] != REPORT_SCHEMA {
+        return Err(format!(
+            "{target}: unexpected report schema {}",
+            report["schema"]
+        ));
+    }
+    if report["backend"] != target {
+        return Err(format!(
+            "{target}: report is for backend {}",
+            report["backend"]
+        ));
+    }
+    let errors = report["errors"]
+        .as_u64()
+        .ok_or("report has no error count")?;
+    if errors > 0 {
+        return Err(format!("{target}: {errors} failed request(s)"));
+    }
+    let mode = &report["mode"];
+    let verified = mode["verified"].as_bool().unwrap_or(false);
+    if verified && mode["tier"] != tier {
+        return Err(format!(
+            "{target}: wanted {tier}, server reports {}",
+            mode["detail"]
+        ));
+    }
+    // A RAM-only launch is the default for every server; a durable tier must be
+    // proven by the server before its numbers can gate anything.
+    if !verified && tier != "ram" && gated {
+        return Err(format!(
+            "{target}: {tier} mode could not be verified ({})",
+            mode["detail"]
+        ));
+    }
+    for phase in PHASES {
+        let p = report["phases"]
+            .as_array()
+            .and_then(|ps| ps.iter().find(|p| p["phase"] == phase))
+            .ok_or_else(|| format!("{target}: report has no {phase} phase"))?;
+        for k in ["ops_per_sec", "p99_us"] {
+            if !p[k].as_f64().is_some_and(|v| v.is_finite() && v >= 0.0) {
+                return Err(format!("{target}: {phase}.{k} missing"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn phase_value(report: &Value, phase: &str, metric: Metric) -> Option<f64> {
+    let p = report["phases"]
+        .as_array()?
+        .iter()
+        .find(|p| p["phase"] == phase)?;
+    match metric {
+        Metric::Ops => p["ops_per_sec"].as_f64(),
+        // A sub-microsecond p99 reports 0; clamp so the ratio stays finite.
+        Metric::P99 => p["p99_us"].as_f64().map(|v| v.max(1.0)),
+    }
+}
+
+/// (tier, cores, target) -> one validated report per trial.
+type Runs = BTreeMap<(String, u32, String), Vec<Value>>;
+
+fn values(reports: &[Value], phase: &str, metric: Metric) -> Option<Vec<f64>> {
+    reports
+        .iter()
+        .map(|r| phase_value(r, phase, metric))
+        .collect()
+}
+
+fn build_measured(runs: &Runs) -> BTreeMap<String, Measured> {
+    let mut out = BTreeMap::new();
+    for ((tier, cores, target), reports) in runs {
+        if target == "keep" {
+            continue;
+        }
+        let Some(keep) = runs.get(&(tier.clone(), *cores, "keep".to_string())) else {
+            continue;
+        };
+        for phase in PHASES {
+            for metric in [Metric::Ops, Metric::P99] {
+                let (Some(k), Some(p)) =
+                    (values(keep, phase, metric), values(reports, phase, metric))
+                else {
+                    continue;
+                };
+                let (km, pm) = (median(&k), median(&p));
+                out.insert(
+                    cell_key(tier, *cores, phase, metric, target),
+                    Measured {
+                        ratio: ratio(metric, km, pm).unwrap_or(f64::NAN),
+                        keep_cv: cv(&k),
+                        detail: format!("keep {km:.0} vs {target} {pm:.0} {}", unit(metric)),
+                    },
+                );
+            }
+        }
+    }
+    // keep's own multi-core scaling: 4-core throughput over 1-core.
+    for tier in TIERS {
+        let one = runs.get(&(tier.to_string(), 1, "keep".to_string()));
+        let four = runs.get(&(tier.to_string(), 4, "keep".to_string()));
+        let (Some(one), Some(four)) = (one, four) else {
+            continue;
+        };
+        for phase in PHASES {
+            let (Some(a), Some(b)) = (
+                values(four, phase, Metric::Ops),
+                values(one, phase, Metric::Ops),
+            ) else {
+                continue;
+            };
+            let (am, bm) = (median(&a), median(&b));
+            out.insert(
+                cell_key(tier, 4, phase, Metric::Ops, SCALING_PEER),
+                Measured {
+                    ratio: ratio(Metric::Ops, am, bm).unwrap_or(f64::NAN),
+                    keep_cv: cv(&a).max(cv(&b)),
+                    detail: format!("keep 4c {am:.0} vs 1c {bm:.0} ops/s"),
+                },
+            );
+        }
+    }
+    out
+}
+
+fn unit(metric: Metric) -> &'static str {
+    match metric {
+        Metric::Ops => "ops/s",
+        Metric::P99 => "us p99",
+    }
+}
+
+/// Structural problems in a baseline document (empty = valid).
+fn validate_baseline(baseline: &Value) -> Vec<String> {
+    let mut problems = Vec::new();
+    if baseline["schema"] != BASELINE_SCHEMA {
+        problems.push(format!("schema must be {BASELINE_SCHEMA}"));
+    }
+    if let Err(e) = Policy::from_baseline(baseline) {
+        problems.push(e);
+    }
+    for target in &TARGETS[1..] {
+        match baseline["images"][target].as_str() {
+            Some(img) if img.contains("@sha256:") => {}
+            _ => problems.push(format!("images.{target} must be pinned by @sha256 digest")),
+        }
+    }
+    let Some(hosts) = baseline["hosts"].as_object() else {
+        problems.push("hosts must be an object".into());
+        return problems;
+    };
+    for (host, entry) in hosts {
+        let cores_ok = match &entry["cores"] {
+            Value::Null => true,
+            Value::Array(cs) => {
+                !cs.is_empty()
+                    && cs
+                        .iter()
+                        .all(|c| c.as_u64().is_some_and(|c| (1..=256).contains(&c)))
+            }
+            _ => false,
+        };
+        if !cores_ok {
+            problems.push(format!(
+                "hosts.{host}.cores must be a non-empty list of core counts"
+            ));
+        }
+        let Some(cells) = entry["cells"].as_object().filter(|c| !c.is_empty()) else {
+            problems.push(format!("hosts.{host}.cells is empty"));
+            continue;
+        };
+        for (key, cell) in cells {
+            let id = match parse_cell_key(key) {
+                Ok(id) => id,
+                Err(e) => {
+                    problems.push(e);
+                    continue;
+                }
+            };
+            // A ratchet peer's cell may be demoted to `report` on a host class
+            // where it is not trustworthy (with a host `note`); a report-only
+            // peer is never promoted to a ratchet.
+            match cell["gate"].as_str() {
+                Some("report") => {}
+                Some("ratchet") if role_for(id.peer) == "ratchet" => {}
+                Some("ratchet") => problems.push(format!(
+                    "{host}/{key}: {} cells are report-only, not ratchet",
+                    id.peer
+                )),
+                other => problems.push(format!("{host}/{key}: unknown gate {other:?}")),
+            }
+            if cell["gate"] == "report"
+                && role_for(id.peer) == "ratchet"
+                && entry["note"].as_str().is_none_or(|n| n.trim().is_empty())
+            {
+                problems.push(format!(
+                    "{host}/{key}: a demoted ratchet cell needs a host `note` saying why"
+                ));
+            }
+            match (positive(cell, "baseline"), positive(cell, "min_ratio")) {
+                (Ok(b), Ok(m)) if m <= b => {}
+                (Ok(_), Ok(_)) => problems.push(format!("{host}/{key}: min_ratio > baseline")),
+                (Err(e), _) | (_, Err(e)) => problems.push(format!("{host}/{key}: {e}")),
+            }
+        }
+    }
+    problems
+}
+
 // Unit tests (synthetic data)
 // ===========================================================================
 
@@ -627,4 +840,145 @@ fn record_creates_hosts_and_cells_with_their_role() {
 
     let bad = BTreeMap::from([("ram/1c/SET/ops/redis".to_string(), m(f64::INFINITY))]);
     assert!(record(&baseline, "h", &bad, None, "d").is_err());
+}
+
+fn report(backend: &str, tier: &str, verified: bool, errors: u64, ops: f64, p99: u64) -> Value {
+    json!({
+        "schema": REPORT_SCHEMA,
+        "backend": backend,
+        "mode": { "tier": tier, "verified": verified, "detail": "synthetic" },
+        "errors": errors,
+        "phases": PHASES.iter().map(|p| json!({
+            "phase": p, "ops_per_sec": ops, "p99_us": p99
+        })).collect::<Vec<_>>(),
+    })
+}
+
+#[test]
+fn check_report_requires_clean_verified_runs() {
+    assert!(check_report(
+        &report("keep", "tiered", true, 0, 1.0, 1),
+        "keep",
+        "tiered",
+        true
+    )
+    .is_ok());
+    assert!(check_report(&report("keep", "ram", true, 3, 1.0, 1), "keep", "ram", true).is_err());
+    assert!(check_report(
+        &report("keep", "ram", true, 0, 1.0, 1),
+        "keep",
+        "tiered",
+        true
+    )
+    .is_err());
+    assert!(check_report(
+        &report("redis", "ram", true, 0, 1.0, 1),
+        "keep",
+        "ram",
+        true
+    )
+    .is_err());
+    // Durable tier must be proven for gated targets; RAM need not be.
+    assert!(check_report(
+        &report("dragonfly", "ram", false, 0, 1.0, 1),
+        "dragonfly",
+        "ram",
+        true
+    )
+    .is_ok());
+    assert!(check_report(
+        &report("redis", "tiered", false, 0, 1.0, 1),
+        "redis",
+        "tiered",
+        true
+    )
+    .is_err());
+    assert!(check_report(
+        &report("garnet", "tiered", false, 0, 1.0, 1),
+        "garnet",
+        "tiered",
+        false
+    )
+    .is_ok());
+    let mut missing = report("keep", "ram", true, 0, 1.0, 1);
+    missing["phases"].as_array_mut().unwrap().pop();
+    assert!(check_report(&missing, "keep", "ram", true).is_err());
+    let mut wrong = report("keep", "ram", true, 0, 1.0, 1);
+    wrong["schema"] = json!("other/1");
+    assert!(check_report(&wrong, "keep", "ram", true).is_err());
+}
+
+#[test]
+fn build_measured_takes_median_ratios_and_scaling() {
+    let run = |target: &str, cores: u32, ops: &[f64], p99: u64| {
+        (
+            ("ram".to_string(), cores, target.to_string()),
+            ops.iter()
+                .map(|o| report(target, "ram", true, 0, *o, p99))
+                .collect::<Vec<_>>(),
+        )
+    };
+    let runs: Runs = BTreeMap::from([
+        run("keep", 1, &[100.0, 90.0, 110.0], 200),
+        run("redis", 1, &[200.0, 210.0, 50.0], 100),
+        run("keep", 4, &[300.0, 300.0, 300.0], 100),
+        // No keep-less cells: dragonfly at 4c has keep, keydb at 2c does not.
+        run("dragonfly", 4, &[600.0], 50),
+        run("keydb", 2, &[1.0], 1),
+    ]);
+    let measured = build_measured(&runs);
+    assert_eq!(measured["ram/1c/SET/ops/redis"].ratio, 0.5);
+    assert_eq!(measured["ram/1c/SET/p99/redis"].ratio, 0.5);
+    assert!(measured["ram/1c/SET/ops/redis"].keep_cv > 0.05);
+    assert_eq!(measured["ram/4c/GET/ops/dragonfly"].ratio, 0.5);
+    assert_eq!(measured["ram/4c/CAS/ops/keep-1c"].ratio, 3.0);
+    assert!(!measured.keys().any(|k| k.contains("keydb")));
+    assert!(!measured.keys().any(|k| k.starts_with("tiered")));
+}
+
+#[test]
+fn ratchet_cells_may_be_demoted_with_a_note_but_never_promoted() {
+    let mut baseline = synthetic_baseline(json!({
+        "tiered/1c/SET/ops/redis": { "gate": "report", "baseline": 1.0, "min_ratio": 0.8 }
+    }));
+    assert_eq!(
+        validate_baseline(&baseline).len(),
+        1,
+        "demotion without a note"
+    );
+    baseline["hosts"]["h"]["note"] = json!("virtualized fsync");
+    assert!(validate_baseline(&baseline).is_empty());
+    let promoted = synthetic_baseline(json!({
+        "ram/1c/SET/ops/garnet": { "gate": "ratchet", "baseline": 1.0, "min_ratio": 0.8 }
+    }));
+    assert_eq!(validate_baseline(&promoted).len(), 1);
+}
+
+#[test]
+fn committed_baseline_is_well_formed() {
+    let text = std::fs::read_to_string(BASELINE_PATH).expect("read perf-baseline.json");
+    let baseline: Value = serde_json::from_str(&text).expect("parse perf-baseline.json");
+    let problems = validate_baseline(&baseline);
+    assert!(problems.is_empty(), "perf-baseline.json: {problems:#?}");
+    // Each recorded host covers the full ratchet matrix, so a gate run on that
+    // host can never pass with a ratchet cell silently missing.
+    for (host, entry) in baseline["hosts"].as_object().unwrap() {
+        let cells = entry["cells"].as_object().unwrap();
+        for tier in TIERS {
+            for cores in host_cores(entry) {
+                for phase in PHASES {
+                    for metric in [Metric::Ops, Metric::P99] {
+                        for peer in RATCHET_PEERS {
+                            // Dragonfly has no fsync-per-write AOF: not run tiered.
+                            if peer == "dragonfly" && tier == "tiered" {
+                                continue;
+                            }
+                            let key = cell_key(tier, cores, phase, metric, peer);
+                            assert!(cells.contains_key(&key), "{host}: missing {key}");
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
