@@ -12,6 +12,9 @@
 //! Builds that link no rustls path (the default `keep` build) compile this as a
 //! no-op, so the fast dev/test cycle pays nothing.
 //!
+//! The install itself is delegated to core `peer-tls`, which installs the
+//! aws-lc-rs provider once for every peer-mTLS path.
+//!
 //! @spec .aw/tech-design/projects/keep/interfaces/cli/adopt-libs-operator-keep-k8s-crd-operator-instance-cli.md
 
 /// Install the aws-lc-rs rustls crypto provider as the process default, once.
@@ -21,11 +24,15 @@
 /// rustls path (the private `rustls-provider` feature is off).
 pub fn install_default_crypto_provider() {
     #[cfg(feature = "rustls-provider")]
-    {
-        use std::sync::Once;
-        static INSTALL: Once = Once::new();
-        INSTALL.call_once(|| {
-            let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-        });
+    peer_tls::install_default_crypto_provider();
+}
+
+#[cfg(all(test, feature = "rustls-provider"))]
+mod tests {
+    #[test]
+    fn install_is_idempotent_and_sets_default() {
+        super::install_default_crypto_provider();
+        super::install_default_crypto_provider();
+        assert!(rustls::crypto::CryptoProvider::get_default().is_some());
     }
 }

@@ -1955,6 +1955,7 @@ name = "keep-shared-kernel"
 version = "0.4.13"
 dependencies = [
  "crc32fast",
+ "peer-tls",
  "rust_decimal",
  "rustls",
  "serde",
