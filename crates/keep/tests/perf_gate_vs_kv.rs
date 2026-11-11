@@ -5,8 +5,6 @@
 //! `ratio < max(min_ratio, ratchet × baseline)`; a `report` cell never fails.
 //! The gate fails closed on malformed cells.
 
-#![allow(dead_code)] // the report-check and live-runner slices (keep#35, keep#43, keep#44) use the rest of these items
-
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::process::Command;
@@ -1384,4 +1382,236 @@ fn today() -> String {
         .ok()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default()
+}
+
+const REPO_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
+
+#[test]
+fn vat_toml_runs_the_ignored_gate() {
+    let vat = std::fs::read_to_string(format!("{REPO_ROOT}/vat.toml")).expect("read vat.toml");
+    assert!(vat.contains(r#"id = "perf-gate-competitors""#), "no runner");
+    assert!(
+        vat.contains("competitive_perf_gate"),
+        "runner misses the gate"
+    );
+    assert!(
+        vat.contains("-- --ignored --exact"),
+        "runner must run the ignored test"
+    );
+}
+
+#[test]
+fn dockerfile_bench_documents_the_gate_image() {
+    let df = std::fs::read_to_string(format!("{REPO_ROOT}/Dockerfile.bench"))
+        .expect("read Dockerfile.bench");
+    assert!(df.contains("-t keep-bench:gate"), "image tag missing");
+    assert!(df.contains("KeyDB"), "competitor list missing");
+}
+
+#[test]
+#[ignore = "release-only: needs Docker, the keep-bench:gate image, and ~20 min"]
+fn competitive_perf_gate() {
+    let text = std::fs::read_to_string(BASELINE_PATH).expect("read perf-baseline.json");
+    let baseline: Value = serde_json::from_str(&text).expect("parse perf-baseline.json");
+    let problems = validate_baseline(&baseline);
+    assert!(problems.is_empty(), "perf-baseline.json: {problems:#?}");
+
+    let record_mode = std::env::var("KEEP_PERF_RECORD")
+        .ok()
+        .filter(|v| !v.is_empty());
+    let force_note = match record_mode.as_deref() {
+        Some("force") => Some(
+            std::env::var("KEEP_PERF_NOTE")
+                .ok()
+                .filter(|n| !n.trim().is_empty())
+                .expect("KEEP_PERF_RECORD=force requires KEEP_PERF_NOTE explaining the reset"),
+        ),
+        _ => None,
+    };
+    let host = host().unwrap_or_else(|e| panic!("docker is required: {e}"));
+    let keep_image = std::env::var("KEEP_PERF_IMAGE").unwrap_or_else(|_| "keep-bench:gate".into());
+    let net = std::env::var("KEEP_PERF_NETWORK").unwrap_or_else(|_| "keep-perf-gate".into());
+    let addr_host = if net == "host" {
+        "127.0.0.1"
+    } else {
+        SERVER_NAME
+    };
+    let trials: usize = env_or("KEEP_PERF_TRIALS", 3);
+    let tiers = env_list("KEEP_PERF_TIERS", &TIERS);
+    // Default to the core counts this host class was recorded at.
+    let default_cores: Vec<String> = match baseline["hosts"].get(&host.class) {
+        Some(entry) => host_cores(entry).iter().map(u32::to_string).collect(),
+        None => CORES.iter().map(u32::to_string).collect(),
+    };
+    let default_cores: Vec<&str> = default_cores.iter().map(String::as_str).collect();
+    let cores: Vec<u32> = env_list("KEEP_PERF_CORES", &default_cores)
+        .iter()
+        .map(|c| c.parse().expect("KEEP_PERF_CORES"))
+        .collect();
+    let targets = env_list("KEEP_PERF_TARGETS", &TARGETS);
+    assert!(targets.iter().any(|t| t == "keep"), "keep must be measured");
+
+    let mut problems = Problems::default();
+
+    println!("\n== competitive perf gate: host class {} ==", host.class);
+    let mut images = BTreeMap::new();
+    for target in &targets {
+        let image = if target == "keep" {
+            keep_image.clone()
+        } else {
+            match baseline["images"][target.as_str()].as_str() {
+                Some(i) => i.to_string(),
+                None => {
+                    problems.fail(target, format!("{target}: no pinned image"));
+                    continue;
+                }
+            }
+        };
+        match ensure_image(&image, &host.arch) {
+            Ok(id) => {
+                println!("  {target:<10} {image} ({id})");
+                images.insert(target.clone(), image);
+            }
+            Err(e) => problems.fail(target, format!("{target}: {e}")),
+        }
+    }
+    assert!(
+        problems.fatal.is_empty(),
+        "competitive perf gate cannot run: {:#?}",
+        problems.fatal
+    );
+    if net != "host" && docker(&["network", "inspect", &net]).is_err() {
+        docker(&["network", "create", &net]).expect("create docker network");
+    }
+
+    let mut runs: Runs = BTreeMap::new();
+    for tier in &tiers {
+        let ops: usize = if tier == "tiered" {
+            env_or("KEEP_PERF_TIERED_OPS", 40_000)
+        } else {
+            env_or("KEEP_PERF_OPS", 200_000)
+        };
+        for &c in &cores {
+            assert!(
+                host.ncpu >= c + 2,
+                "{c}-core server needs >= {} CPUs for a disjoint load generator",
+                c + 2
+            );
+            let server_cpus = format!("0-{}", c - 1);
+            let load = Load {
+                net: &net,
+                cpus: format!("{c}-{}", host.ncpu - 1),
+                image: &keep_image,
+                addr_host,
+                ops,
+                warmup: ops / 10,
+                concurrency: env_or("KEEP_PERF_CONCURRENCY", 50),
+            };
+            for target in &targets {
+                let Some(image) = images.get(target) else {
+                    continue;
+                };
+                let Some((port, args)) = server_args(target, tier, c) else {
+                    continue;
+                };
+                let gated = role_for(target) == "ratchet" || target == "keep";
+                let server = match Server::start(&net, &server_cpus, image, &args) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        problems.fail(target, format!("{target} {tier} {c}c: {e}"));
+                        continue;
+                    }
+                };
+                let mut reports = Vec::new();
+                for trial in 0..trials {
+                    let label = format!("{}:{tier}:{c}c:{target}:{trial}", host.class);
+                    let result = load
+                        .run(target, tier, port, &label)
+                        .and_then(|r| check_report(&r, target, tier, gated).map(|()| r));
+                    match result {
+                        Ok(r) => reports.push(r),
+                        Err(e) => {
+                            let logs = Server::logs();
+                            problems.fail(target, format!("{tier} {c}c: {e}\n{logs}"));
+                            reports.clear();
+                            break;
+                        }
+                    }
+                }
+                drop(server);
+                if !reports.is_empty() {
+                    let summary: Vec<String> = PHASES
+                        .iter()
+                        .map(|p| {
+                            let ops = values(&reports, p, Metric::Ops).unwrap_or_default();
+                            format!("{p} {:.0}/s", median(&ops))
+                        })
+                        .collect();
+                    println!("  {tier:<6} {c}c {target:<10} {}", summary.join("  "));
+                    runs.insert((tier.clone(), c, target.clone()), reports);
+                }
+            }
+        }
+    }
+    if net != "host" {
+        let _ = docker(&["network", "rm", &net]);
+    }
+
+    let measured = build_measured(&runs);
+    let outcome = evaluate(&baseline, &host.class, &measured);
+    println!(
+        "\n{:<34} {:>8} {:>8}  verdict",
+        "cell (higher = keep better)", "ratio", "min"
+    );
+    for line in &outcome.lines {
+        println!("{line}");
+    }
+    for u in &problems.unavailable {
+        println!("UNAVAILABLE (report-only): {u}");
+    }
+    assert!(
+        problems.fatal.is_empty(),
+        "competitive perf gate could not measure: {:#?}",
+        problems.fatal
+    );
+
+    if record_mode.is_some() {
+        let next = record(
+            &baseline,
+            &host.class,
+            &measured,
+            force_note.as_deref(),
+            &today(),
+        )
+        .unwrap_or_else(|e| panic!("record baseline: {e}"));
+        let problems = validate_baseline(&next);
+        assert!(
+            problems.is_empty(),
+            "recorded baseline invalid: {problems:#?}"
+        );
+        std::fs::write(
+            BASELINE_PATH,
+            serde_json::to_string_pretty(&next).unwrap() + "\n",
+        )
+        .expect("write perf-baseline.json");
+        println!("\nRECORDED baseline for host class {}", host.class);
+        return;
+    }
+    for e in &outcome.errors {
+        println!("ERROR: {e}");
+    }
+    for r in &outcome.regressions {
+        println!("REGRESSION: {r}");
+    }
+    for u in &outcome.unstable {
+        println!("UNSTABLE (rerun first): {u}");
+    }
+    assert!(
+        outcome.passed(),
+        "competitive perf gate FAILED: {} error(s), {} regression(s), {} unstable",
+        outcome.errors.len(),
+        outcome.regressions.len(),
+        outcome.unstable.len()
+    );
+    println!("\nGATE PASSED");
 }

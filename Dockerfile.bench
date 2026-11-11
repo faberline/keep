@@ -1,11 +1,13 @@
 # syntax=docker/dockerfile:1
 # Benchmark image (#126 fair comparison): builds both the keep server and the
-# bench_compare harness as Linux binaries, so keep / Redis / Dragonfly and the
-# load generator all run as containers on ONE Docker network — Linux-to-Linux,
-# no macOS host<->VM networking asymmetry. NOT a production image (that's
-# Dockerfile.release); the runtime carries a shell + curl for orchestration.
+# bench_compare harness as Linux binaries, so keep / Redis / Dragonfly / KeyDB /
+# Garnet and the load generator all run as containers on ONE Docker network —
+# Linux-to-Linux, no macOS host<->VM networking asymmetry. NOT a production
+# image (that's Dockerfile.release); the runtime carries a shell + curl for
+# orchestration. The competitor ratchet (crates/keep/tests/perf_gate_vs_kv.rs)
+# runs this image as both the keep server and the load generator.
 #
-#   docker build -f Dockerfile.bench -t keep-bench .   # context = repo root
+#   docker build -f Dockerfile.bench -t keep-bench:gate .   # context = repo root
 
 FROM rust:1.92-slim-bookworm AS builder
 WORKDIR /src
