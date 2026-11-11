@@ -1,0 +1,18 @@
+{
+  "_doc": "Competitive perf ratchet baseline (issue #2). Read by tests/perf_gate_vs_kv.rs. Ratios are keep/peer for ops and peer/keep for p99 (higher = better for keep). Host classes are added by the nightly run (keep#31); this file has none yet.",
+  "schema": "keep.perf_baseline/1",
+  "policy": {
+    "throughput_ratchet": 0.85,
+    "p99_ratchet": 0.7,
+    "max_cv": 0.1,
+    "ops_min_ratio_factor": 0.8,
+    "p99_min_ratio_factor": 0.6
+  },
+  "images": {
+    "redis": "redis:8.4@sha256:6a12a187547eb2eac4da4528f9d9787d69f3848e513480baedfd75e3b2ac393e",
+    "dragonfly": "docker.dragonflydb.io/dragonflydb/dragonfly@sha256:061f00b201b58e12f974e4e96c761a881ee1c05e9d8ee967466a604b7299753b",
+    "keydb": "eqalpha/keydb@sha256:6537505c42355ca1f571276bddf83f5b750f760f07b2a185a676481791e388ac",
+    "garnet": "ghcr.io/microsoft/garnet@sha256:47922043d0b55302eef0e0a396e9d159c9530b38e00d9cb5600548a90a3da551"
+  },
+  "hosts": {}
+}
