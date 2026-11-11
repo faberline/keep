@@ -21,6 +21,8 @@ pub mod zsets;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use metrics_prometheus::Sample;
+
 use crate::engine::KvEngine;
 
 /// Default request-body limit (16 MiB) — bounds claim-check blob writes.
@@ -132,30 +134,52 @@ impl service_http::MetricsProvider for AppState {
         let disk_bytes = self.engine.used_disk_bytes();
         let evicted = self.engine.evicted_keys();
         let spilled = self.engine.spilled_keys();
-        format!(
-            "# HELP keep_keys_total Number of keys across all shards.\n\
-             # TYPE keep_keys_total gauge\n\
-             keep_keys_total {keys}\n\
-             # HELP keep_shards Number of engine shards.\n\
-             # TYPE keep_shards gauge\n\
-             keep_shards {shards}\n\
-             # HELP keep_memory_bytes Estimated resident bytes of stored data.\n\
-             # TYPE keep_memory_bytes gauge\n\
-             keep_memory_bytes {mem}\n\
-             # HELP keep_maxmemory_bytes Configured maximum memory limit in bytes (0 = unlimited).\n\
-             # TYPE keep_maxmemory_bytes gauge\n\
-             keep_maxmemory_bytes {maxmem}\n\
-             # HELP keep_disk_blob_bytes Bytes stored in tiered disk blob spill files.\n\
-             # TYPE keep_disk_blob_bytes gauge\n\
-             keep_disk_blob_bytes {disk_bytes}\n\
-             # HELP keep_evicted_keys_total Total keys evicted due to memory pressure.\n\
-             # TYPE keep_evicted_keys_total counter\n\
-             keep_evicted_keys_total {evicted}\n\
-             # HELP keep_spilled_keys_total Total keys spilled to disk blob storage.\n\
-             # TYPE keep_spilled_keys_total counter\n\
-             keep_spilled_keys_total {spilled}\n{}",
-            self.metrics.render()
-        )
+        let mut out = metrics_prometheus::render(&[
+            Sample::new(
+                "keep_keys_total",
+                "gauge",
+                "Number of keys across all shards.",
+                keys as u64,
+            ),
+            Sample::new(
+                "keep_shards",
+                "gauge",
+                "Number of engine shards.",
+                shards as u64,
+            ),
+            Sample::new(
+                "keep_memory_bytes",
+                "gauge",
+                "Estimated resident bytes of stored data.",
+                mem as u64,
+            ),
+            Sample::new(
+                "keep_maxmemory_bytes",
+                "gauge",
+                "Configured maximum memory limit in bytes (0 = unlimited).",
+                maxmem as u64,
+            ),
+            Sample::new(
+                "keep_disk_blob_bytes",
+                "gauge",
+                "Bytes stored in tiered disk blob spill files.",
+                disk_bytes as u64,
+            ),
+            Sample::new(
+                "keep_evicted_keys_total",
+                "counter",
+                "Total keys evicted due to memory pressure.",
+                evicted,
+            ),
+            Sample::new(
+                "keep_spilled_keys_total",
+                "counter",
+                "Total keys spilled to disk blob storage.",
+                spilled,
+            ),
+        ]);
+        out.push_str(&self.metrics.render());
+        out
     }
 }
 

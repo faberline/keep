@@ -1882,6 +1882,7 @@ dependencies = [
  "keep-keyspace",
  "keep-replication",
  "keep-shared-kernel",
+ "metrics-prometheus",
  "parking_lot",
  "serde",
  "serde_json",

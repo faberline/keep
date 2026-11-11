@@ -8,8 +8,7 @@ pub use keep_replication::backup;
 #[cfg(feature = "raft")]
 pub use keep_replication::raft;
 pub use keep_shared_kernel::{
-    cluster, error, metrics, tls, types, Cluster, ClusterConfig, ClusterState, KvError, KvKey,
-    KvValue,
+    cluster, error, tls, types, Cluster, ClusterConfig, ClusterState, KvError, KvKey, KvValue,
 };
 
 pub mod http;
