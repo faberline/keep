@@ -41,6 +41,7 @@ service-auth = { git = "https://github.com/faberline/core", tag = "v0.4.14" }
 service-backup = { git = "https://github.com/faberline/core", tag = "v0.4.14" }
 service-http = { git = "https://github.com/faberline/core", tag = "v0.4.14" }
 service-k8s = { git = "https://github.com/faberline/core", tag = "v0.4.14" }
+service-observability = { git = "https://github.com/faberline/core", tag = "v0.4.14" }
 transport-h2c = { git = "https://github.com/faberline/core", tag = "v0.4.14" }
 
 # Async runtime & core utilities

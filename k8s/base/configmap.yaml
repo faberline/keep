@@ -25,3 +25,6 @@ data:
   KEEP_LOG_LEVEL: "info"
   # JSONL is the cluster default; local development can select pretty output.
   KEEP_LOG_FORMAT: "json"
+  # Max request body size in bytes (bounds claim-check blob writes); matches the
+  # operator's spec.bodyLimitBytes default (16 MiB).
+  KEEP_BODY_LIMIT: "16777216"
