@@ -26,6 +26,7 @@ pub use keep_shared_kernel::{
     cluster, error, tls, types, ClusterConfig, ClusterState, KvError, KvKey, KvValue,
 };
 pub use keep_storage as storage;
+pub mod https;
 
 #[cfg(feature = "client")]
 pub use keep_client as client;

@@ -32,6 +32,8 @@ openapi-codegen.workspace = true
 raft-runtime.workspace = true
 server-lifecycle.workspace = true
 service-http.workspace = true
+peer-tls.workspace = true
+rustls.workspace = true
 
 # Runtime & CLI
 anyhow.workspace = true
@@ -65,6 +67,7 @@ rustls-provider = ["keep-shared-kernel/rustls-provider"]
 
 [dev-dependencies]
 claim-token.workspace = true
+rcgen = "0.13"
 criterion.workspace = true
 futures.workspace = true
 kube.workspace = true
