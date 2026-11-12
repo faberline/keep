@@ -85,9 +85,20 @@ drops backups older than the given age:
 keep backup --dest file:///var/backups/keep --data-dir ./data --shards 256 --retention-secs 604800
 ```
 
-A `keep restore` verb is not available yet (tracked in #68). Until it ships,
-restore is not supported by a command in this repository. The restore steps are
-not tested.
+Restore into an empty data directory. Restore runs offline, so stop the server first:
+
+```bash
+keep restore --source file:///var/backups/keep --data-dir ./restored --shards 256
+```
+
+`--source` is either the directory (restore loads the newest
+`backup-<unix seconds>.json` in it) or one exact file, such as
+`file:///var/backups/keep/backup-123.json`. Restore refuses a non-empty
+`--data-dir` unless `--force` is given, and it reads `file://` sources only;
+copy `s3://` or `gs://` backups to a local file first. TTLs are not part of a
+backup, so restored keys have no expiry. Use the same `--shards` value as the
+server. Then start the server with `--data-dir ./restored` and check `GET /readyz`
+and the `keys` field of `GET /info`.
 
 ## Token rotation
 
