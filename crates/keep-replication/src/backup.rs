@@ -16,7 +16,7 @@
 //!
 //! @spec .aw/tech-design/projects/keep/logic/adopt-libs-service-backup-snapshot-sink-keep-backup-verb.md
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use anyhow::{Context, Result};
@@ -24,7 +24,9 @@ use serde::{Deserialize, Serialize};
 
 use keep_keyspace::engine::KvEngine;
 use keep_keyspace::persistence::recovery::RecoveryManager;
+use keep_keyspace::persistence::snapshot::SnapshotWriter;
 use keep_shared_kernel::types::KvValue;
+use keep_storage::SnapshotConfig;
 
 pub use service_backup::{
     run_backup_once, sink_from_destination, BackupDestination, BackupObject, BackupPolicy,
@@ -84,5 +86,135 @@ pub fn run_backup(
     let payload = snapshot_bytes_from_data_dir(data_dir, shards)?;
     let sink = sink_from_destination(dest)?;
     run_backup_once(sink.as_ref(), SystemTime::now(), &payload, retention)
+}
+
+/// Result of `keep restore`: the artifact that was read and what was written.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreResult {
+    /// Path of the backup artifact that was restored.
+    pub source: String,
+    /// Number of key/value pairs written.
+    pub keys: usize,
+    /// File name of the snapshot written into the data directory.
+    pub snapshot_file: String,
+}
+
+/// Find the backup artifact named by `source` (`file://` only).
+///
+/// A `file://` path to a file is that artifact. A `file://` path to a directory
+/// is scanned for `<prefix>-<digits>.json` files; the largest number wins.
+pub fn newest_backup_file(source: &str) -> Result<PathBuf> {
+    let Some(rest) = source.strip_prefix("file://") else {
+        anyhow::bail!("restore supports only file:// sources, got `{source}`");
+    };
+    let path = PathBuf::from(rest);
+    if path.is_file() {
+        return Ok(path);
+    }
+    if path.is_dir() {
+        let mut newest: Option<(u64, PathBuf)> = None;
+        let entries = std::fs::read_dir(&path)
+            .with_context(|| format!("read backup directory {}", path.display()))?;
+        for entry in entries {
+            let candidate = entry?.path();
+            if !candidate.is_file() {
+                continue;
+            }
+            let Some(name) = candidate.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let Some(stem) = name.strip_suffix(".json") else {
+                continue;
+            };
+            let Some((_, digits)) = stem.rsplit_once('-') else {
+                continue;
+            };
+            let Ok(number) = digits.parse::<u64>() else {
+                continue;
+            };
+            match &newest {
+                Some((best, _)) if *best >= number => {}
+                _ => newest = Some((number, candidate)),
+            }
+        }
+        return newest
+            .map(|(_, file)| file)
+            .ok_or_else(|| anyhow::anyhow!("no backup artifact found in {}", path.display()));
+    }
+    anyhow::bail!("backup source {} does not exist", path.display())
+}
+
+/// Read and validate one backup artifact.
+pub fn read_snapshot_file(path: &Path) -> Result<KeepSnapshot> {
+    let bytes =
+        std::fs::read(path).with_context(|| format!("read backup artifact {}", path.display()))?;
+    let snap: KeepSnapshot = serde_json::from_slice(&bytes)
+        .with_context(|| format!("backup artifact {} is corrupt", path.display()))?;
+    if snap.version != KEEP_SNAPSHOT_VERSION {
+        anyhow::bail!(
+            "backup artifact {} has unsupported snapshot version {} (this keep reads version {})",
+            path.display(),
+            snap.version,
+            KEEP_SNAPSHOT_VERSION
+        );
+    }
+    Ok(snap)
+}
+
+/// Load the newest backup artifact of `source` into `data_dir`, which must be
+/// empty unless `force` is set (then its files are removed first).
+///
+/// Everything that can fail on the input is checked before the data directory
+/// is changed: a corrupt or wrong-version artifact leaves it untouched.
+pub fn restore_to_data_dir(
+    source: &str,
+    data_dir: &Path,
+    shards: usize,
+    force: bool,
+) -> Result<RestoreResult> {
+    let file = newest_backup_file(source)?;
+    let snap = read_snapshot_file(&file)?;
+
+    if data_dir.exists() {
+        if !data_dir.is_dir() {
+            anyhow::bail!("data directory {} is not a directory", data_dir.display());
+        }
+        let entries = std::fs::read_dir(data_dir)
+            .with_context(|| format!("read data directory {}", data_dir.display()))?
+            .map(|entry| entry.map(|e| e.path()))
+            .collect::<std::io::Result<Vec<PathBuf>>>()?;
+        if !entries.is_empty() {
+            if !force {
+                anyhow::bail!(
+                    "data directory {} is not empty; pass --force to replace its files",
+                    data_dir.display()
+                );
+            }
+            if entries.iter().any(|p| p.is_dir()) {
+                anyhow::bail!(
+                    "data directory {} contains a directory; refusing to remove it",
+                    data_dir.display()
+                );
+            }
+            for p in &entries {
+                std::fs::remove_file(p).with_context(|| format!("remove {}", p.display()))?;
+            }
+        }
+    }
+
+    let keys = snap.values.len();
+    let engine = KvEngine::with_shards(shards);
+    engine.load_values(snap.values);
+    let written =
+        SnapshotWriter::new(SnapshotConfig::default()).create_snapshot(&engine, data_dir, 0)?;
+    Ok(RestoreResult {
+        source: file.display().to_string(),
+        keys,
+        snapshot_file: written
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default(),
+    })
 }
 // HANDWRITE-END
