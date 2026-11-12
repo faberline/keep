@@ -46,6 +46,7 @@ jobs:
       - run: cargo test --locked --workspace
       - run: cargo test --locked -p keep --features operator --test operator
       - run: cargo test --locked -p keep --features raft --test raft_failover
+      - run: cargo test --locked -p keep --features raft --test rolling_restart
 
   test-features:
     name: "test: clippy all features"
