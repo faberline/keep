@@ -1,0 +1,145 @@
+name: gke-acceptance
+run-name: ${{ inputs.image != '' && format('gke-acceptance {1} @ {2} image={0}', inputs.image, inputs.apps, github.sha) || format('gke-acceptance {0} @ {1}', inputs.apps, github.sha) }}
+
+# Manual GKE acceptance run for keep. It runs only when a person dispatches
+# it: there is no pull_request, push or schedule trigger. Dispatching it starts
+# a paid run on the faberline-test cluster.
+
+on:
+  workflow_dispatch:
+    inputs:
+      apps:
+        description: Apps to test. Only keep is onboarded.
+        type: string
+        default: keep
+      ref:
+        description: Git ref (branch, tag, or commit SHA) to build. Leave empty to build the dispatched ref.
+        type: string
+        default: ''
+      image:
+        description: A prebuilt ghcr.io/<owner>/keep@sha256:<64 hex> image. Leave empty to build one.
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  build-keep:
+    if: contains(inputs.apps, 'keep') && inputs.image == ''
+    uses: ./.github/workflows/keep-test-image.yml
+    with:
+      ref: ${{ inputs.ref }}
+    permissions:
+      contents: read
+      packages: write
+
+  acceptance:
+    name: deploy + verify on GKE
+    needs: [build-keep]
+    if: ${{ !cancelled() && (needs.build-keep.result == 'success' || needs.build-keep.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+      packages: read
+    env:
+      KEEP_IMAGE: ${{ contains(inputs.apps, 'keep') && inputs.image || needs.build-keep.outputs.image }}
+      REPO: keep
+      OVERLAY: k8s/overlays/gke-test
+      IMAGE: ${{ contains(inputs.apps, 'keep') && inputs.image || needs.build-keep.outputs.image }}
+      NAMESPACE: keep
+      TEST_JOB: k8s/gke-test-job
+      RUN_LABEL: gha-${{ github.run_id }}-${{ github.run_attempt }}
+      TTL_MINUTES: '90'
+      QUEUE_MINUTES: '120'
+      GHCR_USER: ${{ github.actor }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Verify prebuilt image input
+        if: inputs.image != ''
+        env:
+          OWNER: ${{ github.repository_owner }}
+          IMAGE: ${{ inputs.image }}
+          APPS: ${{ inputs.apps }}
+        run: |
+          read -r -a apps <<< "${APPS//,/ }"
+          if [ "${#apps[@]}" -eq 1 ]; then :; else echo "one app per run" >&2; exit 1; fi
+          app=${apps[0]}
+          if [[ "$IMAGE" =~ ^ghcr\.io/${OWNER}/${app}@sha256:[0-9a-f]{64}$ ]]; then :; else echo "image must be ghcr.io/${OWNER}/${app}@sha256:<64 hex>" >&2; exit 1; fi
+
+      - name: Prepare evidence directory
+        run: |
+          echo "EVIDENCE_DIR=${RUNNER_TEMP}/gke-acceptance-evidence" >> "$GITHUB_ENV"
+          echo "KUBECONFIG=${RUNNER_TEMP}/gke-acceptance-kubeconfig" >> "$GITHUB_ENV"
+          echo "LOCK_HOLDER=${RUN_LABEL}-$(openssl rand -hex 4)" >> "$GITHUB_ENV"
+          mkdir -p "${RUNNER_TEMP}/gke-acceptance-evidence/keep"
+
+      - name: Check out the aw GKE test scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: faberline/aw
+          ref: 9a304b5900c7fc06f0941476794f215a93508f92
+          path: .gke-test-aw
+          sparse-checkout: |
+            scripts/gke-test
+            infra/gke-test
+
+      - name: Sign in to GCP (Workload Identity Federation)
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
+        with:
+          workload_identity_provider: projects/406744653021/locations/global/workloadIdentityPools/faberline-github/providers/github-oidc
+          service_account: gke-test-keep@axiom-502607.iam.gserviceaccount.com
+
+      - uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2
+        with:
+          install_components: gke-gcloud-auth-plugin
+
+      - name: Get cluster credentials
+        run: gcloud container clusters get-credentials faberline-test --project=axiom-502607 --zone=asia-east1-a
+
+      - name: Wait for the turn of this run
+        run: .gke-test-aw/scripts/gke-test/lock.sh acquire
+
+      - name: Run acceptance harness
+        timeout-minutes: 90
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          .gke-test-aw/scripts/gke-test/run.sh 2>&1 | tee "$EVIDENCE_DIR/keep/teardown.log"
+          verdict='[keep] PASS: readyz + round-trip + durability'
+          sed -E 's/^\[[^]]*\] [^ ]+ //' "$EVIDENCE_DIR"/logs-*.txt \
+            | grep -m 1 -x -F -- "$verdict" > "$EVIDENCE_DIR/keep/verdict.txt" || true
+          test -s "$EVIDENCE_DIR/keep/verdict.txt" || { echo "verdict line missing" >&2; exit 1; }
+          cp "$EVIDENCE_DIR/rendered.yaml" "$EVIDENCE_DIR/keep/manifests.yaml"
+          printf 'keep PASS\n' > "$EVIDENCE_DIR/results.txt"
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: gke-acceptance-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.EVIDENCE_DIR }}
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Tear down (backup)
+        if: always()
+        run: |
+          if .gke-test-aw/scripts/gke-test/lock.sh renew; then
+            .gke-test-aw/scripts/gke-test/teardown.sh
+          else
+            echo "This run does not hold the Lease; nothing to tear down."
+          fi
+
+      - name: Release the turn
+        if: always()
+        run: |
+          .gke-test-aw/scripts/gke-test/lock.sh release \
+            || echo "::warning::The Lease was not released; it expires by itself."
+
+      - name: Park node pool (belt and suspenders)
+        if: always()
+        run: .gke-test-aw/scripts/gke-test/park.sh

@@ -54,7 +54,7 @@ CLAUDE_SKILL = ROOT / ".claude" / "skills" / "build-release" / "SKILL.md"
 
 REPO = "faberline/keep"
 IMAGE_OWNER = "ghcr.io/faberline"
-GKE_HARNESS_APPS = ("keep", "defer", "relay", "loom")
+GKE_HARNESS_APPS = ("keep",)
 ACCEPTANCE_JOB = "deploy + verify on GKE"
 VERIFY_IMAGE_STEP = "Verify prebuilt image input"
 PREPARE_EVIDENCE_STEP = "Prepare evidence directory"
@@ -526,6 +526,10 @@ def check_app(app: App) -> None:
         fail(f"{app.name} is not onboarded yet: its release workflows do not exist (flip onboarded when they land)")
     check_candidate(app, read(app.candidate_workflow))
     check_promotion(app, read(app.promotion_workflow))
+    if app.gke_backend == "gke-acceptance":
+        text = read(GKE_ACCEPTANCE)
+        check_gke_acceptance(text)
+        check_gke_acceptance_names(text, load_receipt_maker())
 
 
 def check_not_onboarded(app: App) -> None:
@@ -585,6 +589,17 @@ def check_gke_acceptance(text: str) -> None:
         fail(f"{label}: the image owner must come from github.repository_owner")
     for step in (HARNESS_STEP, PARK_STEP):
         step_block(acceptance, step)
+
+
+def check_gke_acceptance_names(text: str, maker) -> None:
+    label = "gke-acceptance"
+    acceptance = job_block(text, "acceptance")
+    if f"name: {maker.ACCEPTANCE_JOB}" not in acceptance:
+        fail(f"{label}: the acceptance job must be named {maker.ACCEPTANCE_JOB!r} for make-gke-release-receipt.py")
+    for step in (maker.VERIFY_IMAGE_STEP, maker.HARNESS_STEP, maker.PARK_STEP):
+        step_block(acceptance, step)
+    if "[keep] PASS: readyz + round-trip + durability" not in text:
+        fail(f"{label}: the verdict line must be '[keep] PASS: readyz + round-trip + durability'")
 
 
 # --- cross-checks: apps.sh, the receipt maker, release.sh --------------------
@@ -966,6 +981,8 @@ def watched_files() -> List[Path]:
     for app in APPS.values():
         if app.onboarded:
             paths.extend([app.candidate_workflow, app.promotion_workflow])
+            if app.gke_backend == "gke-acceptance":
+                paths.append(GKE_ACCEPTANCE)
     return paths
 
 
@@ -1049,6 +1066,24 @@ def self_test() -> str:
         for label, mutate in promotion_controls(app, promotion):
             expect_static_failure(label, lambda mutate=mutate, app=app: check_promotion(app, mutate()))
             negatives += 1
+
+    acceptance = read(GKE_ACCEPTANCE)
+    check_gke_acceptance(acceptance)
+    check_gke_acceptance_names(acceptance, maker)
+    positives += 1
+    for label, old, new, names_only in (
+        ("gke-acceptance: extra trigger", "on:\n  workflow_dispatch:", "on:\n  push:\n  workflow_dispatch:", False),
+        ("gke-acceptance: job renamed", "name: deploy + verify on GKE", "name: deploy and verify on GKE", True),
+        ("gke-acceptance: harness step renamed", "- name: Run acceptance harness", "- name: Run harness", True),
+        ("gke-acceptance: park step renamed", "- name: Park node pool (belt and suspenders)", "- name: Park pool", True),
+        ("gke-acceptance: verdict changed", "[keep] PASS: readyz + round-trip + durability", "[keep] PASS: readyz", True),
+    ):
+        mutated = replace_once(acceptance, old, new, label)
+        if names_only:
+            expect_static_failure(label, lambda mutated=mutated: check_gke_acceptance_names(mutated, maker))
+        else:
+            expect_static_failure(label, lambda mutated=mutated: check_gke_acceptance(mutated))
+        negatives += 1
     expect_static_failure("table: a non-onboarded app is checked as onboarded", lambda: check_app(replace(APPS["keep"], onboarded=False)))
     negatives += 1
 
