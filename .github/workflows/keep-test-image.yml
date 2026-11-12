@@ -50,6 +50,7 @@ jobs:
   publish:
     name: build + publish ghcr test image
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     outputs:
       image: ${{ steps.digest.outputs.image }}
       digest: ${{ steps.push.outputs.digest }}

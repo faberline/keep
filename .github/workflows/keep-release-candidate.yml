@@ -20,6 +20,7 @@ jobs:
   identity:
     name: candidate identity
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       actions: read
       contents: read
@@ -97,6 +98,7 @@ jobs:
     name: build (${{ matrix.target }})
     needs: identity
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     permissions:
       contents: read
     strategy:
@@ -156,6 +158,7 @@ jobs:
     name: verify exact keep release gates
     needs: identity
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -182,6 +185,7 @@ jobs:
     name: build candidate image and attest
     needs: [identity, build]
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     permissions:
       attestations: write
       contents: read
@@ -333,6 +337,7 @@ jobs:
     name: bind candidate inputs
     needs: [identity, build, ghcr-image-and-attest]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
@@ -376,6 +381,7 @@ jobs:
     name: verify exact candidate gates
     needs: [identity, manifest, ghcr-image-and-attest]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       attestations: read
       contents: read
@@ -436,6 +442,7 @@ jobs:
     name: final candidate receipt
     needs: [identity, build, keep-release-gates, manifest, ghcr-image-and-attest, verify-candidate]
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: read
     steps:
