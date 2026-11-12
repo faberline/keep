@@ -30,7 +30,6 @@ import importlib.util
 import io
 import json
 import re
-import shlex
 import shutil
 import subprocess
 import sys
@@ -286,29 +285,6 @@ def assert_actions_pinned(label: str, text: str) -> None:
             fail(f"{label}: action not pinned to a 40-hex commit: {value}")
 
 
-def shell_tokens(script: str) -> List[str]:
-    tokens: List[str] = []
-    for raw in script.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        try:
-            tokens.extend(shlex.split(line, comments=True))
-        except ValueError:
-            tokens.extend(line.split())
-    return tokens
-
-
-def assert_no_rebuild(label: str, text: str) -> None:
-    forbidden = (("docker", "build"), ("docker", "buildx", "build"), ("cargo", "build"), ("cargo", "zigbuild"), ("cross", "build"))
-    for script in all_run_scripts(text):
-        tokens = shell_tokens(script)
-        for start in range(len(tokens)):
-            for pattern in forbidden:
-                if tuple(tokens[start:start + len(pattern)]) == pattern:
-                    fail(f"{label}: promotion must not rebuild: {' '.join(pattern)}")
-
-
 def parse_needs(job_text: str) -> List[str]:
     match = re.search(r"^\s*needs: \[([^\]]+)\]$", job_text, re.M)
     if not match:
@@ -333,14 +309,6 @@ def unpin_first_action(text: str, label: str) -> str:
     if count != 1:
         fail(f"{label}: no pinned action to unpin")
     return mutated
-
-
-def insert_after_first_run_block(text: str, line: str, label: str) -> str:
-    match = re.search(r"^(\s*)run: \|-?$", text, re.M)
-    if not match:
-        fail(f"{label}: no block run script to mutate")
-    indent = " " * (len(match.group(1)) + 2)
-    return text[: match.end()] + "\n" + indent + line + text[match.end():]
 
 
 def expect_static_failure(label: str, action: Callable[[], None]) -> None:
@@ -481,44 +449,93 @@ def check_candidate(app: App, text: str) -> None:
     check_candidate_targets(app, text)
 
 
+SHARED_RELEASE_PIN = re.compile(r"faberline/aw/\.github/workflows/service-release\.yml@[0-9a-f]{40}")
+PROMOTION_PERMISSIONS = (
+    "actions: read",
+    "attestations: read",
+    "contents: write",
+    "packages: write",
+    "pull-requests: read",
+)
+
+
+def with_values(job_text: str) -> Dict[str, str]:
+    lines = job_text.splitlines()
+    if "    with:" not in lines:
+        fail("release job must have a with: block")
+    values: Dict[str, str] = {}
+    for line in lines[lines.index("    with:") + 1:]:
+        if not line.strip():
+            continue
+        if len(line) - len(line.lstrip()) <= 4:
+            break
+        key, sep, value = line.strip().partition(":")
+        if not sep:
+            fail(f"with: line is not key: value: {line.strip()!r}")
+        value = value.strip()
+        if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+            value = value[1:-1]
+        if key in values:
+            fail(f"with: key {key} repeats")
+        values[key] = value
+    return values
+
+
+def permission_pairs(job_text: str) -> List[str]:
+    lines = job_text.splitlines()
+    if "    permissions:" not in lines:
+        fail("release job must declare its permissions")
+    pairs: List[str] = []
+    for line in lines[lines.index("    permissions:") + 1:]:
+        if not line.strip():
+            continue
+        if len(line) - len(line.lstrip()) <= 4:
+            break
+        pairs.append(line.strip())
+    return pairs
+
+
 def check_promotion(app: App, text: str) -> None:
+    # keep's promotion is a thin caller of aw's shared service-release.yml.
+    # The shared workflow owns every gate and the no-rebuild rule; this check
+    # proves the caller's shape: trigger, inputs, concurrency, one pinned call,
+    # permissions and the values passed to it.
     label = f"{app.name} promotion"
     if workflow_triggers(text) != ["workflow_dispatch"]:
         fail(f"{label}: the only trigger must be workflow_dispatch, got {workflow_triggers(text)}")
     if workflow_inputs(text) != set(app.promotion_inputs):
         fail(f"{label}: inputs must be {sorted(app.promotion_inputs)}, got {sorted(workflow_inputs(text))}")
-    if job_ids(text) != {"verify-inputs", "publish-release"}:
-        fail(f"{label}: jobs must be verify-inputs and publish-release, got {sorted(job_ids(text))}")
-    assert_actions_pinned(label, text)
-    assert_no_rebuild(label, text)
-    for required in (
-        f"group: {app.name}-release-promotion-${{{{ inputs.version }}}}",
-        f"refs/tags/{app.name}@${{{{ inputs.version }}}}",
-        app.receipt_name,
-        f"{IMAGE_OWNER}/{app.name}",
-        f"{app.scripts_dir}/verify-release-artifacts.sh",
-        "--mode candidate",
-        "--mode public",
-    ):
-        if required not in text:
-            fail(f"{label}: required fragment absent: {required!r}")
-    if app.shared_scripts:
-        if f"--app {app.name}" not in text:
-            fail(f"{label}: the shared artifact verifier must be told --app {app.name}")
-        # The shared public verifier refuses release notes without exactly one
-        # RELEASE_COMPATIBILITY_LINE; catch that here, before a promotion run.
-        compatibility = bash_variable("RELEASE_COMPATIBILITY_LINE")
-        notes = [line for line in text.splitlines() if line.strip() == compatibility]
-        if len(notes) != 1:
-            fail(f"{label}: release notes must carry apps.sh RELEASE_COMPATIBILITY_LINE exactly once, got {len(notes)}")
-    if app.takes_attempt and "--candidate-run-attempt" not in text:
-        fail(f"{label}: the artifact verifier must receive the candidate run attempt")
-    creates = [line.strip() for line in text.splitlines() if "docker buildx imagetools create" in line]
-    if len(creates) != 2:
-        fail(f"{label}: expected exactly two imagetools create lines (semver, latest), got {len(creates)}")
-    for line in creates:
-        if not line.endswith('"$root_ref"'):
-            fail(f"{label}: every retag must source the candidate root digest: {line}")
+    if job_ids(text) != {"release"}:
+        fail(f"{label}: the only job must be release, got {sorted(job_ids(text))}")
+    if f"group: {app.name}-release-promotion-${{{{ inputs.version }}}}" not in text:
+        fail(f"{label}: concurrency group must be {app.name}-release-promotion-<version>")
+    if "cancel-in-progress: false" not in text:
+        fail(f"{label}: promotions must not cancel in progress")
+    if all_run_scripts(text) != []:
+        fail(f"{label}: the caller must not run a script; the shared workflow does")
+    if any(line.strip() == "steps:" for line in text.splitlines()):
+        fail(f"{label}: the caller must not declare steps")
+    uses = action_values(text)
+    if len(uses) != 1 or not SHARED_RELEASE_PIN.fullmatch(uses[0]):
+        fail(f"{label}: the only uses must be faberline/aw service-release.yml pinned to a 40-hex commit, got {uses}")
+    release = job_block(text, "release")
+    if sorted(permission_pairs(release)) != sorted(PROMOTION_PERMISSIONS):
+        fail(f"{label}: release permissions must be exactly {sorted(PROMOTION_PERMISSIONS)}, got {permission_pairs(release)}")
+    values = with_values(release)
+    dispatched = set(app.promotion_inputs)
+    expected_keys = dispatched | {"app", "compatibility_note"}
+    if set(values) != expected_keys:
+        fail(f"{label}: with: keys must be {sorted(expected_keys)}, got {sorted(values)}")
+    if values["app"] != app.name:
+        fail(f"{label}: with app must be {app.name}, got {values['app']!r}")
+    for key in sorted(dispatched):
+        if values[key] != "${{ inputs." + key + " }}":
+            fail(f"{label}: with {key} must pass inputs.{key} through, got {values[key]!r}")
+    # The shared public verifier refuses release notes without exactly one
+    # RELEASE_COMPATIBILITY_LINE; the caller must pass that exact line.
+    compatibility = bash_variable("RELEASE_COMPATIBILITY_LINE")
+    if f'compatibility_note: "{compatibility}"' not in [line.strip() for line in release.splitlines()]:
+        fail(f"{label}: with compatibility_note must be the apps.sh RELEASE_COMPATIBILITY_LINE as a double-quoted string")
 
 
 def check_app(app: App) -> None:
@@ -1015,32 +1032,29 @@ def candidate_controls(app: App, text: str) -> List[Tuple[str, Callable[[], str]
     ]
 
 
+def unpin_shared_workflow(text: str, label: str) -> str:
+    mutated, count = re.subn(r"(service-release\.yml@)[0-9a-f]{40}", r"\1main", text, count=1)
+    if count != 1:
+        fail(f"{label}: no pinned shared workflow to unpin")
+    return mutated
+
+
 def promotion_controls(app: App, text: str) -> List[Tuple[str, Callable[[], str]]]:
     label = f"{app.name} promotion"
-    tag_ref = f"refs/tags/{app.name}@${{{{ inputs.version }}}}"
-
-    def retag_from_mutable() -> str:
-        lines = text.splitlines(keepends=True)
-        for index, line in enumerate(lines):
-            if "docker buildx imagetools create" in line and line.rstrip("\n").endswith('"$root_ref"'):
-                lines[index] = line.rstrip("\n")[: -len('"$root_ref"')] + '"$candidate_ref"\n'
-                return "".join(lines)
-        fail(f"{label}: no retag line to mutate")
-
-    controls: List[Tuple[str, Callable[[], str]]] = [
+    compatibility = bash_variable("RELEASE_COMPATIBILITY_LINE")
+    return [
         (f"{label}: tag push trigger added", lambda: replace_once(text, "on:\n  workflow_dispatch:\n", f"on:\n  push:\n    tags: ['{app.name}@*']\n  workflow_dispatch:\n", label)),
         (f"{label}: candidate run id input dropped", lambda: replace_once(text, "      candidate_run_id:\n", "      candidate_run:\n", label)),
-        (f"{label}: publish job renamed", lambda: replace_once(text, "\n  publish-release:\n", "\n  publish:\n", label)),
-        (f"{label}: action unpinned", lambda: unpin_first_action(text, label)),
-        (f"{label}: rebuild inserted", lambda: insert_after_first_run_block(text, "docker build .", label)),
-        (f"{label}: retag sourced from a mutable ref", retag_from_mutable),
-        (f"{label}: public verification dropped", lambda: replace_all(text, "--mode public", "--mode candidate", label)),
-        (f"{label}: tag ref guard dropped", lambda: replace_all(text, tag_ref, "refs/heads/main", label)),
+        (f"{label}: release job renamed", lambda: replace_once(text, "\n  release:\n", "\n  publish:\n", label)),
+        (f"{label}: shared workflow unpinned", lambda: unpin_shared_workflow(text, label)),
+        (f"{label}: shared workflow from another path", lambda: replace_once(text, "service-release.yml@", "other-release.yml@", label)),
+        (f"{label}: inline step added", lambda: replace_once(text, "    with:\n      app: keep\n", "    steps:\n      - run: echo hi\n    with:\n      app: keep\n", label)),
+        (f"{label}: extra permission", lambda: replace_once(text, "      pull-requests: read\n", "      pull-requests: read\n      id-token: write\n", label)),
+        (f"{label}: app input changed", lambda: replace_once(text, "      app: keep\n", "      app: relay\n", label)),
+        (f"{label}: dispatch input not passed through", lambda: replace_once(text, "      version: ${{ inputs.version }}\n", '      version: "0.0.0"\n', label)),
+        (f"{label}: compatibility line reworded", lambda: replace_once(text, compatibility, "- Compatibility: unchanged.", label)),
+        (f"{label}: verify script overridden", lambda: replace_once(text, "      app: keep\n", "      app: keep\n      verify_script: scripts/other.sh\n", label)),
     ]
-    if app.shared_scripts:
-        compatibility = bash_variable("RELEASE_COMPATIBILITY_LINE")
-        controls.append((f"{label}: compatibility line reworded", lambda: replace_once(text, compatibility, "- Compatibility: unchanged.", label)))
-    return controls
 
 
 def self_test() -> str:
