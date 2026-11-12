@@ -7,10 +7,10 @@ use crate::types::KvValue;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::fs::{self, File, OpenOptions};
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use storage_durable::{FsyncPolicy, SnapshotFileStore};
 use tracing::{debug, info};
 
 /// Snapshot file magic: "KVSN0001"
@@ -214,22 +214,14 @@ impl SnapshotWriter {
         wal_position: u64,
     ) -> Result<PathBuf> {
         let data_dir = data_dir.as_ref();
-        fs::create_dir_all(data_dir)?;
 
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_millis();
-        let temp_path = data_dir.join(format!("snapshot-{}.tmp", timestamp));
-        let final_path = data_dir.join(format!("snapshot-{}.snap", timestamp));
 
-        info!(
-            "Creating snapshot at {} (WAL position: {})",
-            final_path.display(),
-            wal_position
-        );
+        info!("Creating snapshot (WAL position: {})", wal_position);
 
-        // Write to temporary file
         let mut hasher = Sha256::new();
         let mut data_buffer = Vec::new();
 
@@ -250,28 +242,21 @@ impl SnapshotWriter {
         hasher.update(&data_buffer);
         let checksum: [u8; 32] = hasher.finalize().into();
 
-        // Write header + data atomically
-        let file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&temp_path)?;
-        let mut writer = BufWriter::new(file);
-
+        // Header + data, written atomically by the snapshot file store
         let mut header = SnapshotHeader::new(num_shards as u32, total_entries, wal_position);
         header.checksum = checksum;
-        header.write(&mut writer)?;
-
-        writer.write_all(&data_buffer)?;
-        writer.flush()?;
-        writer.get_ref().sync_all()?; // fsync
-
-        // Atomic rename
-        fs::rename(&temp_path, &final_path)?;
+        let mut bytes = Vec::with_capacity(72 + data_buffer.len());
+        header.write(&mut bytes)?;
+        bytes.extend_from_slice(&data_buffer);
+        let final_path = snapshot_store(data_dir)?
+            .save(timestamp as u64, &bytes)
+            .map_err(store_err)?;
 
         info!(
-            "Snapshot created: {} entries across {} shards",
-            total_entries, num_shards
+            "Snapshot created at {}: {} entries across {} shards",
+            final_path.display(),
+            total_entries,
+            num_shards
         );
 
         // Cleanup old snapshots and rotated WAL segments superseded by this snapshot
@@ -310,21 +295,10 @@ impl SnapshotWriter {
 
     /// Cleanup old snapshots, keeping only the N most recent
     fn cleanup_old_snapshots(&self, data_dir: impl AsRef<Path>) -> Result<()> {
-        let mut snapshots = find_snapshot_files(data_dir.as_ref())?;
-
-        if snapshots.len() <= self.config.keep_count {
-            return Ok(());
-        }
-
-        // Sort by timestamp (newest first)
-        snapshots.sort_by(|a, b| b.cmp(a));
-
-        let to_delete = &snapshots[self.config.keep_count..];
-        for path in to_delete {
-            debug!("Deleting old snapshot: {}", path.display());
-            fs::remove_file(path)?;
-        }
-
+        let removed = snapshot_store(data_dir.as_ref())?
+            .prune(self.config.keep_count)
+            .map_err(store_err)?;
+        debug!("Pruned {} old snapshot(s)", removed);
         Ok(())
     }
 }
@@ -335,36 +309,40 @@ pub struct SnapshotLoader;
 impl SnapshotLoader {
     /// Last WAL seq covered by the latest snapshot, or `None` when there is no snapshot
     pub fn latest_wal_seq(data_dir: impl AsRef<Path>) -> Result<Option<u64>> {
-        let snapshots = find_snapshot_files(data_dir.as_ref())?;
+        let data_dir = data_dir.as_ref();
+        if !data_dir.exists() {
+            // The store would create the directory; a missing one holds no snapshot
+            return Ok(None);
+        }
+
+        let snapshots = snapshot_store(data_dir)?.snapshots().map_err(store_err)?;
         let Some(latest) = snapshots.last() else {
             return Ok(None);
         };
-        let mut reader = BufReader::new(File::open(latest)?);
+        let mut reader = std::io::BufReader::new(std::fs::File::open(&latest.path)?);
         let header = SnapshotHeader::read(&mut reader)?;
         Ok(Some(header.wal_position))
     }
 
     /// Load the latest snapshot from data directory
     pub fn load_latest(data_dir: impl AsRef<Path>) -> Result<Option<(SnapshotData, u64)>> {
-        let snapshots = find_snapshot_files(data_dir.as_ref())?;
-
-        if snapshots.is_empty() {
+        let data_dir = data_dir.as_ref();
+        if !data_dir.exists() {
+            // The store would create the directory; a missing one holds no snapshot
             return Ok(None);
         }
 
-        // Latest snapshot is the last one (sorted by timestamp)
-        let latest = snapshots.last().unwrap();
-        info!("Loading snapshot: {}", latest.display());
-
-        let file = File::open(latest)?;
-        let mut reader = BufReader::new(file);
+        let Some(bytes) = snapshot_store(data_dir)?.load_latest().map_err(store_err)? else {
+            return Ok(None);
+        };
+        info!("Loading latest snapshot from {}", data_dir.display());
 
         // Read and validate header
+        let mut reader = &bytes[..];
         let header = SnapshotHeader::read(&mut reader)?;
 
-        // Read all data
-        let mut data_buffer = Vec::new();
-        reader.read_to_end(&mut data_buffer)?;
+        // The rest is the shard data
+        let data_buffer = reader;
 
         // Verify checksum
         let mut hasher = Sha256::new();
@@ -411,38 +389,20 @@ pub struct SnapshotData {
     pub total_entries: u64,
 }
 
-/// Find all snapshot files in directory, sorted by timestamp (oldest first)
-pub fn find_snapshot_files(data_dir: impl AsRef<Path>) -> Result<Vec<PathBuf>> {
-    let data_dir = data_dir.as_ref();
+/// Snapshot files in `data_dir`, named `snapshot-{millis}.snap`
+fn snapshot_store(data_dir: &Path) -> Result<SnapshotFileStore> {
+    SnapshotFileStore::new(data_dir, "snapshot", "snap", FsyncPolicy::Always).map_err(store_err)
+}
 
-    if !data_dir.exists() {
-        return Ok(Vec::new());
-    }
-
-    let mut snapshots = Vec::new();
-
-    for entry in fs::read_dir(data_dir)? {
-        let entry = entry?;
-        let path = entry.path();
-
-        if path.is_file() {
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if name.starts_with("snapshot-") && name.ends_with(".snap") {
-                    snapshots.push(path);
-                }
-            }
-        }
-    }
-
-    // Sort by filename (which contains timestamp)
-    snapshots.sort();
-
-    Ok(snapshots)
+fn store_err<E: std::fmt::Display>(err: E) -> PersistenceError {
+    PersistenceError::DataDirectory(err.to_string())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::KvKey;
+    use std::fs;
     use tempfile::TempDir;
 
     #[test]
@@ -498,23 +458,107 @@ mod tests {
         );
     }
 
+    /// Write a one-shard snapshot holding `keys` live keys, covering WAL `wal_seq`.
+    fn write_snapshot(dir: &Path, keys: usize, wal_seq: u64) -> PathBuf {
+        let engine = KvEngine::with_shards(4);
+        for i in 0..keys {
+            engine
+                .set(
+                    &KvKey::new(format!("k{i}")).unwrap(),
+                    KvValue::Int(i as i64),
+                    None,
+                )
+                .unwrap();
+        }
+        SnapshotWriter::new(SnapshotConfig::default())
+            .create_snapshot(&engine, dir, wal_seq)
+            .unwrap()
+    }
+
     #[test]
-    fn test_find_snapshot_files() {
+    fn test_load_latest_orders_by_number_not_text() {
         let temp_dir = TempDir::new().unwrap();
         let data_dir = temp_dir.path();
 
-        // Create some snapshot files
-        File::create(data_dir.join("snapshot-1000.snap")).unwrap();
-        File::create(data_dir.join("snapshot-2000.snap")).unwrap();
-        File::create(data_dir.join("snapshot-3000.snap")).unwrap();
-        File::create(data_dir.join("other-file.txt")).unwrap();
+        // By text, "snapshot-999" sorts after "snapshot-1000"; by number it is older.
+        let first = write_snapshot(data_dir, 1, 7);
+        fs::copy(&first, data_dir.join("snapshot-999.snap")).unwrap();
+        fs::remove_file(&first).unwrap();
+        let second = write_snapshot(data_dir, 2, 9);
+        fs::copy(&second, data_dir.join("snapshot-1000.snap")).unwrap();
+        fs::remove_file(&second).unwrap();
 
-        let snapshots = find_snapshot_files(data_dir).unwrap();
+        let (data, wal_seq) = SnapshotLoader::load_latest(data_dir).unwrap().unwrap();
+        assert_eq!(wal_seq, 9);
+        assert_eq!(data.total_entries, 2);
+    }
 
-        assert_eq!(snapshots.len(), 3);
-        assert!(snapshots[0].ends_with("snapshot-1000.snap"));
-        assert!(snapshots[1].ends_with("snapshot-2000.snap"));
-        assert!(snapshots[2].ends_with("snapshot-3000.snap"));
+    #[test]
+    fn test_snapshot_file_from_current_build_loads() {
+        let temp_dir = TempDir::new().unwrap();
+        let data_dir = temp_dir.path();
+
+        // Bytes in the current format: 72-byte header, then one bincode shard.
+        let base = Instant::now();
+        let entry = Entry::with_timestamps(KvValue::Int(7), base, None, 1);
+        let mut entries = HashMap::new();
+        entries.insert("k".to_string(), SerializableEntry::from_entry(&entry, base));
+        let data = bincode::serialize(&SerializableShard {
+            shard_id: 0,
+            entries,
+        })
+        .unwrap();
+
+        let mut hasher = Sha256::new();
+        hasher.update(&data);
+        let mut header = SnapshotHeader::new(1, 1, 5);
+        header.checksum = hasher.finalize().into();
+
+        let mut bytes = Vec::new();
+        header.write(&mut bytes).unwrap();
+        bytes.extend_from_slice(&data);
+        fs::write(data_dir.join("snapshot-1000.snap"), &bytes).unwrap();
+
+        let (loaded, wal_seq) = SnapshotLoader::load_latest(data_dir).unwrap().unwrap();
+        assert_eq!(wal_seq, 5);
+        assert_eq!(loaded.total_entries, 1);
+        assert_eq!(loaded.shards.len(), 1);
+    }
+
+    #[test]
+    fn test_prune_keeps_newest_keep_count() {
+        let temp_dir = TempDir::new().unwrap();
+        let data_dir = temp_dir.path();
+        let engine = KvEngine::with_shards(4);
+        let writer = SnapshotWriter::new(SnapshotConfig {
+            keep_count: 2,
+            ..Default::default()
+        });
+
+        for seq in 1..=4 {
+            writer.create_snapshot(&engine, data_dir, seq).unwrap();
+            // Snapshot names are millisecond timestamps; keep them distinct.
+            std::thread::sleep(Duration::from_millis(2));
+        }
+
+        let remaining = fs::read_dir(data_dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("snapshot-") && n.ends_with(".snap"))
+            .count();
+        assert_eq!(remaining, 2);
+
+        let (_, latest_seq) = SnapshotLoader::load_latest(data_dir).unwrap().unwrap();
+        assert_eq!(latest_seq, 4);
+    }
+
+    #[test]
+    fn test_load_latest_missing_dir_returns_none_and_creates_nothing() {
+        let temp_dir = TempDir::new().unwrap();
+        let absent = temp_dir.path().join("absent");
+
+        assert!(SnapshotLoader::load_latest(&absent).unwrap().is_none());
+        assert!(!absent.exists());
     }
 
     #[test]
