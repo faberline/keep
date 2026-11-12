@@ -376,6 +376,10 @@ Config: `--host/--port/--shards/--data-dir/--disable-persistence/--fsync-ms/
 --snapshot-secs/--snapshot-ops/--body-limit/--grace-secs`, each with a `KEEP_*`
 env fallback. `RUST_LOG` overrides `--log-level`.
 
+## Backup and restore
+
+`keep backup --dest file:///backups --data-dir ./data` recovers the data dir offline and writes `backup-<unix seconds>.json` to the destination (`--retention-secs` prunes old files). `keep restore --source file:///backups --data-dir ./restored` loads the newest artifact of that directory (or one exact `file:///backups/backup-123.json`) into an empty data directory; start the server on it with `--data-dir ./restored`. Restore refuses a non-empty data directory unless `--force` is given (it then removes the existing files first), and it fails without touching the directory when the artifact is corrupt or has an unsupported version. Restore reads `file://` sources only; `s3://` and `gs://` backups must be copied to a local file first. TTLs are not part of a backup: restored keys have no expiry. Use the same `--shards` value as the server.
+
 ## Kubernetes
 
 `StatefulSet` (each pod owns a PVC-backed disk tier) + headless & ClusterIP
