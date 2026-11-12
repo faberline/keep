@@ -110,7 +110,8 @@ jobs:
           set -euo pipefail
           .gke-test-aw/scripts/gke-test/run.sh 2>&1 | tee "$EVIDENCE_DIR/keep/teardown.log"
           verdict='[keep] PASS: readyz + round-trip + durability'
-          grep -h -x -F -- "$verdict" "$EVIDENCE_DIR"/logs-*.txt | head -n 1 > "$EVIDENCE_DIR/keep/verdict.txt"
+          sed -E 's/^\[[^]]*\] [^ ]+ //' "$EVIDENCE_DIR"/logs-*.txt \
+            | grep -m 1 -x -F -- "$verdict" > "$EVIDENCE_DIR/keep/verdict.txt" || true
           test -s "$EVIDENCE_DIR/keep/verdict.txt" || { echo "verdict line missing" >&2; exit 1; }
           cp "$EVIDENCE_DIR/rendered.yaml" "$EVIDENCE_DIR/keep/manifests.yaml"
           printf 'keep PASS\n' > "$EVIDENCE_DIR/results.txt"
