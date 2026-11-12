@@ -1,4 +1,9 @@
 //! HTTP error envelope and the `KvError` -> status-code mapping.
+//!
+//! Stays local: core `service_http::ApiErr` (v0.4.14) renders `{"error","message"}`
+//! and takes a `&'static str` kind. Keep's public HTTP API renders `{"code","message"}`
+//! with a dynamic code. Adopting core would rename a wire field (see the version
+//! compatibility policy), so the local `ApiErr` stays (faberline/aw#292).
 
 use axum::{
     http::StatusCode,
@@ -74,5 +79,32 @@ impl From<KvError> for ApiErr {
             KvError::Storage(_) => (StatusCode::INTERNAL_SERVER_ERROR, "storage_error"),
         };
         ApiErr::new(status, code, e.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Fails until the module doc records why the local `ApiErr` stays.
+    #[test]
+    fn module_doc_records_why_apierr_stays_local() {
+        let src = include_str!("error.rs");
+        assert!(
+            src.lines()
+                .any(|l| l.starts_with("//! Stays local: core `service_http::ApiErr` (v0.4.14)")),
+            "module doc must record why the local ApiErr stays (faberline/aw#292)"
+        );
+    }
+
+    /// The wire shape is `code` + `message`, never `error`.
+    #[test]
+    fn error_body_keeps_code_and_message() {
+        let e = ApiErr::from(KvError::EmptyKey);
+        assert_eq!(e.status, StatusCode::BAD_REQUEST);
+        let v = serde_json::to_value(&e.body).expect("serialize");
+        assert_eq!(v["code"], serde_json::json!("invalid_key"));
+        assert!(v["message"].is_string());
+        assert!(v.get("error").is_none());
     }
 }
