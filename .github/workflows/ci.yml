@@ -98,10 +98,19 @@ jobs:
         run: cargo install --locked cargo-deny --version 0.20.2
       - run: cargo deny --locked check advisories licenses bans sources
 
+  test-kustomize:
+    name: "test: kustomize overlays"
+    needs: [lint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Render gke-test overlay
+        run: kubectl kustomize k8s/overlays/gke-test > /dev/null
+
   gate:
     name: gate
     if: always()
-    needs: [lint, test-workspace, test-features, test-release-contract, test-deny]
+    needs: [lint, test-workspace, test-features, test-release-contract, test-deny, test-kustomize]
     runs-on: ubuntu-latest
     steps:
       - name: Check every stage
