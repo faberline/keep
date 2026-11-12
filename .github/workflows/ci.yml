@@ -81,6 +81,15 @@ jobs:
           set -euo pipefail
           uv run --python 3.13 --no-project scripts/release/verify-release-contract.py --app keep
 
+  test-gke-job:
+    name: "test: gke-test job"
+    needs: [lint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: shellcheck -x -S warning k8s/gke-test-job/verify.sh
+      - run: kubectl kustomize k8s/gke-test-job > /dev/null
+
   test-deny:
     name: "test: cargo deny"
     needs: [lint]
@@ -100,7 +109,7 @@ jobs:
   gate:
     name: gate
     if: always()
-    needs: [lint, test-workspace, test-features, test-release-contract, test-deny]
+    needs: [lint, test-workspace, test-features, test-release-contract, test-gke-job, test-deny]
     runs-on: ubuntu-latest
     steps:
       - name: Check every stage
