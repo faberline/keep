@@ -78,6 +78,19 @@ fn can_record_the_baseline() {
 }
 
 #[test]
+fn gates_one_core_cells_on_the_four_cpu_runner() {
+    let text = workflow();
+    assert!(
+        text.contains("runs-on: ubuntu-latest"),
+        "the gate must run on ubuntu-latest (4 CPUs)"
+    );
+    assert!(
+        text.contains("KEEP_PERF_CORES: \"1\""),
+        "a 4-CPU runner cannot host the 4-core cell (needs 6 CPUs): set KEEP_PERF_CORES to 1"
+    );
+}
+
+#[test]
 fn least_privilege_and_pinned_actions() {
     let text = workflow();
     assert!(
