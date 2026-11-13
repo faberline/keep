@@ -524,7 +524,6 @@ fn key_for(i: usize, keyspace: usize) -> String {
     format!("benchkey:{}", i % keyspace)
 }
 
-/// requests-per-worker and actual measured op count for the chosen batch.
 /// The args of the unmeasured warmup pass, or `None` when no warmup runs.
 fn warmup_args(args: &Args) -> Option<Args> {
     let has_set_or_get = args
@@ -548,6 +547,7 @@ fn warmup_args(args: &Args) -> Option<Args> {
     })
 }
 
+/// requests-per-worker and actual measured op count for the chosen batch.
 fn plan(args: &Args) -> (usize, usize) {
     let batch = args.batch.max(1);
     let per_keys = args.ops / args.concurrency;
