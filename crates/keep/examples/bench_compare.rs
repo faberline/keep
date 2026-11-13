@@ -23,6 +23,8 @@
 //!
 //! `--tier ram|tiered` checks the server's actual storage mode before measuring
 //! (keep `/info`, RESP `CONFIG GET appendonly/appendfsync`) and fails on a mismatch.
+//!
+//! `--warmup-ops N` runs N unmeasured SET+GET ops (keep and RESP backends) before the timed phases.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -93,6 +95,9 @@ struct Args {
     /// Poll the server for up to this many seconds before measuring.
     #[arg(long, default_value_t = 0)]
     wait_ready_secs: u64,
+    /// Unmeasured SET+GET operations run before the timed phases (0 = no warmup).
+    #[arg(long, default_value_t = 0)]
+    warmup_ops: usize,
 }
 
 impl Args {
@@ -466,6 +471,16 @@ async fn run(args: &Args) -> BenchResult<u64> {
     );
     // Checked before any load, so a wrong storage mode fails before measuring.
     let mode = detect_mode(args).await?;
+    if let Some(warm) = warmup_args(args) {
+        note!(args, "  (warmup: {} ops, not measured)", warm.ops);
+        let _ = match warm.backend.as_str() {
+            "keep" => bench_keep(&warm, &val, &[Phase::Set, Phase::Get]).await?,
+            b if RESP_BACKENDS.contains(&b) => {
+                bench_resp(&warm, &val, &[Phase::Set, Phase::Get]).await?
+            }
+            _ => Vec::new(),
+        };
+    }
     let results = match args.backend.as_str() {
         "engine" => bench_engine(args, &val, &phases).await?,
         "keep" => bench_keep(args, &val, &phases).await?,
@@ -510,6 +525,29 @@ fn key_for(i: usize, keyspace: usize) -> String {
 }
 
 /// requests-per-worker and actual measured op count for the chosen batch.
+/// The args of the unmeasured warmup pass, or `None` when no warmup runs.
+fn warmup_args(args: &Args) -> Option<Args> {
+    let has_set_or_get = args
+        .phases
+        .iter()
+        .map(|p| p.trim().to_ascii_lowercase())
+        .any(|p| p == "set" || p == "get");
+    if args.warmup_ops == 0
+        || args.backend == "engine"
+        || args.backend == "keepnoop"
+        || !has_set_or_get
+    {
+        return None;
+    }
+    Some(Args {
+        ops: args.warmup_ops,
+        phases: vec!["set".into(), "get".into()],
+        format: "json".into(),
+        warmup_ops: 0,
+        ..args.clone()
+    })
+}
+
 fn plan(args: &Args) -> (usize, usize) {
     let batch = args.batch.max(1);
     let per_keys = args.ops / args.concurrency;
@@ -1227,5 +1265,87 @@ mod tests {
         assert!(
             Args::try_parse_from(["bench_compare", "--backend", "keep", "--tier", "disk"]).is_err()
         );
+    }
+
+    #[test]
+    fn warmup_ops_arg_parses() {
+        let a = Args::parse_from(["bench_compare", "--backend", "keep", "--warmup-ops", "7"]);
+        assert_eq!(a.warmup_ops, 7);
+        let d = Args::parse_from(["bench_compare", "--backend", "keep"]);
+        assert_eq!(d.warmup_ops, 0);
+    }
+
+    #[test]
+    fn warmup_args_is_none_when_off_or_not_applicable() {
+        let none = |extra: &[&str]| {
+            let mut v = vec!["bench_compare"];
+            v.extend_from_slice(extra);
+            warmup_args(&Args::parse_from(v)).is_none()
+        };
+        assert!(none(&["--backend", "keep", "--warmup-ops", "0"]));
+        assert!(none(&["--backend", "engine", "--warmup-ops", "5"]));
+        assert!(none(&["--backend", "keepnoop", "--warmup-ops", "5"]));
+        assert!(none(&[
+            "--backend",
+            "keep",
+            "--warmup-ops",
+            "5",
+            "--phases",
+            "cas"
+        ]));
+    }
+
+    #[test]
+    fn warmup_args_builds_a_silent_set_get_pass() {
+        let a = Args::parse_from([
+            "bench_compare",
+            "--backend",
+            "redis",
+            "--warmup-ops",
+            "5",
+            "--ops",
+            "1000",
+            "--phases",
+            "set,get,cas",
+            "--format",
+            "text",
+        ]);
+        let w = warmup_args(&a).expect("warmup pass");
+        assert_eq!(w.ops, 5);
+        assert_eq!(w.phases, ["set", "get"]);
+        assert_eq!(w.format, "json");
+        assert_eq!(w.warmup_ops, 0);
+        assert_eq!(w.backend, "redis");
+        assert_eq!(a.ops, 1000);
+    }
+
+    #[test]
+    fn perf_gate_args_are_all_accepted() {
+        let r = Args::try_parse_from([
+            "bench_compare",
+            "--backend",
+            "keep",
+            "--keep-url",
+            "http://x:1",
+            "--addr",
+            "redis://x:1",
+            "--tier",
+            "ram",
+            "--phases",
+            "set,get,cas",
+            "--format",
+            "json",
+            "--wait-ready-secs",
+            "60",
+            "--ops",
+            "1000",
+            "--warmup-ops",
+            "100",
+            "--concurrency",
+            "50",
+            "--label",
+            "t",
+        ]);
+        assert!(r.is_ok(), "{:?}", r.err());
     }
 }
