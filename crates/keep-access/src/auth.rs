@@ -64,12 +64,24 @@ impl KeepPrincipal {
 #[derive(Clone)]
 pub struct KeepVerifier {
     secret: Arc<Vec<u8>>,
+    /// Optional previous secret, still accepted during a rotation
+    /// (from `KEEP_TOKEN_SECRET_PREVIOUS`).
+    previous: Option<Arc<Vec<u8>>>,
 }
 
 impl KeepVerifier {
     /// Build a verifier over the shared HMAC `secret` (from `KEEP_TOKEN_SECRET`).
     pub fn new(secret: Arc<Vec<u8>>) -> Self {
-        Self { secret }
+        Self {
+            secret,
+            previous: None,
+        }
+    }
+
+    /// Also accept tokens signed with `previous` while a secret rotation runs.
+    pub fn with_previous(mut self, previous: Arc<Vec<u8>>) -> Self {
+        self.previous = Some(previous);
+        self
     }
 }
 
@@ -89,10 +101,15 @@ impl Verifier for KeepVerifier {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        match claim_token::verify(&self.secret, token, now) {
-            Some(scope) => Ok(KeepPrincipal { scope }),
-            None => Err(AuthError::Unauthenticated),
+        if let Some(scope) = claim_token::verify(&self.secret, token, now) {
+            return Ok(KeepPrincipal { scope });
         }
+        if let Some(previous) = &self.previous {
+            if let Some(scope) = claim_token::verify(previous, token, now) {
+                return Ok(KeepPrincipal { scope });
+            }
+        }
+        Err(AuthError::Unauthenticated)
     }
 }
 
@@ -164,6 +181,36 @@ mod tests {
         // Expired (exp in the past, now is well beyond 0).
         let expired = claim_token::sign(&secret(), &scope("a", "b", 0));
         assert!(v.authenticate(&bearer(&expired)).is_err());
+    }
+
+    // Rotation: while `previous` is set, a token signed with the old secret
+    // and one signed with the new secret both authenticate; a third secret does not.
+    #[test]
+    fn rotation_accepts_old_and_new_tokens() {
+        let old = Arc::new(b"old-secret".to_vec());
+        let new = Arc::new(b"new-secret".to_vec());
+        let v = KeepVerifier::new(new.clone()).with_previous(old.clone());
+        let old_token = claim_token::sign(&old, &scope("a", "b", u64::MAX));
+        let new_token = claim_token::sign(&new, &scope("a", "b", u64::MAX));
+        let third = Arc::new(b"third-secret".to_vec());
+        let third_token = claim_token::sign(&third, &scope("a", "b", u64::MAX));
+        let p = v.authenticate(&bearer(&old_token)).unwrap();
+        assert_eq!(p.scope.r, "a");
+        assert!(v.authenticate(&bearer(&new_token)).is_ok());
+        assert!(v.authenticate(&bearer(&third_token)).is_err());
+    }
+
+    // Negative: without `previous` the old-secret token is rejected, so removing
+    // KEEP_TOKEN_SECRET_PREVIOUS ends the rotation.
+    #[test]
+    fn rotation_rejects_old_token_after_previous_removed() {
+        let old = Arc::new(b"old-secret".to_vec());
+        let new = Arc::new(b"new-secret".to_vec());
+        let v = KeepVerifier::new(new.clone());
+        let old_token = claim_token::sign(&old, &scope("a", "b", u64::MAX));
+        let new_token = claim_token::sign(&new, &scope("a", "b", u64::MAX));
+        assert!(v.authenticate(&bearer(&old_token)).is_err());
+        assert!(v.authenticate(&bearer(&new_token)).is_ok());
     }
 }
 // HANDWRITE-END
