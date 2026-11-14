@@ -85,11 +85,10 @@ pub(crate) async fn run(args: IssueArgs) -> Result<()> {
             let query = (!joined.trim().is_empty()).then_some(joined);
             cli_std::issue::search(
                 &TOOL,
-                cli_std::issue::SearchOptions {
-                    query,
-                    state: m.state,
-                    limit: m.limit,
-                },
+                cli_std::issue::SearchOptions::default()
+                    .with_query(query)
+                    .with_state(m.state)
+                    .with_limit(m.limit),
             )
             .await
         }
@@ -107,15 +106,11 @@ pub(crate) async fn run(args: IssueArgs) -> Result<()> {
             let message = (!msg.trim().is_empty()).then_some(msg);
             cli_std::issue::create(
                 &TOOL,
-                cli_std::issue::CreateOptions {
-                    title,
-                    message,
-                    url: None,
-                    repo: None,
-                    label: vec!["app:keep".to_string()],
-                    dry_run: m.dry_run,
-                    yes: true,
-                },
+                cli_std::issue::CreateOptions::new(title)
+                    .with_message(message)
+                    .with_label(vec!["app:keep".to_string()])
+                    .with_dry_run(m.dry_run)
+                    .with_yes(true),
             )
             .await
         }
@@ -123,13 +118,10 @@ pub(crate) async fn run(args: IssueArgs) -> Result<()> {
             let msg = m.message.join(" ");
             cli_std::issue::comment(
                 &TOOL,
-                cli_std::issue::CommentOptions {
-                    number: m.number,
-                    message: (!msg.trim().is_empty()).then_some(msg),
-                    repo: None,
-                    dry_run: m.dry_run,
-                    yes: true,
-                },
+                cli_std::issue::CommentOptions::try_new(m.number)?
+                    .with_message((!msg.trim().is_empty()).then_some(msg))
+                    .with_dry_run(m.dry_run)
+                    .with_yes(true),
             )
             .await
         }

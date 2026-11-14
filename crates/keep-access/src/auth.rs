@@ -48,9 +48,9 @@ impl KeepPrincipal {
     /// `scope.r`). Keyed on the bare url id, before any namespace prefix.
     pub fn authorizes(&self, id: &str, write: bool) -> bool {
         if write {
-            self.scope.w == id
+            self.scope.w().as_str() == id
         } else {
-            self.scope.r == id
+            self.scope.r().as_str() == id
         }
     }
 }
@@ -114,11 +114,11 @@ mod tests {
     }
 
     fn scope(r: &str, w: &str, exp: u64) -> claim_token::Scope {
-        claim_token::Scope {
-            r: r.into(),
-            w: w.into(),
-            exp,
-        }
+        claim_token::Scope::new(
+            claim_token::InputKey::new(r),
+            claim_token::ResultKey::new(w),
+            claim_token::ExpiryUnixSeconds::new(exp),
+        )
     }
 
     // R1: a valid in-scope token authenticates to a concrete principal and
@@ -128,8 +128,8 @@ mod tests {
         let v = KeepVerifier::new(secret());
         let token = claim_token::sign(&secret(), &scope("job-r", "job-w", u64::MAX));
         let p = v.authenticate(&bearer(&token)).unwrap();
-        assert_eq!(p.scope.r, "job-r");
-        assert_eq!(p.scope.w, "job-w");
+        assert_eq!(p.scope.r().as_str(), "job-r");
+        assert_eq!(p.scope.w().as_str(), "job-w");
         // read op authorized against scope.r, write op against scope.w.
         assert!(p.authorizes("job-r", false));
         assert!(p.authorizes("job-w", true));

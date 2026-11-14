@@ -27,7 +27,7 @@ use anyhow::Result;
 use axum::Router;
 use raft_runtime::{
     FsyncPolicy, HostConfig, Index, Membership, NodeId, RaftHost, RaftStateMachine, RaftStore,
-    SnapshotPolicy,
+    SnapshotPolicy, StateMachineError,
 };
 use serde::{Deserialize, Serialize};
 
@@ -77,25 +77,25 @@ impl KvStateMachine {
 }
 
 impl RaftStateMachine for KvStateMachine {
-    fn apply(&self, index: Index, command: &[u8]) -> Result<()> {
+    fn apply(&self, index: Index, command: &[u8]) -> Result<(), StateMachineError> {
         // Decode the committed command and replay it through the exact WAL
         // recovery path. A bad decode / engine error no-ops the entry (logged)
         // but still advances `applied` so the log keeps moving (sole applier).
         match serde_json::from_slice::<WalOp>(command) {
             Ok(op) => {
                 if let Err(e) = RecoveryManager::apply_one(&self.engine, &op) {
-                    tracing::warn!(index, error = %e, "raft: apply_one error (entry no-ops)");
+                    tracing::warn!(index = index.get(), error = %e, "raft: apply_one error (entry no-ops)");
                 }
             }
             Err(e) => {
-                tracing::warn!(index, error = %e, "raft: undecodable command (entry no-ops)")
+                tracing::warn!(index = index.get(), error = %e, "raft: undecodable command (entry no-ops)")
             }
         }
-        self.applied.store(index, Ordering::Release);
+        self.applied.store(index.get(), Ordering::Release);
         Ok(())
     }
 
-    fn snapshot(&self, writer: &mut dyn std::io::Write) -> Result<()> {
+    fn snapshot(&self, writer: &mut dyn std::io::Write) -> Result<(), StateMachineError> {
         let values = self
             .engine
             .dump_values()
@@ -105,22 +105,26 @@ impl RaftStateMachine for KvStateMachine {
         let bytes = serde_json::to_vec(&ShardSnapshot {
             up_to: self.applied_index(),
             values,
-        })?;
-        writer.write_all(&bytes)?;
+        })
+        .map_err(StateMachineError::other)?;
+        writer.write_all(&bytes).map_err(StateMachineError::other)?;
         Ok(())
     }
 
-    fn restore(&self, reader: &mut dyn std::io::Read) -> Result<()> {
+    fn restore(&self, reader: &mut dyn std::io::Read) -> Result<(), StateMachineError> {
         let mut bytes = Vec::new();
-        reader.read_to_end(&mut bytes)?;
-        let snap: ShardSnapshot = serde_json::from_slice(&bytes)?;
+        reader
+            .read_to_end(&mut bytes)
+            .map_err(StateMachineError::other)?;
+        let snap: ShardSnapshot =
+            serde_json::from_slice(&bytes).map_err(StateMachineError::other)?;
         self.engine.load_values(snap.values);
-        self.applied.store(snap.up_to, Ordering::Release);
+        self.applied.store(snap.up_to.get(), Ordering::Release);
         Ok(())
     }
 
     fn applied_index(&self) -> Index {
-        self.applied.load(Ordering::Acquire)
+        Index::new(self.applied.load(Ordering::Acquire))
     }
 }
 
@@ -181,10 +185,7 @@ impl ShardHosts {
                 peers,
                 store,
                 sm as Arc<dyn RaftStateMachine>,
-                HostConfig {
-                    snapshot: SnapshotPolicy::EveryEntries(snapshot_every),
-                    ..Default::default()
-                },
+                HostConfig::default().with_snapshot(SnapshotPolicy::EveryEntries(snapshot_every)),
             );
             hosts.insert(shard, Arc::new(host));
         }
@@ -261,31 +262,25 @@ fn shard_topology(
 ) -> (NodeId, Membership, HashMap<NodeId, String>) {
     if replicas_per_shard <= 1 {
         return (
-            0,
-            Membership {
-                voters: vec![0],
-                learners: vec![],
-            },
+            NodeId::new(0),
+            Membership::new(vec![NodeId::new(0)], vec![]),
             HashMap::new(),
         );
     }
     let node_count = cluster.node_count.max(1) as u32;
     let replicas = replicas_per_shard.min(node_count);
     let owner = cluster.owner_of_shard(shard) as u32;
-    let mut node_id: NodeId = 0;
+    let mut node_id = NodeId::new(0);
     let mut peers = HashMap::new();
     for r in 0..replicas {
         let node = ((owner + r) % node_count) as usize;
-        let rid = r as NodeId;
+        let rid = NodeId::new(u64::from(r));
         if node == cluster.node_id {
             node_id = rid;
         } else if let Some(base) = cluster.peers.get(node) {
             peers.insert(rid, format!("{}/shard/{shard}", base.trim_end_matches('/')));
         }
     }
-    let membership = Membership {
-        voters: (0..replicas as NodeId).collect(),
-        learners: vec![],
-    };
+    let membership = Membership::new((0..u64::from(replicas)).map(NodeId::new).collect(), vec![]);
     (node_id, membership, peers)
 }

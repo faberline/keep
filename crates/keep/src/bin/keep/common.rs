@@ -4,14 +4,14 @@ use anyhow::Result;
 
 /// This binary's identity + build provenance for the standard CLI ops
 /// (`upgrade` / `issue`), per the CONTRIBUTING.md CLI convention.
-pub(crate) const TOOL: cli_std::ToolInfo = cli_std::ToolInfo {
-    project: "keep",
-    repo: "faberline/keep",
-    target: env!("KEEP_TARGET"),
-    version: env!("CARGO_PKG_VERSION"),
-    git_sha: env!("KEEP_GIT_SHA"),
-    built_at: env!("KEEP_BUILT_AT"),
-};
+pub(crate) const TOOL: cli_std::ToolInfo = cli_std::ToolInfo::new(
+    "keep",
+    "faberline/keep",
+    env!("KEEP_TARGET"),
+    env!("CARGO_PKG_VERSION"),
+    env!("KEEP_GIT_SHA"),
+    env!("KEEP_BUILT_AT"),
+);
 
 /// Write `body` to `out` (a file, or `default_file` inside a directory) or print
 /// it to stdout.
