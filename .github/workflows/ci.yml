@@ -54,6 +54,7 @@ jobs:
       - uses: faberline/aw/.github/actions/coverage@49df274a62a227fd7b6f635f4ebf3ed4e81df349 # S8
         with:
           summary: target/coverage.json
+      - run: cargo test --locked --workspace --doc
       - run: cargo test --locked -p keep --features operator --test operator
       - run: cargo test --locked -p keep --features raft --test raft_failover
       - run: cargo test --locked -p keep --features raft --test raft_node
