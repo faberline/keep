@@ -372,7 +372,7 @@ cargo run -p keep --bin keep            # listens on 127.0.0.1:7117, ./data
 KEEP_HOST=0.0.0.0 KEEP_PORT=7117 keep   # all config via KEEP_* env or --flags
 ```
 
-Quickstart: [docs/product/quickstart.md](docs/product/quickstart.md). Runbook: [docs/product/runbook.md](docs/product/runbook.md).
+Quickstart: [docs/product/quickstart.md](docs/product/quickstart.md). Runbook: [docs/product/runbook.md](docs/product/runbook.md). Performance: [docs/product/performance.md](docs/product/performance.md).
 
 Config: `--host/--port/--shards/--data-dir/--disable-persistence/--fsync-ms/
 --snapshot-secs/--snapshot-ops/--body-limit/--grace-secs`, each with a `KEEP_*`
