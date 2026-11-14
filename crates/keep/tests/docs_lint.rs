@@ -159,6 +159,36 @@ fn readme_links_both_pages() {
 }
 
 #[test]
+fn threat_model_has_required_sections() {
+    let md = doc("docs/product/threat-model.md");
+    let required = [
+        "## Assets",
+        "## Trust boundaries",
+        "## Threats",
+        "## Mitigations",
+        "## Residual risk",
+        "## Security review",
+    ];
+    // Exactly these `##` headings, in this order, and no others.
+    let headings: Vec<&str> = md.lines().filter(|line| line.starts_with("## ")).collect();
+    assert_eq!(
+        headings, required,
+        "threat-model.md must have exactly these ## sections, in order"
+    );
+    let (_, review) = md
+        .split_once("\n## Security review\n")
+        .expect("threat-model.md has no Security review section");
+    assert!(
+        review.contains("- [ ] Independent security review"),
+        "Security review section lacks the unchecked review line"
+    );
+    assert!(
+        !md.contains("- [x]"),
+        "threat-model.md must not mark a review as done"
+    );
+}
+
+#[test]
 fn keep_commands_rejects_unknown_flag() {
     assert!(check("```bash\nkeep --no-such-flag\n```").is_err());
     assert!(check("```bash\nkeep backup --no-such-flag\n```").is_err());
@@ -218,4 +248,66 @@ fn performance_doc_matches_baseline() {
         md.contains("not recorded"),
         "performance.md does not say which numbers are not recorded"
     );
+}
+
+/// The long flags (`--name`) named in `help`, sorted and without duplicates.
+/// `--help` and `--version` are left out: every command has them.
+fn long_flags(help: &str) -> Vec<String> {
+    let mut flags: Vec<String> = help
+        .split_whitespace()
+        .map(|word| word.trim_end_matches([',', '.']))
+        .filter(|word| {
+            word.starts_with("--")
+                && word.len() > 2
+                && word[2..]
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        })
+        .filter(|word| *word != "--help" && *word != "--version")
+        .map(str::to_string)
+        .collect();
+    flags.sort();
+    flags.dedup();
+    flags
+}
+
+/// The long flags of `help` whose name does not appear in `doc`.
+fn flags_missing_from(help: &str, doc: &str) -> Vec<String> {
+    long_flags(help)
+        .into_iter()
+        .filter(|flag| !doc.contains(flag.as_str()))
+        .collect()
+}
+
+#[test]
+fn configuration_flags_helper_reports_a_missing_flag() {
+    let help = "  --host <H>\n  --port <P>\n  -h, --help";
+    let missing = flags_missing_from(help, "`--host` is the address");
+    assert_eq!(missing, vec!["--port".to_string()]);
+}
+
+#[test]
+fn configuration_doc_lists_every_flag() {
+    let help = help_for(&[]).unwrap();
+    assert!(
+        long_flags(&help).len() >= 20,
+        "keep --help lists too few flags: {:?}",
+        long_flags(&help)
+    );
+    let missing = flags_missing_from(&help, &doc("docs/product/configuration.md"));
+    assert!(
+        missing.is_empty(),
+        "configuration.md misses flags: {missing:?}"
+    );
+}
+
+#[test]
+fn limits_doc_has_sections() {
+    let md = doc("docs/product/limits.md");
+    for section in ["## Sizes", "## Rates", "## Known limits"] {
+        assert!(
+            md.contains(section),
+            "limits.md lacks the section `{section}`"
+        );
+    }
 }
