@@ -1,7 +1,7 @@
 # Keep data-plane runbook
 
 This runbook covers the data plane of one Keep server: health and metrics, the
-log format, and four procedures. The `keep` commands here are checked against
+log format, and the procedures below. The `keep` commands here are checked against
 the real CLI help by `crates/keep/tests/docs_lint.rs`. `curl` and `kubectl`
 lines in this page are not tested.
 
@@ -114,3 +114,71 @@ is no hot reload, so a rotation needs a restart:
 
 `KEEP_TOKEN_SECRET` is separate: it enables scoped claim-check tokens for the
 `/inputs/*` and `/results/*` routes.
+
+## Upgrade
+
+Upgrade one replica at a time, as `docs/product/compatibility.md` (section
+`Upgrade order`) describes. Release N+1 reads every file that release N wrote,
+and replicas of N and N+1 use the same raft peer protocol. Downgrade is not
+supported: restore a backup taken before the upgrade instead
+(`#restore-from-backup`).
+
+1. Check the version pair against `docs/product/compatibility.md`.
+2. Take a backup first: see [Restore from backup](#restore-from-backup).
+3. Set the new image. The container is named `keep` in `k8s/base/statefulset.yaml`,
+   which uses `updateStrategy: RollingUpdate` and `podManagementPolicy: OrderedReady`,
+   so the pods restart one at a time:
+
+   ```bash
+   kubectl set image statefulset/keep keep=<new image>
+   ```
+
+4. After each pod restarts, and before the next pod, check two things and
+   record each one separately. Continue only when both hold:
+   - Readiness: `GET /readyz` returns `200 ok` on that pod.
+   - Catch-up: `GET /shard/<id>/raftz` on that pod shows `applied_index` equal
+     to, or close to, the leader's `commit_index`, and `leader` is not `null`.
+     The raft routes share the HTTP port. A single-node deployment has no
+     catch-up step.
+5. What is tested: `crates/keep/tests/rolling_restart.rs` restarts one replica
+   at a time with the same version. It checks that the restarted replica catches
+   up and that no key is lost. A mixed-version rollback is not tested. A rolling
+   upgrade across two versions is not tested.
+6. Rollback: `kubectl rollout undo statefulset/keep` is safe only while the file
+   formats did not change. A patch release never changes a file format
+   (`docs/product/compatibility.md`, `On-disk format`). After a format change,
+   restore a backup instead.
+
+The `kubectl` lines in this section are not tested.
+
+## Replica behind
+
+1. Read `GET /shard/<id>/raftz` on the pod. Compare `commit_index` and
+   `applied_index` with the same endpoint on the leader. The fields are
+   `role`, `commit_index`, `applied_index` and `leader`.
+2. A replica that is behind catches up from the leader. Wait for its
+   `applied_index` to reach the leader's `commit_index`.
+3. If `leader` stays `null`, check that a quorum of pods is up: see
+   [Node down](#node-down).
+
+The `kubectl` and `curl` lines in this section are not tested.
+
+## Readiness failing
+
+1. Check `GET /readyz` on the pod. `503 draining` is normal during the drain
+   window `--grace-secs` after SIGTERM, so a restart shows it for a short time.
+2. If it stays `503`, or the probe times out, read `kubectl describe pod <pod>`
+   and `kubectl logs <pod>`, then follow [Node down](#node-down).
+
+The `kubectl` and `curl` lines in this section are not tested.
+
+## Token rejects
+
+A client gets `401` with the code `unauthorized` when its token is missing or
+wrong. A client gets `403` with the code `forbidden` when a read-only token
+sends a write.
+
+1. Compare the client's token with the Secret that holds it.
+2. If the token was rotated, follow [Token rotation](#token-rotation).
+
+The `curl` and `kubectl` lines in this section are not tested.

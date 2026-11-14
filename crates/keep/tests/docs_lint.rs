@@ -142,7 +142,11 @@ fn runbook_keep_commands_match_cli_help() {
 
 #[test]
 fn docs_state_what_is_not_tested() {
-    for path in ["docs/product/quickstart.md", "docs/product/runbook.md"] {
+    for path in [
+        "docs/product/quickstart.md",
+        "docs/product/runbook.md",
+        "docs/product/alerts.md",
+    ] {
         let md = doc(path).to_lowercase();
         assert!(
             md.contains("not tested"),
@@ -218,4 +222,123 @@ fn performance_doc_matches_baseline() {
         md.contains("not recorded"),
         "performance.md does not say which numbers are not recorded"
     );
+}
+
+/// The text of `## <title>` up to the next `## ` heading, or None when absent.
+fn section_of(md: &str, title: &str) -> Option<String> {
+    let marker = format!("## {title}\n");
+    let start = md.find(&marker)?;
+    let body = &md[start + marker.len()..];
+    let end = body.find("\n## ").unwrap_or(body.len());
+    Some(body[..end].to_string())
+}
+
+/// The GitHub anchor of a heading: lowercase, spaces become `-`, other
+/// characters except ASCII letters, digits and `-` are dropped.
+fn heading_anchor(heading: &str) -> String {
+    heading
+        .trim()
+        .to_lowercase()
+        .chars()
+        .filter_map(|c| {
+            if c == ' ' {
+                Some('-')
+            } else if c.is_ascii_alphanumeric() || c == '-' {
+                Some(c)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// The anchor of each `## ` heading in `md`. Lines inside a code fence are skipped.
+fn headings(md: &str) -> Vec<String> {
+    let mut in_fence = false;
+    let mut anchors = Vec::new();
+    for line in md.lines() {
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        if let Some(heading) = line.strip_prefix("## ") {
+            anchors.push(heading_anchor(heading));
+        }
+    }
+    anchors
+}
+
+/// The anchors of every `](runbook.md#anchor)` link in `alerts` that names no
+/// heading of `runbook`.
+fn broken_runbook_links(alerts: &str, runbook: &str) -> Vec<String> {
+    const PREFIX: &str = "](runbook.md#";
+    let anchors = headings(runbook);
+    let mut broken = Vec::new();
+    let mut rest = alerts;
+    while let Some(at) = rest.find(PREFIX) {
+        let after = &rest[at + PREFIX.len()..];
+        let end = after.find(')').unwrap_or(after.len());
+        let anchor = &after[..end];
+        if !anchors.iter().any(|known| known == anchor) {
+            broken.push(anchor.to_string());
+        }
+        rest = &after[end..];
+    }
+    broken
+}
+
+#[test]
+fn runbook_has_upgrade_section() {
+    let md = doc("docs/product/runbook.md");
+    let section = section_of(&md, "Upgrade").expect("runbook.md lacks the `## Upgrade` heading");
+    for needle in ["/readyz", "raftz", "rollout undo", "not tested"] {
+        assert!(
+            section.contains(needle),
+            "the Upgrade section lacks `{needle}`"
+        );
+    }
+}
+
+#[test]
+fn alerts_doc_links_resolve() {
+    let alerts = doc("docs/product/alerts.md");
+    let runbook = doc("docs/product/runbook.md");
+    assert!(
+        alerts.matches("](runbook.md#").count() >= 5,
+        "alerts.md has fewer than 5 runbook links"
+    );
+    let broken = broken_runbook_links(&alerts, &runbook);
+    assert!(
+        broken.is_empty(),
+        "alerts.md links to missing anchors: {broken:?}"
+    );
+    for signal in [
+        "Node down",
+        "Disk full",
+        "Replica behind",
+        "Readiness failing",
+        "Token rejects",
+    ] {
+        let section = section_of(&alerts, signal)
+            .unwrap_or_else(|| panic!("alerts.md lacks the heading `## {signal}`"));
+        for label in ["Symptom:", "Check:", "Action:"] {
+            assert!(
+                section.lines().any(|line| line.starts_with(label)),
+                "`## {signal}` in alerts.md lacks a `{label}` line"
+            );
+        }
+    }
+}
+
+#[test]
+fn alerts_link_check_rejects_a_missing_anchor() {
+    let runbook = "# Runbook\n\n## Node down\n\ntext\n";
+    assert_eq!(
+        broken_runbook_links("[x](runbook.md#nope)", runbook),
+        vec!["nope".to_string()]
+    );
+    assert!(broken_runbook_links("[x](runbook.md#node-down)", runbook).is_empty());
 }
