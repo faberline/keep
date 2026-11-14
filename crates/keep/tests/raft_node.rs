@@ -4,12 +4,11 @@
 //! per-shard hosts route by key, and that a shard's snapshot round-trips
 //! (`dump_values`/`load_values`).
 //!
-//! The multi-process acceptance criteria — leader failover under SIGKILL and
-//! InstallSnapshot catch-up of a wiped-data-dir replica — are authored as a
-//! real in-process localhost h2c cluster but `#[ignore]`d: a reliable run needs
-//! orchestrated OS processes (the strict criterion kills the leader with
-//! `kill -9`, since SIGTERM triggers a 30s graceful drain and no failover).
-//! See each test's `#[ignore]` reason + the harness comment.
+//! The multi-node acceptance criteria — leader failover and InstallSnapshot
+//! catch-up of a lagging replica — run on a real in-process localhost h2c
+//! cluster (module `multi_node`). The leader "crash" aborts its serve task and
+//! drops its host; a real `kill -9` of a process is covered by
+//! `raft_failover.rs` and the GKE drills.
 
 #![cfg(feature = "raft")]
 
@@ -170,18 +169,10 @@ async fn shard_state_machine_snapshot_round_trips() {
 }
 
 // ---------------------------------------------------------------------------
-// Multi-node acceptance criteria — authored but deferred (#[ignore]).
-//
-// These need an orchestrated multi-node cluster. The helpers below build a real
-// in-process localhost h2c group (each node serves its `host.router()` on an
-// ephemeral port; peers reach each other over the shared h2c transport), which
-// is faithful enough to drive failover + InstallSnapshot. They are `#[ignore]`d
-// because (a) the strict acceptance criterion requires SIGKILL of a real OS
-// process (SIGTERM = 30s graceful drain ⇒ the leader keeps heartbeating ⇒ no
-// failover), which an in-process task-abort only approximates, and (b) raft
-// elections over real sockets inside one test are timing-sensitive. Run them
-// deliberately via `cargo test -p keep --features raft -- --ignored`, or wire
-// the documented multi-process harness.
+// Multi-node acceptance criteria on an in-process localhost h2c cluster: each
+// node serves its `host.router()` on an ephemeral port and peers reach each
+// other over the shared h2c transport. Failover aborts the leader's serve task
+// and drops its host, the in-process stand-in for `kill -9`.
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
@@ -299,9 +290,8 @@ mod multi_node {
     }
 
     /// AC: a replicated shard group elects a new leader after the leader is
-    /// killed and committed data survives. (Authored; deferred — see module doc.)
+    /// killed and committed data survives.
     #[tokio::test]
-    #[ignore = "multi-process cluster; strict run requires SIGKILL of a real leader process. Run with --ignored."]
     async fn replicated_shard_group_fails_over_and_keeps_data() {
         let dir = tmp_dir("failover");
         let mut nodes = cluster(3, &dir, 1024).await;
@@ -349,9 +339,8 @@ mod multi_node {
     }
 
     /// AC: a wiped-data-dir replica catches up via InstallSnapshot
-    /// (snapshot_index > 0). (Authored; deferred — see module doc.)
+    /// (snapshot_index > 0).
     #[tokio::test]
-    #[ignore = "multi-process cluster; needs orchestrated processes + a wiped replica data-dir. Run with --ignored."]
     async fn wiped_replica_catches_up_via_install_snapshot() {
         let dir = tmp_dir("catchup");
         // A small snapshot threshold so the leader compacts quickly, arming
