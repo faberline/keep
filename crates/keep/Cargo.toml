@@ -71,6 +71,7 @@ rcgen = "0.13"
 criterion.workspace = true
 futures.workspace = true
 kube.workspace = true
+proptest.workspace = true
 redis.workspace = true
 reqwest.workspace = true
 service-k8s.workspace = true

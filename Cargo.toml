@@ -82,6 +82,7 @@ schemars = "0.8"
 # Dev / benchmark dependencies
 criterion = "0.5"
 redis = { version = "0.27", features = ["tokio-comp"] }
+proptest = "1"
 tempfile = "3.12"
 tokio-test = "0.4"
 
