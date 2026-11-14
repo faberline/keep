@@ -80,3 +80,7 @@ content_digest = "sha256:062279b6d2ade0ba6e46c722b30c351218dcf9256770a8ebaee8891
 command = "vat run meter-efficiency"
 category = "efficiency"
 # AW-EC-END
+
+[standards.coverage]
+line = 74.97   # measured with cargo llvm-cov over the workspace tests
+target = 100
