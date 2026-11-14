@@ -1,0 +1,56 @@
+name: keep-reproducible-image
+
+# Manual only. Builds Dockerfile.release twice from the binary of a candidate
+# run and fails when the two image digests differ. Not a required check.
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_run_id:
+        description: Run id of a keep-release-candidate run whose binary artifact is staged
+        required: true
+        type: string
+      candidate_run_attempt:
+        description: Attempt number of that run
+        required: false
+        type: string
+        default: "1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: keep-reproducible-image
+  cancel-in-progress: false
+
+jobs:
+  reproducible:
+    name: "image: reproducible"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: keep-candidate-x86_64-unknown-linux-musl-${{ inputs.candidate_run_id }}-${{ inputs.candidate_run_attempt }}
+          path: pkg/amd64
+          run-id: ${{ inputs.candidate_run_id }}
+          repository: ${{ github.repository }}
+          github-token: ${{ github.token }}
+
+      - name: Verify and extract the staged amd64 binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd pkg/amd64 && sha256sum -c keep-x86_64-unknown-linux-musl.tar.gz.sha256)
+          mkdir -p dist/linux/amd64
+          tar -xzf pkg/amd64/keep-x86_64-unknown-linux-musl.tar.gz -C dist/linux/amd64 --strip-components=1 keep-x86_64-unknown-linux-musl/keep
+          chmod +x dist/linux/amd64/keep
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Build twice and compare the digests
+        run: scripts/check-reproducible-image.sh
