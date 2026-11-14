@@ -56,6 +56,7 @@ jobs:
           summary: target/coverage.json
       - run: cargo test --locked -p keep --features operator --test operator
       - run: cargo test --locked -p keep --features raft --test raft_failover
+      - run: cargo test --locked -p keep --features raft --test raft_node
       - run: cargo test --locked -p keep --features raft --test rolling_restart
       - run: cargo test --locked -p keep --features operator --test api_surface
 
