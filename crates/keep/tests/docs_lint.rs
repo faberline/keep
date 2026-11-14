@@ -249,3 +249,154 @@ fn performance_doc_matches_baseline() {
         "performance.md does not say which numbers are not recorded"
     );
 }
+
+/// Rows of the `## Gates` table as (gate, where, status). The header and the
+/// `---` separator rows are skipped.
+fn gate_rows(md: &str) -> Vec<(String, String, String)> {
+    let mut rows = Vec::new();
+    let mut in_gates = false;
+    for line in md.lines() {
+        if line.starts_with("## ") {
+            in_gates = line == "## Gates";
+            continue;
+        }
+        if !in_gates || !line.trim_start().starts_with('|') {
+            continue;
+        }
+        let cells: Vec<&str> = line
+            .trim()
+            .trim_matches('|')
+            .split('|')
+            .map(str::trim)
+            .collect();
+        if cells.len() != 3 || cells[0] == "Gate" || cells.iter().all(|c| c.starts_with("---")) {
+            continue;
+        }
+        rows.push((
+            cells[0].to_string(),
+            cells[1].to_string(),
+            cells[2].to_string(),
+        ));
+    }
+    rows
+}
+
+/// The statuses that are neither `present` nor `missing`.
+fn bad_status(rows: &[(String, String, String)]) -> Vec<String> {
+    rows.iter()
+        .filter(|(_, _, status)| status != "present" && status != "missing")
+        .map(|(_, _, status)| status.clone())
+        .collect()
+}
+
+/// The text between each pair of backticks in a table cell.
+fn backtick_spans(cell: &str) -> Vec<&str> {
+    cell.split('`')
+        .enumerate()
+        .filter(|(i, _)| i % 2 == 1)
+        .map(|(_, span)| span)
+        .collect()
+}
+
+/// True when the needle named in a `present` row's Where cell is not in the file
+/// the cell names (or the file does not exist).
+fn missing_needle(root: &Path, where_cell: &str) -> bool {
+    let spans = backtick_spans(where_cell);
+    assert!(
+        spans.len() >= 2,
+        "Where cell `{where_cell}` needs a path and a needle"
+    );
+    let text = std::fs::read_to_string(root.join(spans[0])).unwrap_or_default();
+    !text.contains(spans[1])
+}
+
+#[test]
+fn release_gaps_doc_has_every_gate() {
+    let md = doc("docs/product/release-gaps.md");
+    assert!(
+        md.contains("\n## Gates\n"),
+        "release-gaps.md has no ## Gates section"
+    );
+    assert!(
+        md.contains("\n## Missing gates\n"),
+        "release-gaps.md has no ## Missing gates section"
+    );
+    let rows = gate_rows(&md);
+    assert_eq!(rows.len(), 24, "release-gaps.md must list exactly 24 gates");
+    assert!(
+        bad_status(&rows).is_empty(),
+        "statuses other than present or missing: {:?}",
+        bad_status(&rows)
+    );
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let (_, missing_part) = md
+        .split_once("\n## Missing gates\n")
+        .expect("release-gaps.md has no ## Missing gates section");
+    let mut missing = 0;
+    for (gate, where_cell, status) in &rows {
+        match status.as_str() {
+            "present" => {
+                let spans = backtick_spans(where_cell);
+                assert!(
+                    spans.len() >= 2,
+                    "present row `{gate}` needs a path and a needle"
+                );
+                assert!(
+                    root.join(spans[0]).is_file(),
+                    "present row `{gate}` names {} which does not exist",
+                    spans[0]
+                );
+                assert!(
+                    !missing_needle(&root, where_cell),
+                    "present row `{gate}`: {} does not contain `{}`",
+                    spans[0],
+                    spans[1]
+                );
+            }
+            "missing" => {
+                missing += 1;
+                assert!(
+                    missing_part.contains(gate.as_str()),
+                    "missing row `{gate}` is not listed under ## Missing gates"
+                );
+            }
+            other => panic!("row `{gate}` has status `{other}`"),
+        }
+    }
+    assert_eq!(
+        missing, 4,
+        "release-gaps.md must have exactly 4 missing gates"
+    );
+}
+
+#[test]
+fn release_gaps_rejects_bad_status() {
+    let md = "## Gates\n\n| Gate | Where keep does it | Status |\n|---|---|---|\n| g | `a` `b` | maybe |\n";
+    let rows = gate_rows(md);
+    assert_eq!(rows.len(), 1, "one data row expected");
+    assert_eq!(bad_status(&rows), vec!["maybe".to_string()]);
+
+    let good = vec![
+        (
+            "g".to_string(),
+            "`a` `b`".to_string(),
+            "present".to_string(),
+        ),
+        ("h".to_string(), "`a`".to_string(), "missing".to_string()),
+    ];
+    assert!(bad_status(&good).is_empty());
+}
+
+#[test]
+fn release_gaps_present_row_needs_real_needle() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    assert!(missing_needle(
+        &root,
+        "`.github/workflows/keep-release.yml` `no-such-step-name`"
+    ));
+    assert!(!missing_needle(
+        &root,
+        "`.github/workflows/keep-release.yml` `service-release.yml@`"
+    ));
+}
