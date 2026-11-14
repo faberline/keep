@@ -24,6 +24,12 @@ Rules:
 
 Upgrade one replica at a time. Wait until the replica is ready (`/readyz` answers 200) and has caught up before you restart the next one. With 3 replicas the group keeps quorum and keeps serving reads and writes during the whole upgrade.
 
+## Stability promise
+
+No breaking change to the HTTP API, the wire format, the on-disk format or the CRD before 2.0.0.
+
+Until 2.0.0, a release only adds to these. A removal, a renamed field or a changed meaning waits for 2.0.0. The API surface is checked against the committed snapshots in `crates/keep/tests/fixtures/` by `crates/keep/tests/api_surface.rs`.
+
 ## Announcing a format change
 
 A format or wire change is announced in three places before it ships: the release notes of N (a warning), the issue that makes the change (label `type:breaking`, a section "Compatibility"), and this page (the numbers above change in the same pull request that changes the format).
