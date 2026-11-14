@@ -115,6 +115,16 @@ is no hot reload, so a rotation needs a restart:
 `KEEP_TOKEN_SECRET` is separate: it enables scoped claim-check tokens for the
 `/inputs/*` and `/results/*` routes.
 
+To rotate `KEEP_TOKEN_SECRET` without rejecting a token that is still valid:
+
+1. Set `KEEP_TOKEN_SECRET_PREVIOUS` to the old secret and `KEEP_TOKEN_SECRET` to
+   the new secret, then restart the pods.
+2. Re-issue the claim-check tokens with the new secret. Workers can keep using
+   the old tokens until they expire.
+3. Remove `KEEP_TOKEN_SECRET_PREVIOUS` and restart the pods.
+
+A token signed by neither secret gets `403`.
+
 ## Upgrade
 
 Upgrade one replica at a time, as `docs/product/compatibility.md` (section

@@ -163,6 +163,36 @@ fn readme_links_both_pages() {
 }
 
 #[test]
+fn threat_model_has_required_sections() {
+    let md = doc("docs/product/threat-model.md");
+    let required = [
+        "## Assets",
+        "## Trust boundaries",
+        "## Threats",
+        "## Mitigations",
+        "## Residual risk",
+        "## Security review",
+    ];
+    // Exactly these `##` headings, in this order, and no others.
+    let headings: Vec<&str> = md.lines().filter(|line| line.starts_with("## ")).collect();
+    assert_eq!(
+        headings, required,
+        "threat-model.md must have exactly these ## sections, in order"
+    );
+    let (_, review) = md
+        .split_once("\n## Security review\n")
+        .expect("threat-model.md has no Security review section");
+    assert!(
+        review.contains("- [ ] Independent security review"),
+        "Security review section lacks the unchecked review line"
+    );
+    assert!(
+        !md.contains("- [x]"),
+        "threat-model.md must not mark a review as done"
+    );
+}
+
+#[test]
 fn keep_commands_rejects_unknown_flag() {
     assert!(check("```bash\nkeep --no-such-flag\n```").is_err());
     assert!(check("```bash\nkeep backup --no-such-flag\n```").is_err());

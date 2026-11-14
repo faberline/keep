@@ -87,6 +87,16 @@ impl AppState {
         self
     }
 
+    /// Also accept claim-check tokens signed with `secret`, the previous
+    /// secret of a rotation. Does nothing unless a current secret is set.
+    pub fn with_previous_token_secret(mut self, secret: Vec<u8>) -> Self {
+        if let Some(verifier) = &self.verifier {
+            let rotated = verifier.as_ref().clone().with_previous(Arc::new(secret));
+            self.verifier = Some(Arc::new(rotated));
+        }
+        self
+    }
+
     /// Enable blanket API token enforcement on data-plane routes.
     pub fn with_api_token(mut self, token: impl Into<String>) -> Self {
         let token = token.into();
