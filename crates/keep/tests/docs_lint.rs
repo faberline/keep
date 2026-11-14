@@ -171,3 +171,51 @@ fn keep_commands_skips_other_tools() {
     let md = "```bash\ndocker run keep:local\ncurl http://x\n# keep --bad\n```";
     assert!(keep_commands(md).is_empty());
 }
+
+#[test]
+fn performance_doc_matches_baseline() {
+    let baseline_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/perf-baseline.json");
+    let raw = std::fs::read_to_string(&baseline_path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", baseline_path.display()));
+    let baseline: serde_json::Value =
+        serde_json::from_str(&raw).expect("perf-baseline.json is valid JSON");
+    let md = doc("docs/product/performance.md");
+
+    let policy = baseline["policy"].as_object().expect("policy is an object");
+    for (name, value) in policy {
+        let line = format!("- `{name}`: {value}");
+        assert!(
+            md.lines().any(|l| l.trim() == line),
+            "performance.md lacks the policy line `{line}`"
+        );
+    }
+
+    let hosts = baseline["hosts"].as_object().expect("hosts is an object");
+    for host in hosts.keys() {
+        assert!(
+            md.contains(host.as_str()),
+            "performance.md does not name the host class `{host}`"
+        );
+    }
+
+    for (host, data) in hosts {
+        let cells = data["cells"].as_object().expect("cells is an object");
+        for (key, cell) in cells {
+            let name = format!("`{key}`");
+            let values = format!("| {} | {} |", cell["baseline"], cell["min_ratio"]);
+            assert!(
+                md.lines().any(|l| l.contains(&name) && l.contains(&values)),
+                "performance.md lacks the cell {key} of {host} with values `{values}`"
+            );
+        }
+    }
+
+    assert!(
+        md.contains("43578822818"),
+        "performance.md does not name the recording run 43578822818"
+    );
+    assert!(
+        md.contains("not recorded"),
+        "performance.md does not say which numbers are not recorded"
+    );
+}

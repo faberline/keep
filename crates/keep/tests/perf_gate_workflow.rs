@@ -109,3 +109,28 @@ fn least_privilege_and_pinned_actions() {
         );
     }
 }
+
+#[test]
+fn gate_fails_on_regression_above_threshold() {
+    let text = workflow();
+    let ratchet = text
+        .lines()
+        .find(|l| l.contains("competitive_perf_gate -- --ignored --exact"))
+        .expect("the ratchet test line is missing");
+    assert!(
+        !ratchet.contains("|| true"),
+        "the ratchet line swallows its failure with `|| true`: a ratchet failure must fail the job"
+    );
+    assert!(
+        !ratchet.contains("continue-on-error"),
+        "the ratchet line uses continue-on-error: a ratchet failure must fail the job"
+    );
+    assert!(
+        !text.contains("continue-on-error"),
+        "the workflow uses continue-on-error: a ratchet failure must fail the job"
+    );
+    assert!(
+        !text.contains("|| true"),
+        "the workflow uses `|| true`: a ratchet failure must fail the job"
+    );
+}
