@@ -142,13 +142,150 @@ fn runbook_keep_commands_match_cli_help() {
 
 #[test]
 fn docs_state_what_is_not_tested() {
-    for path in ["docs/product/quickstart.md", "docs/product/runbook.md"] {
+    for path in [
+        "docs/product/quickstart.md",
+        "docs/product/runbook.md",
+        "docs/product/alerts.md",
+    ] {
         let md = doc(path).to_lowercase();
         assert!(
             md.contains("not tested"),
             "{path} does not say what is not tested"
         );
     }
+}
+
+/// GitHub anchor of a heading: lowercase, spaces become `-`, other characters
+/// outside ASCII letters, digits and `-` are dropped.
+fn heading_anchor(heading: &str) -> String {
+    let mut out = String::new();
+    for c in heading.trim().to_lowercase().chars() {
+        if c == ' ' {
+            out.push('-');
+        } else if c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The anchor of each `## ` heading in `md`, skipping lines inside a fence.
+fn headings(md: &str) -> Vec<String> {
+    let mut in_fence = false;
+    let mut out = Vec::new();
+    for line in md.lines() {
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        if let Some(text) = line.strip_prefix("## ") {
+            out.push(heading_anchor(text));
+        }
+    }
+    out
+}
+
+/// The text under `## <heading>` up to the next `## ` heading, if the heading exists.
+fn section(md: &str, heading: &str) -> Option<String> {
+    let mut in_section = false;
+    let mut out = String::new();
+    for line in md.lines() {
+        if let Some(text) = line.strip_prefix("## ") {
+            if in_section {
+                break;
+            }
+            in_section = text.trim() == heading;
+            continue;
+        }
+        if in_section {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    in_section.then_some(out)
+}
+
+/// The anchor of every `](runbook.md#anchor)` link in `alerts`.
+fn runbook_link_anchors(alerts: &str) -> Vec<String> {
+    const PREFIX: &str = "](runbook.md#";
+    let mut anchors = Vec::new();
+    let mut rest = alerts;
+    while let Some(at) = rest.find(PREFIX) {
+        let after = &rest[at + PREFIX.len()..];
+        let end = after.find(')').unwrap_or(after.len());
+        anchors.push(after[..end].to_string());
+        rest = &after[end..];
+    }
+    anchors
+}
+
+/// The anchors that `alerts` links to in `runbook` but that `runbook` has no heading for.
+fn broken_runbook_links(alerts: &str, runbook: &str) -> Vec<String> {
+    let known = headings(runbook);
+    runbook_link_anchors(alerts)
+        .into_iter()
+        .filter(|anchor| !known.contains(anchor))
+        .collect()
+}
+
+#[test]
+fn runbook_has_upgrade_section() {
+    let runbook = doc("docs/product/runbook.md");
+    let upgrade = section(&runbook, "Upgrade").expect("runbook has no `## Upgrade` section");
+    for needle in ["/readyz", "raftz", "rollout undo", "not tested"] {
+        assert!(
+            upgrade.contains(needle),
+            "`## Upgrade` does not mention `{needle}`"
+        );
+    }
+}
+
+#[test]
+fn alerts_doc_links_resolve() {
+    let alerts = doc("docs/product/alerts.md");
+    let runbook = doc("docs/product/runbook.md");
+    assert!(
+        runbook_link_anchors(&alerts).len() >= 5,
+        "alerts.md has fewer than 5 runbook links"
+    );
+    assert_eq!(
+        broken_runbook_links(&alerts, &runbook),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        headings(&alerts).len(),
+        5,
+        "alerts.md must have exactly five `##` headings"
+    );
+    for title in [
+        "Node down",
+        "Disk full",
+        "Replica behind",
+        "Readiness failing",
+        "Token rejects",
+    ] {
+        let body = section(&alerts, title)
+            .unwrap_or_else(|| panic!("alerts.md has no `## {title}` heading"));
+        for label in ["Symptom:", "Check:", "Action:"] {
+            assert!(
+                body.lines().any(|line| line.starts_with(label)),
+                "`## {title}` has no `{label}` line"
+            );
+        }
+    }
+}
+
+#[test]
+fn alerts_link_check_rejects_a_missing_anchor() {
+    let runbook = "# Runbook\n\n## Node down\n";
+    assert_eq!(
+        broken_runbook_links("[x](runbook.md#nope)", runbook),
+        vec!["nope".to_string()]
+    );
+    assert!(broken_runbook_links("[x](runbook.md#node-down)", runbook).is_empty());
 }
 
 #[test]
