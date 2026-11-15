@@ -238,7 +238,7 @@ async fn real_keep_process_correlates_structured_stdout() {
     assert!(
         !include_str!("../../../Cargo.toml").contains("sift =")
             && !include_str!("../Cargo.toml").contains("sift =")
-            && !include_str!("../src/bin/keep.rs").contains("SIFT_"),
+            && !include_str!("../src/bin/keep/main.rs").contains("SIFT_"),
         "Keep must not depend on or configure Sift directly"
     );
 }
