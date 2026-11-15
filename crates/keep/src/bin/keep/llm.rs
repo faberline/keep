@@ -59,7 +59,8 @@ const TOPICS: &[cli_std::llm::Topic] = &[
             - `KEEP_API_TOKEN` (read-write) and `KEEP_API_TOKEN_READONLY` (GET/HEAD only) — Bearer tokens for the data plane.\n\
             - `--tls-cert/--tls-key` (`KEEP_TLS_CERT` / `KEEP_TLS_KEY`) — serve the public API over HTTPS.\n\
             - `--node-id/--node-count/--shard-count/--peers` — cluster topology.\n\
-            - `KEEP_TOKEN_SECRET` — enable claim-check token enforcement.\n\n\
+            - `KEEP_TOKEN_SECRET` — enable claim-check token enforcement.\n\
+            - `KEEP_TOKEN_SECRET_PREVIOUS` — optional old secret that is still accepted during rotation.\n\n\
             Cloud-native: `/healthz` + `/readyz` probes and a SIGTERM-aware graceful drain \
             (`--grace-secs`) so k8s rolls pods without dropping requests.\n",
     ),

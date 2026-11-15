@@ -278,6 +278,12 @@ pub(crate) async fn serve_main(args: ServeArgs, worker_threads: usize) -> Result
         if !secret.is_empty() {
             state = state.with_token_secret(secret.into_bytes());
             tracing::info!("claim-check token enforcement ON");
+            if let Ok(prev) = std::env::var("KEEP_TOKEN_SECRET_PREVIOUS") {
+                if !prev.is_empty() {
+                    state = state.with_previous_token_secret(prev.into_bytes());
+                    tracing::info!("previous claim-check token secret accepted (rotation)");
+                }
+            }
         }
     }
     // Peer raft RPCs (`/shard/{id}/raft/*`, `/shard/{id}/raftz`) share the h2c

@@ -636,6 +636,49 @@ async fn keep_ns_token_checks_bare_key() {
     assert_eq!(st, StatusCode::FORBIDDEN);
 }
 
+#[tokio::test]
+async fn token_rotation_loses_no_request() {
+    let old = b"old-secret".to_vec();
+    let new = b"new-secret".to_vec();
+    let third = b"third-secret".to_vec();
+    let state = AppState::new(Arc::new(KvEngine::with_shards(16)))
+        .with_token_secret(new.clone())
+        .with_previous_token_secret(old.clone());
+    let app = router(state);
+
+    let put = |key: &str, token: &str| {
+        Request::builder()
+            .method("PUT")
+            .uri(format!("/results/{key}"))
+            .header(header::CONTENT_TYPE, "application/octet-stream")
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .body(Body::from("R"))
+            .unwrap()
+    };
+    let scope = |key: &str| claim_token::Scope {
+        r: key.into(),
+        w: key.into(),
+        exp: u64::MAX,
+    };
+    let old_token = claim_token::sign(&old, &scope("job-old"));
+    let new_token = claim_token::sign(&new, &scope("job-new"));
+    let third_token = claim_token::sign(&third, &scope("job-new"));
+
+    // A token from before the rotation and one from after both succeed.
+    let (st, _) = send(&app, put("job-old", &old_token)).await;
+    assert_eq!(st, StatusCode::OK);
+    let (st, _) = send(&app, put("job-new", &new_token)).await;
+    assert_eq!(st, StatusCode::OK);
+    // A token from a third secret is rejected.
+    let (st, _) = send(&app, put("job-new", &third_token)).await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+
+    // Without the previous secret, the old token is rejected.
+    let app = router(AppState::new(Arc::new(KvEngine::with_shards(16))).with_token_secret(new));
+    let (st, _) = send(&app, put("job-old", &old_token)).await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+}
+
 /// #746: after the service-auth adoption, the claim-check contract is unchanged
 /// — enforcement runs through keep's `KeepVerifier` per-handler but still
 /// returns 403 (not 401) for invalid and out-of-scope tokens, and the accepted
