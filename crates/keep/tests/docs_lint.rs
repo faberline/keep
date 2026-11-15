@@ -448,3 +448,119 @@ fn limits_doc_has_sections() {
         );
     }
 }
+
+/// One gate row of the `## Gates` table: (gate, where keep does it, status).
+fn gate_rows(md: &str) -> Vec<(String, String, String)> {
+    let mut rows = Vec::new();
+    for line in section(md, "Gates").unwrap_or_default().lines() {
+        let line = line.trim();
+        if !line.starts_with('|') || line.contains("---") {
+            continue;
+        }
+        let cells: Vec<&str> = line.trim_matches('|').split('|').map(str::trim).collect();
+        if cells.len() != 3 || cells[0] == "Gate" {
+            continue;
+        }
+        rows.push((
+            cells[0].to_string(),
+            cells[1].to_string(),
+            cells[2].to_string(),
+        ));
+    }
+    rows
+}
+
+/// The text inside each pair of backticks in `cell`.
+fn backtick_spans(cell: &str) -> Vec<String> {
+    cell.split('`')
+        .enumerate()
+        .filter(|(i, _)| i % 2 == 1)
+        .map(|(_, span)| span.to_string())
+        .collect()
+}
+
+/// The status of each row that is neither `present` nor `missing`.
+fn bad_status(rows: &[(String, String, String)]) -> Vec<String> {
+    rows.iter()
+        .map(|(_, _, status)| status.clone())
+        .filter(|status| status != "present" && status != "missing")
+        .collect()
+}
+
+/// True when the needle named in a `present` Where cell does not appear in its file.
+fn missing_needle(root: &Path, where_cell: &str) -> bool {
+    let spans = backtick_spans(where_cell);
+    let text = std::fs::read_to_string(root.join(&spans[0])).unwrap_or_default();
+    !text.contains(spans[1].as_str())
+}
+
+#[test]
+fn release_gaps_doc_has_every_gate() {
+    let md = doc("docs/product/release-gaps.md");
+    assert!(
+        section(&md, "Gates").is_some(),
+        "release-gaps.md lacks `## Gates`"
+    );
+    let missing_section =
+        section(&md, "Missing gates").expect("release-gaps.md lacks `## Missing gates`");
+    let rows = gate_rows(&md);
+    assert_eq!(rows.len(), 24, "release-gaps.md must have 24 gate rows");
+    assert_eq!(bad_status(&rows), Vec::<String>::new());
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut missing = 0;
+    for (gate, where_cell, status) in &rows {
+        if status == "present" {
+            let spans = backtick_spans(where_cell);
+            assert_eq!(
+                spans.len(),
+                2,
+                "`{gate}`: a present row needs a path and a needle"
+            );
+            let text = std::fs::read_to_string(root.join(&spans[0]))
+                .unwrap_or_else(|error| panic!("`{gate}`: read {}: {error}", spans[0]));
+            assert!(
+                text.contains(spans[1].as_str()),
+                "`{gate}`: {} does not contain `{}`",
+                spans[0],
+                spans[1]
+            );
+        } else {
+            missing += 1;
+            assert!(
+                missing_section.contains(gate.as_str()),
+                "`{gate}` is missing but not listed under `## Missing gates`"
+            );
+        }
+    }
+    assert_eq!(missing, 4, "release-gaps.md must list 4 missing gates");
+}
+
+#[test]
+fn release_gaps_rejects_bad_status() {
+    let md = "## Gates\n\n| Gate | Where keep does it | Status |\n|---|---|---|\n| g | `a` `b` | maybe |\n";
+    let rows = gate_rows(md);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(bad_status(&rows), vec!["maybe".to_string()]);
+    let good = [
+        (
+            "g".to_string(),
+            "`a` `b`".to_string(),
+            "present".to_string(),
+        ),
+        ("g".to_string(), "`a`".to_string(), "missing".to_string()),
+    ];
+    assert!(bad_status(&good).is_empty());
+}
+
+#[test]
+fn release_gaps_present_row_needs_real_needle() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    assert!(missing_needle(
+        &root,
+        "`.github/workflows/keep-release.yml` `no-such-step-name`"
+    ));
+    assert!(!missing_needle(
+        &root,
+        "`.github/workflows/keep-release.yml` `service-release.yml@`"
+    ));
+}
