@@ -7,7 +7,7 @@ use utoipa::OpenApi;
 use crate::cluster::ClusterState;
 use crate::http::error::ApiError;
 use crate::http::models::*;
-use crate::http::{handlers, hash, lists, meta, sets, zsets};
+use crate::http::{handlers, hash, lists, membership, meta, sets, zsets};
 
 #[derive(OpenApi)]
 #[openapi(
@@ -58,6 +58,9 @@ use crate::http::{handlers, hash, lists, meta, sets, zsets};
         meta::ttl,
         meta::persist,
         meta::getex,
+        membership::add_learner,
+        membership::promote_learner,
+        membership::remove_member,
         hash::hset,
         hash::hgetall,
         hash::hdel,
@@ -86,6 +89,8 @@ use crate::http::{handlers, hash, lists, meta, sets, zsets};
         handlers::openapi_spec,
     ),
     components(schemas(
+        membership::AddLearnerRequest,
+        membership::MembershipResponse,
         SetRequest,
         ValueResponse,
         OkResponse,
