@@ -1,5 +1,0 @@
-# cargo-audit configuration
-# Docs: https://rustsec.org/advisories/
-
-[advisories]
-ignore = []
