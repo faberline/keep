@@ -110,7 +110,7 @@ fn check_fixture(path: &Path, current: &[String], what: &str) {
     let current_lines: Vec<&str> = current.iter().map(String::as_str).collect();
     if committed_lines != current_lines {
         panic!(
-            "{what} changed (additive). Regenerate: KEEP_UPDATE_SURFACE=1 cargo test -p keep --test api_surface (add --features operator for the CRD)"
+            "{what} changed (additive). Regenerate: KEEP_UPDATE_SURFACE=1 cargo test -p keep --test it api_surface:: (add --features operator for the CRD)"
         );
     }
 }
