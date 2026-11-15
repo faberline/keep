@@ -6,7 +6,7 @@ use keep::persistence::recovery::RecoveryManager;
 use keep::persistence::PersistenceError;
 use tempfile::TempDir;
 
-const DOC: &str = include_str!("../../../docs/product/compatibility.md");
+const DOC: &str = include_str!("../../../../docs/product/compatibility.md");
 
 #[test]
 fn doc_states_the_real_format_versions() {
