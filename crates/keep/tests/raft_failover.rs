@@ -20,7 +20,8 @@ use keep::persistence::format::WalOp;
 use keep::raft::KvStateMachine;
 use keep::{ClusterConfig, KvEngine, KvKey, KvValue};
 use raft_runtime::{
-    FsyncPolicy, HostConfig, Membership, RaftHost, RaftStateMachine, RaftStore, SnapshotPolicy,
+    FsyncPolicy, HostConfig, Membership, NodeId, RaftHost, RaftStateMachine, RaftStore,
+    SnapshotPolicy,
 };
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
@@ -74,20 +75,17 @@ async fn spawn_on(
     let cluster = ClusterConfig::new(0, 1, 1, vec![]);
     let sm = KvStateMachine::new(engine.clone(), cluster, 0);
     std::fs::create_dir_all(dir).unwrap();
-    let store = RaftStore::open(dir.to_str().unwrap(), id, FsyncPolicy::Os).unwrap();
+    let store = RaftStore::open(dir.to_str().unwrap(), NodeId::new(id), FsyncPolicy::Os).unwrap();
     let host = Arc::new(RaftHost::spawn(
-        id,
-        Membership {
-            voters,
-            learners: vec![],
-        },
-        peers,
+        NodeId::new(id),
+        Membership::new(voters.into_iter().map(NodeId::new).collect(), vec![]),
+        peers
+            .into_iter()
+            .map(|(k, v)| (NodeId::new(k), v))
+            .collect(),
         store,
         sm as Arc<dyn RaftStateMachine>,
-        HostConfig {
-            snapshot: SnapshotPolicy::EveryEntries(snapshot_every),
-            ..Default::default()
-        },
+        HostConfig::default().with_snapshot(SnapshotPolicy::EveryEntries(snapshot_every)),
     ));
     let router = host.router();
     let serve = tokio::spawn(async move {

@@ -120,21 +120,12 @@ fn spec_gen(args: GenArgs) -> Result<()> {
         GenLang::Rust => Lang::Rust,
     };
     let target = TargetPolicy::from_toml(TARGET_POLICY)?.resolve(lang, args.target.as_deref())?;
-    let opts = GenOptions {
-        lang,
-        target: Some(target),
-        spec_path: PathBuf::new(),
-        out_dir: args.out.clone(),
-        client_name: "createClient".to_string(),
-        http_client: match args.http {
+    let opts = GenOptions::new(lang, PathBuf::new(), args.out.clone(), "createClient")
+        .with_target(target)
+        .with_http_client(match args.http {
             GenHttp::Fetch => HttpClient::Fetch,
             GenHttp::Axios => HttpClient::Axios,
-        },
-        emit_types: true,
-        emit_client: true,
-        // TanStack Query hooks are a TypeScript-only concern.
-        emit_hooks: matches!(lang, Lang::Ts),
-    };
+        });
     let output = generate_for_target(&keep::spec::openapi_json(), &opts, target)?;
     output.write_to_dir(&args.out)?;
     for file in &output.files {

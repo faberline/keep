@@ -604,11 +604,11 @@ async fn keep_ns_token_checks_bare_key() {
     let app = router(state);
 
     // Token scoped to the BARE result key 'job-3'.
-    let scope = claim_token::Scope {
-        r: "job-3".into(),
-        w: "job-3".into(),
-        exp: u64::MAX,
-    };
+    let scope = claim_token::Scope::new(
+        claim_token::InputKey::new("job-3"),
+        claim_token::ResultKey::new("job-3"),
+        claim_token::ExpiryUnixSeconds::new(u64::MAX),
+    );
     let token = claim_token::sign(&secret, &scope);
 
     // PUT with a namespace header still passes — the token is verified against
@@ -655,10 +655,12 @@ async fn token_rotation_loses_no_request() {
             .body(Body::from("R"))
             .unwrap()
     };
-    let scope = |key: &str| claim_token::Scope {
-        r: key.into(),
-        w: key.into(),
-        exp: u64::MAX,
+    let scope = |key: &str| {
+        claim_token::Scope::new(
+            claim_token::InputKey::new(key),
+            claim_token::ResultKey::new(key),
+            claim_token::ExpiryUnixSeconds::new(u64::MAX),
+        )
     };
     let old_token = claim_token::sign(&old, &scope("job-old"));
     let new_token = claim_token::sign(&new, &scope("job-new"));
@@ -691,11 +693,11 @@ async fn keep_token_invalid_and_out_of_scope_are_403() {
     let app = router(state);
 
     // Seed an input the worker is allowed to read with an in-scope token.
-    let scope = claim_token::Scope {
-        r: "job-7".into(),
-        w: "job-7".into(),
-        exp: u64::MAX,
-    };
+    let scope = claim_token::Scope::new(
+        claim_token::InputKey::new("job-7"),
+        claim_token::ResultKey::new("job-7"),
+        claim_token::ExpiryUnixSeconds::new(u64::MAX),
+    );
     let token = claim_token::sign(&secret, &scope);
     let put = Request::builder()
         .method("PUT")
@@ -729,11 +731,11 @@ async fn keep_token_invalid_and_out_of_scope_are_403() {
     assert_eq!(st, StatusCode::FORBIDDEN);
 
     // A valid token for a DIFFERENT id (out of scope) ⇒ 403.
-    let other = claim_token::Scope {
-        r: "job-other".into(),
-        w: "job-other".into(),
-        exp: u64::MAX,
-    };
+    let other = claim_token::Scope::new(
+        claim_token::InputKey::new("job-other"),
+        claim_token::ResultKey::new("job-other"),
+        claim_token::ExpiryUnixSeconds::new(u64::MAX),
+    );
     let other_token = claim_token::sign(&secret, &other);
     let get_oos = Request::builder()
         .method("GET")

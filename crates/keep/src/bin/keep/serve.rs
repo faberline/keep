@@ -292,7 +292,7 @@ pub(crate) async fn serve_main(args: ServeArgs, worker_threads: usize) -> Result
     // single-node deployments keep the direct-to-engine write path. The hosts
     // are held for the server's lifetime (Drop aborts their tick/pump tasks).
     #[cfg(feature = "raft")]
-    let shard_hosts = if raft_runtime::cluster::replica_mode() {
+    let shard_hosts = if raft_runtime::replica_mode() {
         let replicas = std::env::var("KEEP_REPLICAS_PER_SHARD")
             .ok()
             .and_then(|v| v.parse::<u32>().ok())

@@ -26,10 +26,7 @@ impl ManagedService for Keep {
     fn readiness_targets(&self) -> Vec<ReadinessTarget> {
         // keep is always a StatefulSet (durable disk tier); poll it for
         // `.status.readyReplicas`.
-        vec![ReadinessTarget {
-            kind: "StatefulSet",
-            name: self.name_any(),
-        }]
+        vec![ReadinessTarget::new("StatefulSet", self.name_any())]
     }
 
     fn status_patch(&self, ready: &ReadyFacts) -> serde_json::Value {
