@@ -1784,4 +1784,4 @@ impl Default for KvEngine {
 }
 
 #[cfg(test)]
-mod unit_tests;
+mod unit_suite;
