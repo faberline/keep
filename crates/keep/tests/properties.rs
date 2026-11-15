@@ -115,7 +115,7 @@ mod raft_apply {
     use keep::persistence::format::WalOp;
     use keep::raft::KvStateMachine;
     use keep::ClusterConfig;
-    use raft_runtime::RaftStateMachine;
+    use raft_runtime::{Index, RaftStateMachine};
     use std::sync::Arc;
 
     proptest! {
@@ -137,9 +137,9 @@ mod raft_apply {
                         WalOp::Delete { key: k.clone() }
                     }
                 };
-                sm.apply((i + 1) as u64, &serde_json::to_vec(&wal).unwrap()).unwrap();
+                sm.apply(Index::new((i + 1) as u64), &serde_json::to_vec(&wal).unwrap()).unwrap();
             }
-            prop_assert_eq!(sm.applied_index(), ops.len() as u64);
+            prop_assert_eq!(sm.applied_index().get(), ops.len() as u64);
             let mut a = engine_a.dump_values();
             a.sort_by(|x, y| x.0.cmp(&y.0));
             let mut b = engine_b.dump_values();

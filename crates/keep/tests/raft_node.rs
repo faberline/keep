@@ -17,7 +17,7 @@ use std::sync::Arc;
 use keep::persistence::format::WalOp;
 use keep::raft::{KvStateMachine, ShardHosts};
 use keep::{ClusterConfig, KvEngine, KvKey, KvValue};
-use raft_runtime::RaftStateMachine;
+use raft_runtime::{Index, RaftStateMachine};
 
 /// A fresh, empty temp dir for a test's raft hard-state stores.
 fn tmp_dir(tag: &str) -> std::path::PathBuf {
@@ -51,7 +51,7 @@ async fn single_node_per_shard_read_your_write() {
         )
         .await
         .unwrap();
-    assert!(idx >= 1, "propose returns the applied raft index");
+    assert!(idx.get() >= 1, "propose returns the applied raft index");
     assert_eq!(
         engine.get(&KvKey::new("rk").unwrap()),
         Some(KvValue::String("via-raft".to_string())),
@@ -136,8 +136,8 @@ async fn shard_state_machine_snapshot_round_trips() {
         ttl: None,
     })
     .unwrap();
-    sm.apply(7, &cmd).unwrap();
-    assert_eq!(sm.applied_index(), 7);
+    sm.apply(Index::new(7), &cmd).unwrap();
+    assert_eq!(sm.applied_index(), Index::new(7));
     let mut snap = Vec::new();
     sm.snapshot(&mut snap).unwrap();
 
@@ -147,7 +147,7 @@ async fn shard_state_machine_snapshot_round_trips() {
     sm2.restore(&mut std::io::Cursor::new(&snap)).unwrap();
     assert_eq!(
         sm2.applied_index(),
-        7,
+        Index::new(7),
         "restore sets applied_index to the snapshot head"
     );
     for i in 0..50 {
@@ -178,7 +178,9 @@ async fn shard_state_machine_snapshot_round_trips() {
 #[cfg(test)]
 mod multi_node {
     use super::*;
-    use raft_runtime::{FsyncPolicy, HostConfig, Membership, RaftHost, RaftStore, SnapshotPolicy};
+    use raft_runtime::{
+        FsyncPolicy, HostConfig, Membership, NodeId, RaftHost, RaftStore, SnapshotPolicy,
+    };
     use std::collections::HashMap;
     use std::time::Duration;
     use tokio::net::TcpListener;
@@ -212,20 +214,18 @@ mod multi_node {
         let cluster = ClusterConfig::new(0, 1, 1, vec![]);
         let sm = KvStateMachine::new(engine.clone(), cluster, 0);
         std::fs::create_dir_all(dir).unwrap();
-        let store = RaftStore::open(dir.to_str().unwrap(), id, FsyncPolicy::Os).unwrap();
+        let store =
+            RaftStore::open(dir.to_str().unwrap(), NodeId::new(id), FsyncPolicy::Os).unwrap();
         let host = Arc::new(RaftHost::spawn(
-            id,
-            Membership {
-                voters,
-                learners: vec![],
-            },
-            peers,
+            NodeId::new(id),
+            Membership::new(voters.into_iter().map(NodeId::new).collect(), vec![]),
+            peers
+                .into_iter()
+                .map(|(k, v)| (NodeId::new(k), v))
+                .collect(),
             store,
             sm as Arc<dyn RaftStateMachine>,
-            HostConfig {
-                snapshot: SnapshotPolicy::EveryEntries(snapshot_every),
-                ..Default::default()
-            },
+            HostConfig::default().with_snapshot(SnapshotPolicy::EveryEntries(snapshot_every)),
         ));
         let router = host.router();
         let serve = tokio::spawn(async move {

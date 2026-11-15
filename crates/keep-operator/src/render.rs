@@ -54,15 +54,7 @@ fn owner_ref(keep: &Keep) -> Option<Value> {
 
 /// keep's render identity for the shared [`service_k8s::render`] helpers.
 fn ctx<'a>(keep: &Keep, name: &'a str, ns: &'a str) -> RenderCtx<'a> {
-    RenderCtx {
-        app: APP,
-        manager: MANAGER,
-        api_version: API_VERSION,
-        kind: KIND,
-        name,
-        ns,
-        owner: owner_ref(keep),
-    }
+    RenderCtx::new(APP, MANAGER, API_VERSION, KIND, name, ns).with_owner(owner_ref(keep))
 }
 
 /// Render every child object for `keep`, in dependency order (namespace-scoped
@@ -98,7 +90,7 @@ pub fn render(keep: &Keep) -> Vec<Value> {
 fn backup_cron_job(keep: &Keep, cx: &RenderCtx) -> Option<Value> {
     let policy = keep.spec.backup.as_ref()?;
     let s = &keep.spec;
-    let name = format!("{}-backup", cx.name);
+    let name = format!("{}-backup", cx.name());
     let mut args = vec![
         "backup".to_string(),
         "--dest".to_string(),
@@ -129,7 +121,7 @@ fn backup_cron_job(keep: &Keep, cx: &RenderCtx) -> Option<Value> {
         env_from: vec![],
         volumes: vec![],
         volume_mounts: vec![],
-        service_account_name: Some(cx.name),
+        service_account_name: Some(cx.name()),
         cpu: "100m",
         memory: "128Mi",
         successful_jobs_history_limit: 3,
@@ -142,7 +134,7 @@ fn backup_cron_job(keep: &Keep, cx: &RenderCtx) -> Option<Value> {
 /// ConfigMap edit can roll pods). Cluster/topology values ride the downward-API
 /// env instead.
 fn configmap(keep: &Keep, cx: &RenderCtx) -> Value {
-    let name = format!("{}-config", cx.name);
+    let name = format!("{}-config", cx.name());
     let mut data = json!({
         "KEEP_PORT": CLIENT_PORT.to_string(),
         "KEEP_SHARDS": keep.spec.engine_shards.to_string(),
@@ -184,7 +176,7 @@ fn configmap(keep: &Keep, cx: &RenderCtx) -> Value {
 /// contexts, and writable `/tmp`.
 fn statefulset(keep: &Keep, cx: &RenderCtx, headless: &str) -> Value {
     let s = &keep.spec;
-    let cfg = format!("{}-config", cx.name);
+    let cfg = format!("{}-config", cx.name());
     let from_cfg = |key: &str| json!({ "name": key, "valueFrom": { "configMapKeyRef": { "name": cfg, "key": key } } });
     // Optional variant for keys that `configmap()` writes only when the spec sets them.
     let from_cfg_opt = |key: &str| json!({ "name": key, "valueFrom": { "configMapKeyRef": { "name": cfg, "key": key, "optional": true } } });
@@ -237,7 +229,7 @@ fn statefulset(keep: &Keep, cx: &RenderCtx, headless: &str) -> Value {
 
     let mut sts = render::sharded_statefulset(ShardedStatefulSet {
         cx,
-        name: cx.name,
+        name: cx.name(),
         component: COMPONENT,
         image: s.cluster.image.as_str(),
         image_pull_policy: s
@@ -248,15 +240,16 @@ fn statefulset(keep: &Keep, cx: &RenderCtx, headless: &str) -> Value {
         command: vec!["keep".into()],
         ports: vec![("http", CLIENT_PORT)],
         headless_service: headless,
-        shard_count: s.cluster.shard_count,
-        replicas_per_shard: s.cluster.replicas_per_shard,
+        shard_count: s.cluster.shard_count.max(1),
+        replicas_per_shard: s.cluster.replicas_per_shard.max(1),
         voter_count: s.cluster.voter_count,
         headless_env_key: "KEEP_HEADLESS_SERVICE",
         cpu,
         memory,
         extra_env,
         volume_claim: Some(pvc),
-    });
+    })
+    .expect("shard_count and replicas_per_shard are clamped to at least 1");
     harden(&mut sts, s.grace_secs);
     sts
 }

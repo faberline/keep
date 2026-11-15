@@ -146,23 +146,21 @@ fn render_emits_downward_api_statefulset() {
     // Readiness target + status phases.
     let targets = keep.readiness_targets();
     assert_eq!(targets.len(), 1);
-    assert_eq!(targets[0].kind, "StatefulSet");
+    assert_eq!(targets[0].kind(), "StatefulSet");
 
     let mut all_ready = HashMap::new();
     all_ready.insert("store".to_string(), 6i64);
-    let status = keep.status_patch(&ReadyFacts { ready: all_ready });
+    let status = keep.status_patch(&ReadyFacts::new(all_ready));
     assert_eq!(status["status"]["phase"], "Ready");
     assert_eq!(status["status"]["desiredReplicas"], 6);
     assert_eq!(status["status"]["shardCount"], 2);
 
     let mut partial = HashMap::new();
     partial.insert("store".to_string(), 2i64);
-    let status = keep.status_patch(&ReadyFacts { ready: partial });
+    let status = keep.status_patch(&ReadyFacts::new(partial));
     assert_eq!(status["status"]["phase"], "Reconciling");
 
-    let status = keep.status_patch(&ReadyFacts {
-        ready: HashMap::new(),
-    });
+    let status = keep.status_patch(&ReadyFacts::new(HashMap::new()));
     assert_eq!(status["status"]["phase"], "Pending");
 }
 

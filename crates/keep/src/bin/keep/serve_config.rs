@@ -104,14 +104,14 @@ pub(crate) fn derive_cluster_config(args: &crate::serve::ServeArgs) -> Result<ke
     let node_count = topo.replicas_per_shard.max(1) as usize;
     let mut peers = vec![String::new(); node_count];
     for (node, url) in topo.peers {
-        if let Some(slot) = peers.get_mut(node as usize) {
+        if let Some(slot) = peers.get_mut(node.get() as usize) {
             *slot = url;
         }
     }
     Ok(keep::ClusterConfig::from_shared_topology(
-        topo.node_id as usize,
+        topo.node_id.get() as usize,
         node_count,
-        dims.shard_count,
+        dims.shard_count(),
         peers,
     ))
 }

@@ -10,12 +10,7 @@ use tokio::net::TcpListener;
 
 /// Load the certificate chain and private key for the public API.
 pub fn load_server_config(cert: &Path, key: &Path) -> Result<Arc<rustls::ServerConfig>> {
-    let tls = peer_tls::PeerTlsConfig {
-        cert: cert.to_path_buf(),
-        key: key.to_path_buf(),
-        ca: cert.to_path_buf(),
-        required: false,
-    };
+    let tls = peer_tls::PeerTlsConfig::new(cert, key, cert, false);
     let mut config = tls.rustls_server_config().with_context(|| {
         format!(
             "load TLS certificate {} and key {}",

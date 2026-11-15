@@ -217,12 +217,15 @@ impl WalReader {
         };
 
         let op: WalOp =
-            bincode::deserialize(&frame.payload).map_err(|e| PersistenceError::CorruptedWal {
-                pos: frame.seq,
+            bincode::deserialize(frame.payload()).map_err(|e| PersistenceError::CorruptedWal {
+                pos: frame.seq(),
                 reason: format!("Deserialization failed: {}", e),
             })?;
 
-        Ok(Some(WalEntry { seq: frame.seq, op }))
+        Ok(Some(WalEntry {
+            seq: frame.seq(),
+            op,
+        }))
     }
 
     /// Get the WAL file path
