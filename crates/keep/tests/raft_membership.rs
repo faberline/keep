@@ -301,17 +301,27 @@ async fn refused_requests_change_nothing() {
     let leader_idx = await_leader(&nodes).await;
     let leader = &nodes[leader_idx];
 
-    let before = leader.host.status().await;
-    let mut voters_before = before.committed_voters.clone();
-    let mut learners_before = before.learners.clone();
-    voters_before.sort();
-    learners_before.sort();
+    async fn sorted_membership(node: &Node) -> (Vec<NodeId>, Vec<NodeId>) {
+        let st = node.host.status().await;
+        let mut voters = st.committed_voters;
+        let mut learners = st.learners;
+        voters.sort();
+        learners.sort();
+        (voters, learners)
+    }
+
+    let before = sorted_membership(leader).await;
 
     let removed = keep::raft::remove_member(&leader.host, NodeId::new(99)).await;
     assert_eq!(
         removed,
         Err(MembershipError::NotFound(NodeId::new(99))),
         "removing an unknown node is NotFound"
+    );
+    assert_eq!(
+        sorted_membership(leader).await,
+        before,
+        "membership unchanged after remove_member"
     );
 
     let promoted = keep::raft::promote_learner(&leader.host, NodeId::new(99)).await;
@@ -320,6 +330,11 @@ async fn refused_requests_change_nothing() {
         Err(MembershipError::NotFound(NodeId::new(99))),
         "promoting an unknown node is NotFound"
     );
+    assert_eq!(
+        sorted_membership(leader).await,
+        before,
+        "membership unchanged after promote_learner"
+    );
 
     let added = keep::raft::add_learner(&leader.host, NodeId::new(0), nodes[0].url.clone()).await;
     assert_eq!(
@@ -327,14 +342,11 @@ async fn refused_requests_change_nothing() {
         Err(MembershipError::InFlight),
         "adding an existing voter is refused"
     );
-
-    let after = leader.host.status().await;
-    let mut voters_after = after.committed_voters.clone();
-    let mut learners_after = after.learners.clone();
-    voters_after.sort();
-    learners_after.sort();
-    assert_eq!(voters_after, voters_before, "committed voters unchanged");
-    assert_eq!(learners_after, learners_before, "learners unchanged");
+    assert_eq!(
+        sorted_membership(leader).await,
+        before,
+        "membership unchanged after add_learner"
+    );
 
     // A one-node group cannot lose its only voter.
     let solo_dir = tmp_dir("refused-solo");
