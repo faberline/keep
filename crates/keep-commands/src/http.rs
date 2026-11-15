@@ -9,6 +9,7 @@ pub mod error;
 pub mod handlers;
 pub mod hash;
 pub mod lists;
+pub mod membership;
 pub mod meta;
 pub mod metrics;
 pub mod models;
