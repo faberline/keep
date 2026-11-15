@@ -1,0 +1,19 @@
+[package]
+name = "keep-release-gate"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "keep-release-gate — release checks that replace the Python scripts under scripts/release"
+publish = false
+
+[dependencies]
+serde_json.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true
