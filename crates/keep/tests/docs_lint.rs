@@ -449,26 +449,6 @@ fn limits_doc_has_sections() {
     }
 }
 
-/// The text under `## <heading>` up to the next `## ` heading, if the heading exists.
-fn section(md: &str, heading: &str) -> Option<String> {
-    let mut in_section = false;
-    let mut out = String::new();
-    for line in md.lines() {
-        if let Some(text) = line.strip_prefix("## ") {
-            if in_section {
-                break;
-            }
-            in_section = text.trim() == heading;
-            continue;
-        }
-        if in_section {
-            out.push_str(line);
-            out.push('\n');
-        }
-    }
-    in_section.then_some(out)
-}
-
 /// One gate row of the `## Gates` table: (gate, where keep does it, status).
 fn gate_rows(md: &str) -> Vec<(String, String, String)> {
     let mut rows = Vec::new();
