@@ -5,10 +5,12 @@
 //! is a thin, typed adapter onto [`crate::engine::KvEngine`].
 
 pub use keep_access::auth;
+pub mod claims;
 pub mod error;
 pub mod handlers;
 pub mod hash;
 pub mod lists;
+pub mod membership;
 pub mod meta;
 pub mod metrics;
 pub mod models;
