@@ -655,10 +655,12 @@ async fn token_rotation_loses_no_request() {
             .body(Body::from("R"))
             .unwrap()
     };
-    let scope = |key: &str| claim_token::Scope {
-        r: key.into(),
-        w: key.into(),
-        exp: u64::MAX,
+    let scope = |key: &str| {
+        claim_token::Scope::new(
+            claim_token::InputKey::new(key),
+            claim_token::ResultKey::new(key),
+            claim_token::ExpiryUnixSeconds::new(u64::MAX),
+        )
     };
     let old_token = claim_token::sign(&old, &scope("job-old"));
     let new_token = claim_token::sign(&new, &scope("job-new"));

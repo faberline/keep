@@ -195,7 +195,7 @@ mod tests {
         let third = Arc::new(b"third-secret".to_vec());
         let third_token = claim_token::sign(&third, &scope("a", "b", u64::MAX));
         let p = v.authenticate(&bearer(&old_token)).unwrap();
-        assert_eq!(p.scope.r, "a");
+        assert_eq!(p.scope.r().as_str(), "a");
         assert!(v.authenticate(&bearer(&new_token)).is_ok());
         assert!(v.authenticate(&bearer(&third_token)).is_err());
     }
