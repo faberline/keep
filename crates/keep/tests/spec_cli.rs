@@ -195,20 +195,15 @@ fn every_ref_resolves_to_a_registered_component_schema() {
 /// codegen path, no external tool — and every language emits client files.
 #[test]
 fn spec_gen_composes_openapi_codegen_for_every_language() {
-    use openapi_codegen::{generate, GenOptions, HttpClient, Lang};
+    use openapi_codegen::{generate, GenOptions, Lang};
     let doc = openapi_json();
     for lang in [Lang::Ts, Lang::Py, Lang::Rust] {
-        let opts = GenOptions {
+        let opts = GenOptions::new(
             lang,
-            target: None,
-            spec_path: std::path::PathBuf::new(),
-            out_dir: std::path::PathBuf::new(),
-            client_name: "createClient".to_string(),
-            http_client: HttpClient::Fetch,
-            emit_types: true,
-            emit_client: true,
-            emit_hooks: matches!(lang, Lang::Ts),
-        };
+            std::path::PathBuf::new(),
+            std::path::PathBuf::new(),
+            "createClient",
+        );
         let out = generate(&doc, &opts).expect("codegen composes on keep's OpenAPI");
         assert!(!out.files.is_empty(), "{lang:?} produced client files");
     }
