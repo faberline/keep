@@ -4,7 +4,7 @@
 
 How to change `keep`. What it promises and the work roots it owns live in
 [README.md](README.md); repository-wide authoring and verification rules live
-in the root [CONTRIBUTING.md](https://github.com/faberline/workspace/blob/main/CONTRIBUTING.md).
+in the standards of [faberline/aw](https://github.com/faberline/aw/tree/main/docs/standards).
 
 Work reaches `main` through the aw-worker flow of
 [faberline/aw](https://github.com/faberline/aw). An issue moves through

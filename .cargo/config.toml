@@ -1,3 +1,0 @@
-# Cargo workspace configuration for keep.
-[alias]
-xtest = "test --workspace"
