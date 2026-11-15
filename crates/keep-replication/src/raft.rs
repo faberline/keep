@@ -171,9 +171,50 @@ impl ShardHosts {
         replicas_per_shard: u32,
         snapshot_every: u64,
     ) -> Result<Self> {
+        Self::open(
+            cluster,
+            engine,
+            data_dir,
+            replicas_per_shard,
+            replicas_per_shard,
+            snapshot_every,
+        )
+        .await
+    }
+
+    /// As [`new`](Self::new), with `members_per_shard` voters per shard group.
+    /// Replicas `>= members_per_shard` start as learners and wait for the leader
+    /// to add them.
+    pub async fn with_members(
+        cluster: ClusterConfig,
+        engine: Arc<KvEngine>,
+        data_dir: &Path,
+        replicas_per_shard: u32,
+        members_per_shard: u32,
+    ) -> Result<Self> {
+        Self::open(
+            cluster,
+            engine,
+            data_dir,
+            replicas_per_shard,
+            members_per_shard,
+            SNAPSHOT_EVERY,
+        )
+        .await
+    }
+
+    async fn open(
+        cluster: ClusterConfig,
+        engine: Arc<KvEngine>,
+        data_dir: &Path,
+        replicas_per_shard: u32,
+        members_per_shard: u32,
+        snapshot_every: u64,
+    ) -> Result<Self> {
         let mut hosts = HashMap::new();
         for shard in hosted_shards(&cluster, replicas_per_shard) {
-            let (node_id, membership, peers) = shard_topology(&cluster, shard, replicas_per_shard);
+            let (node_id, membership, peers) =
+                shard_topology(&cluster, shard, replicas_per_shard, members_per_shard);
             let dir = data_dir.join("raft").join(format!("shard-{shard}"));
             std::fs::create_dir_all(&dir)?;
             let store = RaftStore::open(
@@ -378,6 +419,7 @@ fn shard_topology(
     cluster: &ClusterConfig,
     shard: u32,
     replicas_per_shard: u32,
+    members_per_shard: u32,
 ) -> (NodeId, Membership, HashMap<NodeId, String>) {
     if replicas_per_shard <= 1 {
         return (
@@ -388,6 +430,7 @@ fn shard_topology(
     }
     let node_count = cluster.node_count.max(1) as u32;
     let replicas = replicas_per_shard.min(node_count);
+    let members = members_per_shard.clamp(1, replicas);
     let owner = cluster.owner_of_shard(shard) as u32;
     let mut node_id = NodeId::new(0);
     let mut peers = HashMap::new();
@@ -400,6 +443,89 @@ fn shard_topology(
             peers.insert(rid, format!("{}/shard/{shard}", base.trim_end_matches('/')));
         }
     }
-    let membership = Membership::new((0..u64::from(replicas)).map(NodeId::new).collect(), vec![]);
+    let voters: Vec<NodeId> = (0..u64::from(members)).map(NodeId::new).collect();
+    // A replica at or above `members` joins as a learner of its own id and
+    // waits for the leader to add it (`add_learner`, then promote).
+    let learners = if u64::from(node_id.get()) >= u64::from(members) {
+        vec![node_id]
+    } else {
+        vec![]
+    };
+    let membership = Membership::new(voters, learners);
     (node_id, membership, peers)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cluster(node_id: usize) -> ClusterConfig {
+        ClusterConfig::from_shared_topology(
+            node_id,
+            3,
+            1,
+            vec!["http://a".into(), "http://b".into(), "http://c".into()],
+        )
+    }
+
+    #[test]
+    fn topology_without_members_is_unchanged() {
+        let (node_id, membership, peers) = shard_topology(&cluster(2), 0, 3, 3);
+        assert_eq!(node_id, NodeId::new(2));
+        assert_eq!(
+            membership.voters(),
+            &[NodeId::new(0), NodeId::new(1), NodeId::new(2)][..]
+        );
+        assert!(membership.learners().is_empty());
+        assert_eq!(peers.len(), 2);
+    }
+
+    #[test]
+    fn topology_pod_below_members_is_voter() {
+        let (node_id, membership, peers) = shard_topology(&cluster(1), 0, 3, 2);
+        assert_eq!(node_id, NodeId::new(1));
+        assert_eq!(membership.voters(), &[NodeId::new(0), NodeId::new(1)][..]);
+        assert!(membership.learners().is_empty());
+        assert_eq!(peers.len(), 2);
+    }
+
+    #[test]
+    fn topology_pod_at_members_is_learner() {
+        let (node_id, membership, peers) = shard_topology(&cluster(2), 0, 3, 2);
+        assert_eq!(node_id, NodeId::new(2));
+        assert_eq!(membership.voters(), &[NodeId::new(0), NodeId::new(1)][..]);
+        assert_eq!(membership.learners(), &[NodeId::new(2)][..]);
+        assert_eq!(
+            peers.get(&NodeId::new(0)).map(String::as_str),
+            Some("http://a/shard/0")
+        );
+        assert_eq!(
+            peers.get(&NodeId::new(1)).map(String::as_str),
+            Some("http://b/shard/0")
+        );
+        assert_eq!(peers.len(), 2);
+    }
+
+    #[test]
+    fn topology_members_clamped() {
+        let (_, membership, _) = shard_topology(&cluster(2), 0, 3, 9);
+        assert_eq!(
+            membership.voters(),
+            &[NodeId::new(0), NodeId::new(1), NodeId::new(2)][..]
+        );
+        assert!(membership.learners().is_empty());
+
+        let (_, membership, _) = shard_topology(&cluster(0), 0, 3, 0);
+        assert_eq!(membership.voters(), &[NodeId::new(0)][..]);
+        assert!(membership.learners().is_empty());
+    }
+
+    #[test]
+    fn topology_single_node_ignores_members() {
+        let (node_id, membership, peers) = shard_topology(&cluster(0), 0, 1, 1);
+        assert_eq!(node_id, NodeId::new(0));
+        assert_eq!(membership.voters(), &[NodeId::new(0)][..]);
+        assert!(membership.learners().is_empty());
+        assert!(peers.is_empty());
+    }
 }
