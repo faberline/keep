@@ -1219,3 +1219,55 @@ async fn info_reports_persistence_enabled_with_fsync_interval() {
     assert_eq!(info["persistence_enabled"], json!(true));
     assert_eq!(info["fsync_interval_ms"], json!(25));
 }
+
+#[tokio::test]
+async fn membership_endpoints_report_raft_disabled() {
+    let (app, _) = app();
+    let body = json!({"node_id": 3, "url": "http://127.0.0.1:1"});
+    let (st, v) = send_json(&app, "POST", "/admin/raft/0/members", body).await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+    assert_eq!(v["code"], json!("raft_disabled"));
+
+    let (st, v) = send_json(&app, "POST", "/admin/raft/0/members/3/promote", Value::Null).await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+    assert_eq!(v["code"], json!("raft_disabled"));
+
+    let (st, v) = send_json(&app, "DELETE", "/admin/raft/0/members/3", Value::Null).await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+    assert_eq!(v["code"], json!("raft_disabled"));
+}
+
+#[tokio::test]
+async fn membership_endpoints_need_the_api_token() {
+    let state = AppState::new(Arc::new(KvEngine::with_shards(16))).with_api_token("top-secret-api");
+    let app = router(state);
+
+    let (st, _) = send_with_token(&app, "POST", "/admin/raft/0/members/3/promote", None).await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+
+    let (st, bytes) = send_with_token(
+        &app,
+        "POST",
+        "/admin/raft/0/members/3/promote",
+        Some("top-secret-api"),
+    )
+    .await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+    let v: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(v["code"], json!("raft_disabled"));
+}
+
+#[tokio::test]
+async fn membership_endpoints_are_in_openapi() {
+    let (app, _) = app();
+    let (st, doc) = send_json(&app, "GET", "/openapi.json", Value::Null).await;
+    assert_eq!(st, StatusCode::OK);
+    let paths = doc["paths"].as_object().expect("paths object");
+    for p in [
+        "/admin/raft/{shard}/members",
+        "/admin/raft/{shard}/members/{node_id}/promote",
+        "/admin/raft/{shard}/members/{node_id}",
+    ] {
+        assert!(paths.contains_key(p), "openapi documents {p}");
+    }
+}

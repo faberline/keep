@@ -1,3 +1,4 @@
+DELETE /admin/raft/{shard}/members/{node_id}
 DELETE /hashes/{key}
 DELETE /kv/{key}
 DELETE /locks/{key}
@@ -27,6 +28,8 @@ HEAD /hashes/{key}/fields/{field}
 HEAD /kv/{key}
 HEAD /sets/{key}/members/{member}
 PATCH /locks/{key}
+POST /admin/raft/{shard}/members
+POST /admin/raft/{shard}/members/{node_id}/promote
 POST /hashes/{key}
 POST /hashes/{key}/incr
 POST /hashes/{key}/mget
@@ -50,6 +53,9 @@ POST /sets/{key}
 POST /zsets/{key}
 POST /zsets/{key}/incr
 PUT /kv/{key}
+schema AddLearnerRequest
+schema AddLearnerRequest.node_id
+schema AddLearnerRequest.url
 schema ApiError
 schema ApiError.code
 schema ApiError.message
@@ -142,6 +148,10 @@ schema MembersRequest
 schema MembersRequest.members
 schema MembersResponse
 schema MembersResponse.members
+schema MembershipResponse
+schema MembershipResponse.index
+schema MembershipResponse.node_id
+schema MembershipResponse.shard
 schema OkResponse
 schema OkResponse.key
 schema OkResponse.ok
