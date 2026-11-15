@@ -26,9 +26,13 @@ use std::sync::Arc;
 use anyhow::Result;
 use axum::Router;
 use raft_runtime::{
-    FsyncPolicy, HostConfig, Index, Membership, NodeId, RaftHost, RaftStateMachine, RaftStore,
-    SnapshotPolicy, StateMachineError,
+    AdmissionRefused, FsyncPolicy, HostConfig, Index, Membership, PromotionRefused, RaftHost,
+    RaftStateMachine, RaftStore, RemovalRefused, SnapshotPolicy, StateMachineError,
 };
+
+/// Raft node id of a shard-group member, re-exported for callers that build
+/// membership requests (the admin HTTP API).
+pub use raft_runtime::NodeId;
 use serde::{Deserialize, Serialize};
 
 use keep_keyspace::engine::KvEngine;
@@ -231,6 +235,121 @@ impl ShardHosts {
     pub fn host_for(&self, key: &str) -> Option<&Arc<RaftHost>> {
         self.hosts.get(&self.cluster.shard_for(key))
     }
+
+    /// The host driving `shard`'s group, if this node hosts that shard.
+    pub fn host_for_shard(&self, shard: u32) -> Option<&Arc<RaftHost>> {
+        self.hosts.get(&shard)
+    }
+}
+
+/// Why a membership change was refused. Every variant leaves the group's
+/// membership unchanged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MembershipError {
+    /// This node is not the leader of the shard group.
+    NotLeader,
+    /// The named node is not a member (or learner) of the group.
+    NotFound(NodeId),
+    /// The node has no address registered, so it cannot be admitted.
+    Unroutable(NodeId),
+    /// The learner has not caught up enough to be promoted.
+    NotCaughtUp,
+    /// Removing the node would leave the group without a voter.
+    LastVoter(NodeId),
+    /// Removing the node would drop the group below its fault tolerance.
+    WouldLoseTolerance,
+    /// The leader itself cannot be removed; transfer leadership first.
+    IsLeader(NodeId),
+    /// Another membership transition is still in flight.
+    InFlight,
+}
+
+impl MembershipError {
+    /// A stable machine-readable code for this refusal.
+    pub fn code(&self) -> &'static str {
+        match self {
+            MembershipError::NotLeader => "not_leader",
+            MembershipError::NotFound(_) => "unknown_node",
+            MembershipError::Unroutable(_) => "unroutable_peer",
+            MembershipError::NotCaughtUp => "not_caught_up",
+            MembershipError::LastVoter(_) => "last_voter",
+            MembershipError::WouldLoseTolerance => "would_lose_tolerance",
+            MembershipError::IsLeader(_) => "is_leader",
+            MembershipError::InFlight => "transition_in_flight",
+        }
+    }
+}
+
+impl std::fmt::Display for MembershipError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MembershipError::NotLeader => write!(f, "this node is not the shard leader"),
+            MembershipError::NotFound(n) => write!(f, "node {n} is not a member of the group"),
+            MembershipError::Unroutable(n) => write!(f, "node {n} has no registered address"),
+            MembershipError::NotCaughtUp => write!(f, "the learner has not caught up yet"),
+            MembershipError::LastVoter(n) => write!(f, "node {n} is the last voter"),
+            MembershipError::WouldLoseTolerance => {
+                write!(f, "removing the node would drop fault tolerance")
+            }
+            MembershipError::IsLeader(n) => write!(f, "node {n} is the leader"),
+            MembershipError::InFlight => write!(f, "another membership change is in flight"),
+        }
+    }
+}
+
+impl std::error::Error for MembershipError {}
+
+/// Admit `node` to `host`'s group as a learner, reachable at `url`.
+///
+/// Changes nothing and returns [`MembershipError::InFlight`] when `node` is
+/// already a voter or learner. A refused admission leaves no address behind.
+pub async fn add_learner(
+    host: &RaftHost,
+    node: NodeId,
+    url: String,
+) -> Result<Index, MembershipError> {
+    let st = host.status().await;
+    if st.committed_voters.contains(&node) || st.learners.contains(&node) {
+        return Err(MembershipError::InFlight);
+    }
+    host.upsert_peer(node, url).await;
+    match host.add_learner(node).await {
+        Ok(idx) => Ok(idx),
+        Err(e) => {
+            host.forget_peer(node).await;
+            Err(match e {
+                AdmissionRefused::NotLeaderOrTransferInFlight => MembershipError::NotLeader,
+                AdmissionRefused::Unroutable { .. } => MembershipError::Unroutable(node),
+            })
+        }
+    }
+}
+
+/// Promote the caught-up learner `node` of `host`'s group to voter.
+pub async fn promote_learner(host: &RaftHost, node: NodeId) -> Result<Index, MembershipError> {
+    let st = host.status().await;
+    if !st.learners.contains(&node) && !st.committed_voters.contains(&node) {
+        return Err(MembershipError::NotFound(node));
+    }
+    host.promote_learner(node).await.map_err(|e| match e {
+        PromotionRefused::NotLeader => MembershipError::NotLeader,
+        PromotionRefused::NotCaughtUp { .. } => MembershipError::NotCaughtUp,
+        PromotionRefused::TransitionInFlight => MembershipError::InFlight,
+    })
+}
+
+/// Remove `node` from `host`'s group and forget its address on success.
+pub async fn remove_member(host: &RaftHost, node: NodeId) -> Result<Index, MembershipError> {
+    let idx = host.remove_member(node).await.map_err(|e| match e {
+        RemovalRefused::NotLeader => MembershipError::NotLeader,
+        RemovalRefused::TransitionInFlight => MembershipError::InFlight,
+        RemovalRefused::NotAMember { target } => MembershipError::NotFound(target),
+        RemovalRefused::IsTheLeader { target } => MembershipError::IsLeader(target),
+        RemovalRefused::ToleranceWouldDrop { .. } => MembershipError::WouldLoseTolerance,
+        RemovalRefused::WouldEmptyVoterSet { target } => MembershipError::LastVoter(target),
+    })?;
+    host.forget_peer(node).await;
+    Ok(idx)
 }
 
 fn hosted_shards(cluster: &ClusterConfig, replicas_per_shard: u32) -> Vec<u32> {

@@ -6,12 +6,12 @@ use std::sync::Arc;
 
 use axum::{
     middleware::from_fn_with_state,
-    routing::{get, post},
+    routing::{delete, get, post},
     Router,
 };
 use service_http::MetricsProvider;
 
-use crate::http::{handlers, hash, lists, meta, metrics, sets, zsets, AppState};
+use crate::http::{handlers, hash, lists, membership, meta, metrics, sets, zsets, AppState};
 
 /// The keep OpenAPI document — the accessor the shared `service_http`
 /// `/openapi.json` and `/docs` routes serve.
@@ -57,6 +57,16 @@ pub fn router(state: AppState) -> Router {
             post(handlers::lock)
                 .delete(handlers::unlock)
                 .patch(handlers::extend_lock),
+        )
+        // raft membership (keep#30): learner admission, promotion, removal
+        .route("/admin/raft/{shard}/members", post(membership::add_learner))
+        .route(
+            "/admin/raft/{shard}/members/{node_id}/promote",
+            post(membership::promote_learner),
+        )
+        .route(
+            "/admin/raft/{shard}/members/{node_id}",
+            delete(membership::remove_member),
         )
         // lists
         .route("/lists/{key}", get(meta::lrange))
