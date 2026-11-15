@@ -1,6 +1,8 @@
 //! CI contract: the release image and its workflows keep the properties that
-//! the release depends on. These tests read repository files as text; no
-//! workflow or image is run.
+//! the release depends on. The CI workflow (.github/workflows/ci.yml) runs
+//! cargo audit and its `gate` job needs every test job; the audit and deny
+//! configs keep their ignores named. These tests read repository files as
+//! text; no workflow, image or cargo command is run.
 
 use std::path::Path;
 
@@ -114,4 +116,110 @@ fn reproducible_image_workflow_is_manual_and_pinned() {
         pinned >= 3,
         "expected at least 3 pinned uses: lines, found {pinned}"
     );
+}
+
+fn ci_workflow() -> String {
+    read(".github/workflows/ci.yml")
+}
+
+/// The job ids listed in the `needs:` of the `gate` job.
+fn gate_needs(text: &str) -> Vec<String> {
+    let (_, after_gate) = text
+        .split_once("\n  gate:\n")
+        .expect("ci.yml has no `gate` job");
+    let needs_line = after_gate
+        .lines()
+        .find(|line| line.starts_with("    needs: ["))
+        .expect("the gate job has no `needs: [` line");
+    let list = needs_line
+        .trim_start_matches("    needs: [")
+        .trim_end_matches(']');
+    list.split(',').map(|id| id.trim().to_string()).collect()
+}
+
+/// The `cargo audit` stage runs in ci.yml and the `gate` job waits for it.
+#[test]
+fn ci_runs_cargo_audit() {
+    let text = ci_workflow();
+    assert!(
+        text.contains("cargo audit --deny unsound --deny yanked"),
+        "ci.yml does not run `cargo audit --deny unsound --deny yanked`"
+    );
+    assert!(
+        text.contains("cargo install --locked cargo-audit --version"),
+        "ci.yml does not install a pinned cargo-audit"
+    );
+    assert!(
+        text.lines().any(|line| line == "  test-audit:"),
+        "ci.yml has no job `test-audit`"
+    );
+    assert!(
+        gate_needs(&text).iter().any(|id| id == "test-audit"),
+        "the gate job does not need `test-audit`"
+    );
+}
+
+/// Every `test-*` job, and `lint`, is in the `needs:` list of `gate`.
+#[test]
+fn gate_needs_every_test_job() {
+    let text = ci_workflow();
+    let needs = gate_needs(&text);
+    assert!(
+        needs.iter().any(|id| id == "lint"),
+        "the gate job does not need `lint`"
+    );
+    for line in text.lines() {
+        if line.starts_with("  test-") && line.ends_with(':') {
+            let id = &line[2..line.len() - 1];
+            assert!(
+                needs.iter().any(|need| need == id),
+                "the gate job does not need the test job `{id}`"
+            );
+        }
+    }
+}
+
+/// The cargo-audit config keeps no ignores: every advisory stays visible.
+#[test]
+fn audit_config_has_no_ignores() {
+    let text = read(".cargo/audit.toml");
+    assert!(
+        text.contains("ignore = []"),
+        ".cargo/audit.toml must keep `ignore = []`"
+    );
+}
+
+/// Each remaining cargo-deny ignore names its dependency path, and the list
+/// holds exactly the six unmaintained-crate advisories.
+#[test]
+fn deny_ignores_name_their_path() {
+    let text = read("deny.toml");
+    let ids = [
+        "RUSTSEC-2025-0012",
+        "RUSTSEC-2024-0384",
+        "RUSTSEC-2025-0141",
+        "RUSTSEC-2024-0370",
+        "RUSTSEC-2025-0134",
+        "RUSTSEC-2024-0449",
+    ];
+    let entries = text
+        .lines()
+        .filter(|line| line.contains("id = \"RUSTSEC-"))
+        .count();
+    assert_eq!(
+        entries,
+        ids.len(),
+        "deny.toml must hold exactly six RUSTSEC ignores"
+    );
+    for id in ids {
+        let needle = format!("id = \"{id}\"");
+        let line = text
+            .lines()
+            .find(|line| line.contains(&needle))
+            .unwrap_or_else(|| panic!("deny.toml has no ignore {id}"));
+        assert!(
+            line.contains("Path:") || line.contains("Build time only"),
+            "the deny.toml reason for {id} does not name its dependency path: {line}"
+        );
+    }
 }
