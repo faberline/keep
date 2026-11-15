@@ -179,13 +179,14 @@ fn gate_needs_every_test_job() {
     }
 }
 
-/// The cargo-audit config keeps no ignores: every advisory stays visible.
+/// The cargo-audit config file does not exist: `cargo audit` has no ignores,
+/// so every advisory stays visible.
 #[test]
 fn audit_config_has_no_ignores() {
-    let text = read(".cargo/audit.toml");
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.cargo/audit.toml");
     assert!(
-        text.contains("ignore = []"),
-        ".cargo/audit.toml must keep `ignore = []`"
+        !path.exists(),
+        ".cargo/audit.toml must not exist: cargo audit must ignore nothing"
     );
 }
 
