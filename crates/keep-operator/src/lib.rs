@@ -15,6 +15,7 @@
 pub mod crd;
 pub mod reconcile;
 pub mod render;
+pub mod scale;
 
 pub use crd::{Keep, KeepBackupSpec, KeepSpec, KeepStatus};
 pub use reconcile::run;
