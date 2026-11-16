@@ -28,7 +28,7 @@ Upgrade one replica at a time. Wait until the replica is ready (`/readyz` answer
 
 No breaking change to the HTTP API, the wire format, the on-disk format or the CRD before 2.0.0.
 
-Until 2.0.0, a release only adds to these. A removal, a renamed field or a changed meaning waits for 2.0.0. The API surface is checked against the committed snapshots in `crates/keep/tests/fixtures/` by `crates/keep/tests/api_surface.rs`.
+Until 2.0.0, a release only adds to these. A removal, a renamed field or a changed meaning waits for 2.0.0. The API surface is checked against the committed snapshots in `crates/keep/tests/fixtures/` by `crates/keep/tests/it/api_surface.rs`.
 
 ## Announcing a format change
 
