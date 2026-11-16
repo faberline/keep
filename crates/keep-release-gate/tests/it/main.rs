@@ -2,5 +2,6 @@
 
 mod candidate;
 mod contract;
+mod gke_acceptance;
 mod util;
 mod workflow_text;
