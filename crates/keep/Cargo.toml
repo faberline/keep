@@ -14,7 +14,7 @@ crate-type = ["rlib"]
 
 [[bin]]
 name = "keep"
-path = "src/bin/keep.rs"
+path = "src/bin/keep/main.rs"
 
 [dependencies]
 keep-access.workspace = true
