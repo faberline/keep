@@ -49,11 +49,11 @@ health/readiness probes, metrics, and graceful drain behavior.
   operational surface.
 - Gate — behavior: `cargo test -p keep --test http_api` - binary-facing
   OpenAPI/probe/metrics and API conformance
-- Source: `tests/http_api.rs`, `src/bin/keep.rs`
+- Source: `tests/http_api.rs`, `src/bin/keep/main.rs`
 
 | Work Root | Kind | WI | Gate / Evidence |
 |---|---|---:|---|
-| keep-process-interface | epic | - | src/bin/keep.rs; tests/http_api.rs |
+| keep-process-interface | epic | - | src/bin/keep/main.rs; tests/http_api.rs |
 | openapi-probe-metrics-surface | epic | - | tests/http_api.rs |
 | graceful-drain-readiness-flip | epic | - | tests/http_api.rs |
 
@@ -126,7 +126,7 @@ HA that preserves the public KV API.
 | Work Root | Kind | WI | Gate / Evidence |
 |---|---|---:|---|
 | wal-backed-cold-recovery | epic | - | tests/durability.rs |
-| graceful-shutdown-and-readiness-drain | epic | - | src/bin/keep.rs; tests/http_api.rs |
+| graceful-shutdown-and-readiness-drain | epic | - | src/bin/keep/main.rs; tests/http_api.rs |
 | multi-node-http-2-raft-network | epic | 121 | .aw/tech-design/projects/keep/logic/ha-raft-sharding-roadmap.md |
 
 ### Security Hardening
@@ -319,7 +319,7 @@ worker contract.
 
 | Crate | Path | Notes |
 |-------|------|-------|
-| `keep` | `crates/keep/` | Top-level facade library (`keep::*`), CLI/server binary (`src/bin/keep.rs`), integration tests, benchmarks, and examples. |
+| `keep` | `crates/keep/` | Top-level facade library (`keep::*`), CLI/server binary (`src/bin/keep/main.rs`), integration tests, benchmarks, and examples. |
 | `keep-shared-kernel` | `crates/keep-shared-kernel/` | Shared kernel: value types (`KvValue`, `SetOptions`, JSON conversion), error model (`KvError`), shard cluster topology, Prometheus metrics, and TLS helpers. |
 | `keep-storage` | `crates/keep-storage/` | On-disk record format, write-ahead log, blob store, and persistence settings. No engine types. |
 | `keep-keyspace` | `crates/keep-keyspace/` | Sharded multi-core KV engine (`KvEngine`) with its snapshot, recovery, and persistence handle (`persistence`). |
