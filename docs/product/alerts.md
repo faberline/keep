@@ -3,7 +3,7 @@
 This repository has no alert rules. This page names the signals an operator may
 alert on, and for each one points to the runbook section with the check and the
 action. It creates no alert rules. Its links are checked by
-`crates/keep/tests/docs_lint.rs`. The upgrade checks are in
+`crates/keep/tests/it/docs_lint.rs`. The upgrade checks are in
 [runbook.md#upgrade](runbook.md#upgrade). `curl` and `kubectl` lines on this page
 and in the linked sections are not tested.
 
