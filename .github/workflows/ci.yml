@@ -55,10 +55,10 @@ jobs:
         with:
           summary: target/coverage.json
       - run: cargo test --locked --workspace --doc
-      - run: cargo test --locked -p keep --features operator --test operator
-      - run: cargo test --locked -p keep --features raft --test raft_failover
-      - run: cargo test --locked -p keep --features raft --test raft_node
-      - run: cargo test --locked -p keep --features raft --test rolling_restart
+      - run: "cargo test --locked -p keep --features operator --test it operator::"
+      - run: "cargo test --locked -p keep --features raft --test it raft_failover::"
+      - run: "cargo test --locked -p keep --features raft --test it raft_node::"
+      - run: "cargo test --locked -p keep --features raft --test it rolling_restart::"
       - run: cargo test --locked -p keep --features raft --test raft_membership
       - run: cargo test --locked -p keep-replication --features raft --lib
       - run: cargo test --locked -p keep --features raft --bin keep

@@ -9,4 +9,8 @@ mod docs_lint;
 mod durability;
 mod http_api;
 mod https_api;
+mod operator;
+mod raft_failover;
+mod raft_node;
+mod rolling_restart;
 mod server_lifecycle_readiness;
