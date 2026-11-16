@@ -13,7 +13,7 @@
 
 use std::collections::HashMap;
 
-use keep::operator::render::render;
+use keep::operator::render::{render, render_scaled};
 use keep::operator::{crd_yaml, Keep, KeepSpec};
 use keep::tls::install_default_crypto_provider;
 use serde_json::Value;
@@ -432,4 +432,33 @@ fn cluster_role_covers_every_rendered_kind() {
             "ClusterRole keep-operator does not cover {group}/{resource}"
         );
     }
+}
+
+/// The value of the server container env `name`, when present.
+fn env_value(objs: &[Value], name: &str) -> Option<String> {
+    server_env(objs)
+        .iter()
+        .find(|e| e["name"] == name)
+        .and_then(|e| e["value"].as_str())
+        .map(str::to_string)
+}
+
+/// `render_scaled` gives the StatefulSet the allowed replicas and the confirmed
+/// voters per shard, not the spec values.
+#[test]
+fn render_scaled_sets_replicas_and_members() {
+    let objs = render_scaled(&Keep::new("store", spec(2, 3)), 2, 1);
+    assert_eq!(of_kind(&objs, "StatefulSet")["spec"]["replicas"], 4);
+    assert_eq!(env_value(&objs, "KEEP_REPLICAS_PER_SHARD").as_deref(), Some("2"));
+    assert_eq!(env_value(&objs, "KEEP_RAFT_MEMBERS_PER_SHARD").as_deref(), Some("1"));
+}
+
+/// `render` keeps the spec values, and the members env is present. Before the
+/// change the members env is absent, so this test fails there.
+#[test]
+fn render_defaults_members_to_the_spec_value() {
+    let objs = render(&Keep::new("store", spec(2, 3)));
+    assert_eq!(of_kind(&objs, "StatefulSet")["spec"]["replicas"], 6);
+    assert_eq!(env_value(&objs, "KEEP_REPLICAS_PER_SHARD").as_deref(), Some("3"));
+    assert_eq!(env_value(&objs, "KEEP_RAFT_MEMBERS_PER_SHARD").as_deref(), Some("3"));
 }
