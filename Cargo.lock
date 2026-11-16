@@ -1922,6 +1922,7 @@ dependencies = [
 name = "keep-release-gate"
 version = "0.4.13"
 dependencies = [
+ "regex",
  "serde_json",
  "sha2",
  "tempfile",
