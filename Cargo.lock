@@ -1920,6 +1920,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "keep-release-gate"
+version = "0.4.13"
+dependencies = [
+ "serde_json",
+ "sha2",
+ "tempfile",
+]
+
+[[package]]
 name = "keep-replication"
 version = "0.4.13"
 dependencies = [

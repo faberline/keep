@@ -122,7 +122,7 @@ path = "crates/keep-shared-kernel/src"
 # Assembly: `keep` re-exports the contexts as the `keep` library and holds the
 # `keep` binary, the integration tests, benchmarks and examples. Unrestricted.
 [assembly]
-crates = ["keep"]
+crates = ["keep", "keep-release-gate"]
 
 # The on-disk record format, write-ahead log, blob store and persistence
 # settings. No engine types.
