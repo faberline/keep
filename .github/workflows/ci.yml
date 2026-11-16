@@ -60,6 +60,8 @@ jobs:
       - run: cargo test --locked -p keep --features raft --test raft_node
       - run: cargo test --locked -p keep --features raft --test rolling_restart
       - run: cargo test --locked -p keep --features raft --test raft_membership
+      - run: cargo test --locked -p keep-replication --features raft --lib
+      - run: cargo test --locked -p keep --features raft --bin keep
       - run: "cargo test --locked -p keep --features operator --test it api_surface::"
 
   test-release-contract:

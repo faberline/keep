@@ -564,3 +564,58 @@ fn release_gaps_present_row_needs_real_needle() {
         "`.github/workflows/keep-release.yml` `service-release.yml@`"
     ));
 }
+
+/// The `docs/` paths quoted in the `docs_required` list of `ddd.toml`.
+fn docs_required_paths(ddd: &str) -> Vec<String> {
+    let start = ddd
+        .find("docs_required = [")
+        .expect("ddd.toml has no docs_required list");
+    let body = &ddd[start..];
+    let end = body.find(']').expect("docs_required list is not closed");
+    body[..end]
+        .split('"')
+        .skip(1)
+        .step_by(2)
+        .filter(|quoted| quoted.starts_with("docs/"))
+        .map(str::to_string)
+        .collect()
+}
+
+/// True when `dir` holds at least one `.md` file, in it or in a nested directory.
+fn has_md_file(dir: &Path) -> bool {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|entry| {
+            let path = entry.path();
+            if path.is_dir() {
+                has_md_file(&path)
+            } else {
+                path.extension().and_then(|ext| ext.to_str()) == Some("md")
+            }
+        })
+}
+
+#[test]
+fn docs_required_paths_exist() {
+    let paths = docs_required_paths(&doc("ddd.toml"));
+    assert!(
+        paths.len() >= 6,
+        "docs_required lists {} docs paths, expected at least 6",
+        paths.len()
+    );
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    for path in paths {
+        let full = root.join(&path);
+        let found = if path.ends_with('/') {
+            has_md_file(&full)
+        } else {
+            full.is_file()
+        };
+        assert!(
+            found,
+            "docs_required path `{path}` is missing under the repository root"
+        );
+    }
+}

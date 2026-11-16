@@ -165,6 +165,16 @@ fn has_downward_api_topology() -> bool {
     .all(|key| std::env::var_os(key).is_some())
 }
 
+/// Voters per shard group from `KEEP_RAFT_MEMBERS_PER_SHARD`; unset, `0`,
+/// above `replicas` or unparsable gives `replicas` (every replica is a voter).
+#[cfg(feature = "raft")]
+pub(crate) fn members_per_shard(raw: Option<&str>, replicas: u32) -> u32 {
+    match raw.and_then(|v| v.parse::<u32>().ok()) {
+        Some(m) if (1..=replicas).contains(&m) => m,
+        _ => replicas,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -276,5 +286,35 @@ mod tests {
             resolve_maxmemory(None, 0.80, Some(1_000_000_000)).unwrap(),
             Some(800_000_000)
         );
+    }
+
+    #[cfg(feature = "raft")]
+    #[test]
+    fn members_per_shard_unset_uses_replicas() {
+        assert_eq!(members_per_shard(None, 3), 3);
+    }
+
+    #[cfg(feature = "raft")]
+    #[test]
+    fn members_per_shard_takes_valid_value() {
+        assert_eq!(members_per_shard(Some("2"), 3), 2);
+    }
+
+    #[cfg(feature = "raft")]
+    #[test]
+    fn members_per_shard_zero_uses_replicas() {
+        assert_eq!(members_per_shard(Some("0"), 3), 3);
+    }
+
+    #[cfg(feature = "raft")]
+    #[test]
+    fn members_per_shard_above_replicas_uses_replicas() {
+        assert_eq!(members_per_shard(Some("9"), 3), 3);
+    }
+
+    #[cfg(feature = "raft")]
+    #[test]
+    fn members_per_shard_invalid_uses_replicas() {
+        assert_eq!(members_per_shard(Some("x"), 3), 3);
     }
 }
