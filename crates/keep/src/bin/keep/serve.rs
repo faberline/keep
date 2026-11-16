@@ -297,18 +297,24 @@ pub(crate) async fn serve_main(args: ServeArgs, worker_threads: usize) -> Result
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
             .unwrap_or(1);
+        let members = crate::serve_config::members_per_shard(
+            std::env::var("KEEP_RAFT_MEMBERS_PER_SHARD").ok().as_deref(),
+            replicas,
+        );
         let hosts = Arc::new(
-            keep::raft::ShardHosts::new(
+            keep::raft::ShardHosts::with_members(
                 (*state.cluster).clone(),
                 state.engine.clone(),
                 &args.data_dir,
                 replicas,
+                members,
             )
             .await?,
         );
         info!(
             shard_hosts = hosts.host_count(),
             replicas_per_shard = replicas,
+            members_per_shard = members,
             "raft: per-shard hosts up; peer transport merged onto serve port"
         );
         Some(hosts)
