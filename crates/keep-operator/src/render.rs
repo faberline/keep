@@ -60,6 +60,14 @@ fn ctx<'a>(keep: &Keep, name: &'a str, ns: &'a str) -> RenderCtx<'a> {
 /// Render every child object for `keep`, in dependency order (namespace-scoped
 /// config first, then the workload + its Services + PDB).
 pub fn render(keep: &Keep) -> Vec<Value> {
+    let wanted = keep.spec.cluster.replicas_per_shard;
+    render_scaled(keep, wanted, wanted)
+}
+
+/// Render like [`render`], with the StatefulSet at `replicas_per_shard` replicas
+/// per shard and the server told that `members_per_shard` voters per shard are
+/// confirmed (`KEEP_RAFT_MEMBERS_PER_SHARD`).
+pub fn render_scaled(keep: &Keep, replicas_per_shard: u32, members_per_shard: u32) -> Vec<Value> {
     let name = instance(keep);
     let ns = namespace(keep);
     let cx = ctx(keep, &name, &ns);
@@ -68,7 +76,7 @@ pub fn render(keep: &Keep) -> Vec<Value> {
     let mut objects = vec![
         render::service_account(&cx, COMPONENT),
         configmap(keep, &cx),
-        statefulset(keep, &cx, &headless),
+        statefulset(keep, &cx, &headless, replicas_per_shard, members_per_shard),
         render::headless_service(&cx, &headless, COMPONENT, CLIENT_PORT),
         render::client_service(&cx, &name, COMPONENT, CLIENT_PORT),
         // keep must not lose its sole store pod to a voluntary drain without an
@@ -174,7 +182,13 @@ fn configmap(keep: &Keep, cx: &RenderCtx) -> Value {
 /// (`replicas = shardCount * replicasPerShard`, the raft-runtime env quartet + the
 /// headless-service env, the `/data` PVC) hardened with keep's probes, security
 /// contexts, and writable `/tmp`.
-fn statefulset(keep: &Keep, cx: &RenderCtx, headless: &str) -> Value {
+fn statefulset(
+    keep: &Keep,
+    cx: &RenderCtx,
+    headless: &str,
+    replicas_per_shard: u32,
+    members_per_shard: u32,
+) -> Value {
     let s = &keep.spec;
     let cfg = format!("{}-config", cx.name());
     let from_cfg = |key: &str| json!({ "name": key, "valueFrom": { "configMapKeyRef": { "name": cfg, "key": key } } });
@@ -205,7 +219,8 @@ fn statefulset(keep: &Keep, cx: &RenderCtx, headless: &str) -> Value {
         json!({ "name": "KEEP_GRACE_SECS", "value": s.grace_secs.to_string() }),
         json!({ "name": "KEEP_SHARD_COUNT", "value": s.cluster.shard_count.to_string() }),
         json!({ "name": "KEEP_NODE_COUNT", "value": s.cluster.shard_count.to_string() }),
-        json!({ "name": "KEEP_REPLICAS_PER_SHARD", "value": s.cluster.replicas_per_shard.to_string() }),
+        json!({ "name": "KEEP_REPLICAS_PER_SHARD", "value": replicas_per_shard.to_string() }),
+        json!({ "name": "KEEP_RAFT_MEMBERS_PER_SHARD", "value": members_per_shard.to_string() }),
         from_cfg("KEEP_PORT"),
         from_cfg("KEEP_SHARDS"),
         from_cfg("KEEP_LOG_LEVEL"),
@@ -241,7 +256,7 @@ fn statefulset(keep: &Keep, cx: &RenderCtx, headless: &str) -> Value {
         ports: vec![("http", CLIENT_PORT)],
         headless_service: headless,
         shard_count: s.cluster.shard_count.max(1),
-        replicas_per_shard: s.cluster.replicas_per_shard.max(1),
+        replicas_per_shard: replicas_per_shard.max(1),
         voter_count: s.cluster.voter_count,
         headless_env_key: "KEEP_HEADLESS_SERVICE",
         cpu,
