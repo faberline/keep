@@ -19,11 +19,7 @@ cmd = [
   "-p",
   "keep",
   "--test",
-  "http_api",
-  "--test",
-  "collections_api",
-  "--test",
-  "durability",
+  "it",
   "--no-run",
 ]
 
@@ -36,12 +32,11 @@ cmd = [
   "-p",
   "keep",
   "--test",
-  "http_api",
-  "--test",
-  "collections_api",
-  "--test",
-  "durability",
+  "it",
   "--",
+  "http_api::",
+  "collections_api::",
+  "durability::",
   "--nocapture",
 ]
 timeout_s = 600
@@ -69,6 +64,6 @@ cmd = [
   "--compact",
   "--no-persist",
   "--meter-command",
-  "meter test -- -p keep --test http_api -- --nocapture",
+  "meter test -- -p keep --test it -- http_api:: --nocapture",
 ]
 timeout_s = 600
