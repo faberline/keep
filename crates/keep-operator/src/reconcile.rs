@@ -126,7 +126,7 @@ impl ManagedService for Keep {
             .get_opt(&name)
             .await?;
         let members = live_members_per_shard(live.as_ref(), shard_count, wanted);
-        let membership = HttpMembershipClient::new(&name, shard_count, members);
+        let membership = HttpMembershipClient::new(&name, &ns, shard_count, members);
         let outcome = scale::drive(&membership, &name, shard_count, members, wanted).await;
         let children = render::render_scaled(
             self,

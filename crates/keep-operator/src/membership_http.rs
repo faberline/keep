@@ -19,9 +19,16 @@ pub struct HttpMembershipClient {
 }
 
 impl HttpMembershipClient {
-    /// Candidates for every shard: replicas `0..members_per_shard` of the StatefulSet `sts`.
-    pub fn new(sts: &str, shard_count: u32, members_per_shard: u32) -> Self {
-        Self::with_endpoints(endpoint_list(sts, shard_count, members_per_shard))
+    /// Candidates for every shard: replicas `0..members_per_shard` of the StatefulSet `sts`
+    /// in `namespace`. The namespace is in the url, so the name resolves from the operator's
+    /// own namespace (the operator does not run where the `Keep` runs).
+    pub fn new(sts: &str, namespace: &str, shard_count: u32, members_per_shard: u32) -> Self {
+        Self::with_endpoints(endpoint_list(
+            sts,
+            namespace,
+            shard_count,
+            members_per_shard,
+        ))
     }
 
     /// Explicit candidate lists, `endpoints[shard]`.
@@ -90,13 +97,18 @@ impl HttpMembershipClient {
 
 /// Base urls of the candidates of each shard: shard `s`, replica `r` is pod
 /// `<sts>-<r * shard_count + s>`, the same pod math as `scale::peer_url`.
-fn endpoint_list(sts: &str, shard_count: u32, members_per_shard: u32) -> Vec<Vec<String>> {
+fn endpoint_list(
+    sts: &str,
+    namespace: &str,
+    shard_count: u32,
+    members_per_shard: u32,
+) -> Vec<Vec<String>> {
     (0..shard_count)
         .map(|shard| {
             (0..members_per_shard)
                 .map(|replica| {
                     let ordinal = replica * shard_count + shard;
-                    format!("http://{sts}-{ordinal}.{sts}-headless:{HTTP_PORT}")
+                    format!("http://{sts}-{ordinal}.{sts}-headless.{namespace}.svc:{HTTP_PORT}")
                 })
                 .collect()
         })
@@ -261,15 +273,15 @@ mod tests {
     #[test]
     fn endpoint_list_follows_the_pod_math() {
         assert_eq!(
-            endpoint_list("k", 2, 2),
+            endpoint_list("k", "apps", 2, 2),
             vec![
                 vec![
-                    "http://k-0.k-headless:7117".to_string(),
-                    "http://k-2.k-headless:7117".to_string()
+                    "http://k-0.k-headless.apps.svc:7117".to_string(),
+                    "http://k-2.k-headless.apps.svc:7117".to_string()
                 ],
                 vec![
-                    "http://k-1.k-headless:7117".to_string(),
-                    "http://k-3.k-headless:7117".to_string()
+                    "http://k-1.k-headless.apps.svc:7117".to_string(),
+                    "http://k-3.k-headless.apps.svc:7117".to_string()
                 ],
             ]
         );
