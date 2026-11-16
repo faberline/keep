@@ -1909,6 +1909,7 @@ dependencies = [
  "k8s-openapi",
  "keep-shared-kernel",
  "kube",
+ "reqwest",
  "schemars",
  "serde",
  "serde_json",
