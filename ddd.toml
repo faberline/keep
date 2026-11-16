@@ -6,9 +6,6 @@
 
 schema = 1
 
-# Report only: crates/keep-keyspace/src/engine.rs, crates/keep/src/bin/keep.rs
-# and crates/keep-commands/src/http/handlers.rs are over size_error. Split them,
-# then set enforce = true.
 [migration]
 enforce = false
 

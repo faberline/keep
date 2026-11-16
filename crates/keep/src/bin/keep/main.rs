@@ -9,27 +9,16 @@
 //! shared `cli-std` lib) — sit alongside it. Agents start at `keep llm
 //! outline`.
 
-#[path = "keep/backup.rs"]
 mod backup;
-#[path = "keep/common.rs"]
 mod common;
-#[path = "keep/dockerfile.rs"]
 mod dockerfile;
-#[path = "keep/issue.rs"]
 mod issue;
-#[path = "keep/k8s.rs"]
 mod k8s;
-#[path = "keep/llm.rs"]
 mod llm;
-#[path = "keep/restore.rs"]
 mod restore;
-#[path = "keep/serve.rs"]
 mod serve;
-#[path = "keep/serve_config.rs"]
 mod serve_config;
-#[path = "keep/spec.rs"]
 mod spec;
-#[path = "keep/upgrade.rs"]
 mod upgrade;
 
 use anyhow::Result;
