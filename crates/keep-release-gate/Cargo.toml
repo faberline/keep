@@ -9,6 +9,7 @@ description = "keep-release-gate — release checks that replace the Python scri
 publish = false
 
 [dependencies]
+regex.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 
