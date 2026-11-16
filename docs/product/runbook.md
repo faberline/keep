@@ -2,7 +2,7 @@
 
 This runbook covers the data plane of one Keep server: health and metrics, the
 log format, and the procedures below. The `keep` commands here are checked against
-the real CLI help by `crates/keep/tests/docs_lint.rs`. `curl` and `kubectl`
+the real CLI help by `crates/keep/tests/it/docs_lint.rs`. `curl` and `kubectl`
 lines in this page are not tested.
 
 ## Health and metrics

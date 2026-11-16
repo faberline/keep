@@ -1,3 +1,4 @@
+//! isolation: the nightly perf gate runs this binary alone in release mode with --test-threads=1.
 //! Judging logic of the competitor ratchet gate (issue #2): keep vs RESP KV servers.
 //!
 //! Every ratio is oriented so higher is better for keep: throughput is

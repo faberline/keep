@@ -2,7 +2,7 @@
 
 This page lists every flag and environment variable of the `keep` binary and
 every field of the `Keep` custom resource. The flags and their defaults come
-from `keep --help`; the tests in `crates/keep/tests/docs_lint.rs` check that
+from `keep --help`; the tests in `crates/keep/tests/it/docs_lint.rs` check that
 every long flag in that help appears here.
 
 Each server flag has an environment variable. A flag given on the command line

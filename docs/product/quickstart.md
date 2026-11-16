@@ -2,7 +2,7 @@
 
 This page gets one Keep server running, sets and reads a key, and checks its
 health. The `keep` commands on this page are checked against the real CLI help
-by `crates/keep/tests/docs_lint.rs`. Docker, `curl` and `kubectl` lines are not
+by `crates/keep/tests/it/docs_lint.rs`. Docker, `curl` and `kubectl` lines are not
 tested.
 
 ## Run the binary
