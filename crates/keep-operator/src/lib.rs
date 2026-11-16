@@ -13,6 +13,7 @@
 //! @spec .aw/tech-design/projects/keep/interfaces/cli/adopt-libs-operator-keep-k8s-crd-operator-instance-cli.md
 
 pub mod crd;
+pub mod membership_http;
 pub mod reconcile;
 pub mod render;
 pub mod scale;
