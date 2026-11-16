@@ -1915,6 +1915,7 @@ dependencies = [
  "serde_yaml",
  "service-backup",
  "service-k8s",
+ "tokio",
 ]
 
 [[package]]
