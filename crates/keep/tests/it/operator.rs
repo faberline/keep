@@ -384,7 +384,7 @@ fn yaml_strings(v: &serde_yaml::Value) -> Vec<&str> {
 /// granted.
 #[test]
 fn cluster_role_covers_every_rendered_kind() {
-    const RBAC: &str = include_str!("../../../k8s/operator/rbac.yaml");
+    const RBAC: &str = include_str!("../../../../k8s/operator/rbac.yaml");
     const VERBS: [&str; 7] = [
         "create", "update", "patch", "delete", "get", "list", "watch",
     ];

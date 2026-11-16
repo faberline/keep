@@ -116,10 +116,10 @@ HA that preserves the public KV API.
   K8s: `k8s` - StatefulSet/PDB deployment shape.; Rust API:
   `keep::raft` - raft-runtime-backed HA path.
 - Gate — stability:
-  `cargo test -p keep --test durability --test http_api --test raft_node` -
+  `cargo test -p keep --test durability --test http_api --features raft --test it raft_node::` -
   recovery, drain, probe, and raft state-machine conformance
 - Source: `tests/durability.rs`, `tests/http_api.rs`,
-  `tests/raft_node.rs`,
+  `tests/it/raft_node.rs`,
   `.aw/tech-design/projects/keep/logic/ha-raft-sharding-roadmap.md`,
   `k8s`
 
@@ -223,16 +223,16 @@ names the replica requirement.
   primary/replica convergence.; K8s: StatefulSet - stable network identity and
   PVC-backed replica pods.; HTTP: future raft network - primary write ownership
   with replica failover.
-- Gate — stability: `cargo test -p keep --test raft_node` - current raft
+- Gate — stability: `cargo test -p keep --features raft --test it raft_node::` - current raft
   state-machine conformance
 - Gate — behavior: multi-node HTTP/2 raft network - staged failover gate
-- Source: `tests/raft_node.rs`,
+- Source: `tests/it/raft_node.rs`,
   `.aw/tech-design/projects/keep/logic/ha-raft-sharding-roadmap.md`,
   `k8s`
 
 | Work Root | Kind | WI | Gate / Evidence |
 |---|---|---:|---|
-| single-node-raftcore-state-machine | epic | 121 | tests/raft_node.rs |
+| single-node-raftcore-state-machine | epic | 121 | tests/it/raft_node.rs |
 | primary-replica-topology-contract | epic | 121 | .aw/tech-design/projects/keep/logic/ha-raft-sharding-roadmap.md |
 | multi-node-replica-failover | epic | 121 | .aw/tech-design/projects/keep/logic/ha-raft-sharding-roadmap.md; k8s |
 
@@ -292,14 +292,14 @@ changing the public KV API.
 - Root WI: #121
 - Surfaces: Rust API: `keep::raft` - raft-runtime-backed state machine.; K8s:
   StatefulSet - PVC-backed instances.
-- Gate — stability: `cargo test -p keep --test raft_node` - raft state-machine
+- Gate — stability: `cargo test -p keep --features raft --test it raft_node::` - raft state-machine
   conformance
-- Source: `tests/raft_node.rs`,
+- Source: `tests/it/raft_node.rs`,
   `.aw/tech-design/projects/keep/logic/ha-raft-sharding-roadmap.md`
 
 | Work Root | Kind | WI | Gate / Evidence |
 |---|---|---:|---|
-| single-node-raftcore-state-machine | epic | 121 | tests/raft_node.rs |
+| single-node-raftcore-state-machine | epic | 121 | tests/it/raft_node.rs |
 | multi-node-http-2-raft-network | epic | 121 | .aw/tech-design/projects/keep/logic/ha-raft-sharding-roadmap.md |
 
 ### Relay Worker Data Plane
@@ -401,7 +401,7 @@ Images: `Dockerfile` (from-source, build context = repo root) and
 - ✅ durable-before-ack WAL (no-drop, group commit) — #114
 - ✅ perf-gate via meter: engine throughput ratchet + server resource gate — see [meter-performance-gates.md](external-contracts/competitor-performance/efficiency/meter-performance-gates.md) (#126). Competitor comparison (vs Redis/Dragonfly) is the separate one-off `examples/bench_compare.rs`.
 - ☐ worker-facing OpenAPI contract finalized with relay — #108
-- ◑ HA — phase A (sharded scale-out + `/cluster`) done; phase C raft via raft-runtime integrated (`--features raft`, engine-backed state machine, HTTP write propose path, proven by `tests/raft_node.rs` and the raft HTTP API test) — multi-node failover remains staged; see [.aw/tech-design/projects/keep/logic/ha-raft-sharding-roadmap.md](.aw/tech-design/projects/keep/logic/ha-raft-sharding-roadmap.md) (#121)
+- ◑ HA — phase A (sharded scale-out + `/cluster`) done; phase C raft via raft-runtime integrated (`--features raft`, engine-backed state machine, HTTP write propose path, proven by `tests/it/raft_node.rs` and the raft HTTP API test) — multi-node failover remains staged; see [.aw/tech-design/projects/keep/logic/ha-raft-sharding-roadmap.md](.aw/tech-design/projects/keep/logic/ha-raft-sharding-roadmap.md) (#121)
 - ✅ queuekit and queue-era `ion` feature consumers now use `keep::client`
   instead of the retired raw-TCP `cclab-kv` client; remaining cleanup is
   deduping legacy `cclab-kv` copies.

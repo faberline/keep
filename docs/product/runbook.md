@@ -145,7 +145,7 @@ Use this procedure for a rolling upgrade of the `keep` StatefulSet.
      `applied_index` equal to or close to `commit_index` of the leader, and the
      pod is not `leader: null`. Raft mode only; a single-node deployment has no
      catch-up step.
-5. What is tested: `crates/keep/tests/rolling_restart.rs` restarts one replica at
+5. What is tested: `crates/keep/tests/it/rolling_restart.rs` restarts one replica at
    a time with the same version and checks that the restarted replica catches up
    and that no key is lost. A mixed-version rollback is not tested. A rolling
    upgrade across two versions is not tested.
