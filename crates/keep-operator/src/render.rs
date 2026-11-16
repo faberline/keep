@@ -324,3 +324,106 @@ fn harden(sts: &mut Value, grace_secs: u64) {
         None => container["volumeMounts"] = json!([{ "name": "tmp", "mountPath": "/tmp" }]),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::crd::{KeepBackupSpec, KeepSpec};
+    use service_k8s::ClusterSpec;
+
+    fn keep_with(shards: u32, replicas: u32, all_options: bool) -> Keep {
+        let mut spec = KeepSpec {
+            cluster: ClusterSpec {
+                image: "keep:test".into(),
+                image_pull_policy: None,
+                shard_count: shards,
+                replicas_per_shard: replicas,
+                voter_count: replicas,
+                resources: Default::default(),
+            },
+            engine_shards: 256,
+            log_level: None,
+            grace_secs: 30,
+            storage: "10Gi".into(),
+            storage_class: None,
+            body_limit_bytes: 16 * 1024 * 1024,
+            maxmemory: None,
+            eviction_policy: None,
+            spill_threshold_bytes: None,
+            max_disk_bytes: None,
+            backup: None,
+        };
+        if all_options {
+            spec.log_level = Some("debug".into());
+            spec.storage_class = Some("fast".into());
+            spec.maxmemory = Some("4Gi".into());
+            spec.eviction_policy = Some("allkeys-lru".into());
+            spec.spill_threshold_bytes = Some(1024);
+            spec.max_disk_bytes = Some("20Gi".into());
+            spec.backup = Some(KeepBackupSpec {
+                schedule: "17 3 * * *".into(),
+                destination: "s3://bucket/keep".into(),
+                retention_secs: None,
+            });
+        }
+        Keep::new("store", spec)
+    }
+
+    fn kinds(objs: &[Value]) -> Vec<String> {
+        objs.iter()
+            .map(|o| o["kind"].as_str().unwrap_or_default().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn render_without_options_emits_the_core_children_only() {
+        let objs = render(&keep_with(2, 3, false));
+        let k = kinds(&objs);
+        for kind in [
+            "ServiceAccount",
+            "ConfigMap",
+            "StatefulSet",
+            "PodDisruptionBudget",
+        ] {
+            assert!(k.iter().any(|x| x == kind), "missing {kind}: {k:?}");
+        }
+        assert!(
+            !k.iter().any(|x| x == "CronJob"),
+            "no backup policy, no CronJob"
+        );
+        let sts = objs.iter().find(|o| o["kind"] == "StatefulSet").unwrap();
+        assert_eq!(
+            sts["spec"]["replicas"], 6,
+            "shard_count * replicas_per_shard"
+        );
+    }
+
+    #[test]
+    fn render_with_every_option_emits_the_backup_job_and_config() {
+        let objs = render(&keep_with(2, 3, true));
+        let k = kinds(&objs);
+        assert!(k.iter().any(|x| x == "CronJob"), "backup policy set: {k:?}");
+        let cj = objs.iter().find(|o| o["kind"] == "CronJob").unwrap();
+        assert_eq!(cj["spec"]["schedule"], "17 3 * * *");
+        assert!(objs.iter().any(|o| o["kind"] == "ConfigMap"));
+    }
+
+    #[test]
+    fn render_scaled_uses_the_allowed_replicas_for_the_statefulset() {
+        let objs = render_scaled(&keep_with(2, 3, false), 2, 1);
+        let sts = objs.iter().find(|o| o["kind"] == "StatefulSet").unwrap();
+        assert_eq!(sts["spec"]["replicas"], 4, "2 shards x 2 allowed replicas");
+    }
+
+    #[test]
+    fn harden_sets_the_grace_period_on_the_pod_template() {
+        let mut sts = json!({
+            "spec": {
+                "template": { "spec": { "containers": [{ "name": "keep" }] } }
+            }
+        });
+        harden(&mut sts, 30);
+        let pod = &sts["spec"]["template"]["spec"];
+        assert_eq!(pod["terminationGracePeriodSeconds"], 30);
+    }
+}
