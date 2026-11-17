@@ -24,3 +24,4 @@ mod server_lifecycle_readiness;
 mod sift_agnostic_telemetry;
 mod spec_cli;
 mod structured_stdout_traceparent;
+mod test_image_raft;

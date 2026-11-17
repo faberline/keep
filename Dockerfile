@@ -14,6 +14,8 @@ FROM rust:1.92-slim-bookworm AS builder
 # `cargo build` on the host). Only these two values work: the binary is
 # copied out of target/<profile>/.
 ARG CARGO_PROFILE=release
+# Cargo features for the keep binary. Empty = no feature; `raft` = raft replica mode.
+ARG CARGO_FEATURES=""
 WORKDIR /src
 # Only ca-certificates needed — keep links no openssl.
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
@@ -25,7 +27,7 @@ COPY --chown=root:root . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/src/target \
-    cargo build $([ "$CARGO_PROFILE" = release ] && echo --release) -p keep --bin keep \
+    cargo build $([ "$CARGO_PROFILE" = release ] && echo --release) -p keep --bin keep ${CARGO_FEATURES:+--features "$CARGO_FEATURES"} \
  && cp "target/$CARGO_PROFILE/keep" /usr/local/bin/
 
 # distroless runtime: glibc + libgcc + CA certs + nonroot (uid 65532, matching
