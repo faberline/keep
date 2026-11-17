@@ -572,8 +572,8 @@ def check_gke_acceptance(text: str) -> None:
     label = "gke-acceptance"
     if workflow_triggers(text) != ["workflow_dispatch"]:
         fail(f"{label}: the only trigger must be workflow_dispatch, got {workflow_triggers(text)}")
-    if workflow_inputs(text) != {"apps", "ref", "image"}:
-        fail(f"{label}: inputs must be apps, ref, image, got {sorted(workflow_inputs(text))}")
+    if workflow_inputs(text) != {"apps", "ref", "image", "topology"}:
+        fail(f"{label}: inputs must be apps, ref, image, topology, got {sorted(workflow_inputs(text))}")
     if not re.search(r"^run-name: .*inputs\.image != ''.*image=\{0\}", text, re.M):
         fail(f"{label}: run-name must carry the prebuilt image so release.sh can tell the runs apart")
     expected_jobs = {f"build-{app}" for app in GKE_HARNESS_APPS} | {"acceptance"}

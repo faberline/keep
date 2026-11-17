@@ -121,7 +121,36 @@ fn inputs_changed() {
     let text = mutate(&workflow(), "      ref:\n", "      rev:\n");
     assert_eq!(
         refused(check_gke_acceptance(&text)),
-        "gke-acceptance: inputs must be apps, ref, image, got ['apps', 'image', 'rev']"
+        "gke-acceptance: inputs must be apps, ref, image, topology, got ['apps', 'image', 'rev', 'topology']"
+    );
+}
+
+#[test]
+fn extra_input_is_refused() {
+    let text = mutate(
+        &workflow(),
+        "      image:\n",
+        "      extra:\n      image:\n",
+    );
+    assert_eq!(
+        refused(check_gke_acceptance(&text)),
+        "gke-acceptance: inputs must be apps, ref, image, topology, got ['apps', 'extra', 'image', 'ref', 'topology']"
+    );
+}
+
+#[test]
+fn topology_input_is_allowed() {
+    let text = workflow();
+    assert!(text.contains("      topology:\n"));
+    check_gke_acceptance(&text).unwrap();
+}
+
+#[test]
+fn missing_topology_input_is_refused() {
+    let text = mutate(&workflow(), "      topology:\n", "      topo:\n");
+    assert_eq!(
+        refused(check_gke_acceptance(&text)),
+        "gke-acceptance: inputs must be apps, ref, image, topology, got ['apps', 'image', 'ref', 'topo']"
     );
 }
 

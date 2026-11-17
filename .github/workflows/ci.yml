@@ -132,6 +132,10 @@ jobs:
         run: kubectl kustomize k8s/overlays/gke-test > /dev/null
       - run: shellcheck -x -S warning k8s/gke-test-job/verify.sh
       - run: kubectl kustomize k8s/gke-test-job > /dev/null
+      - name: Render gke-test raft overlay
+        run: kubectl kustomize k8s/overlays/gke-test-raft > /dev/null
+      - run: shellcheck -x -S warning k8s/gke-test-job-raft/verify-raft.sh
+      - run: kubectl kustomize k8s/gke-test-job-raft > /dev/null
 
   gate:
     name: gate

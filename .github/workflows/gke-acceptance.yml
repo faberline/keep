@@ -20,6 +20,13 @@ on:
         description: A prebuilt ghcr.io/<owner>/keep@sha256:<64 hex> image. Leave empty to build one.
         type: string
         default: ''
+      topology:
+        description: "single runs 1 replica. raft runs 3 replicas on the keep-server pool (a paid run; dispatch it only when a person approves the cost)."
+        type: choice
+        options:
+          - single
+          - raft
+        default: single
 
 permissions:
   contents: read
@@ -46,10 +53,10 @@ jobs:
     env:
       KEEP_IMAGE: ${{ contains(inputs.apps, 'keep') && inputs.image || needs.build-keep.outputs.image }}
       REPO: keep
-      OVERLAY: k8s/overlays/gke-test
+      OVERLAY: ${{ (inputs.topology || 'single') == 'raft' && 'k8s/overlays/gke-test-raft' || 'k8s/overlays/gke-test' }}
       IMAGE: ${{ contains(inputs.apps, 'keep') && inputs.image || needs.build-keep.outputs.image }}
       NAMESPACE: keep
-      TEST_JOB: k8s/gke-test-job
+      TEST_JOB: ${{ (inputs.topology || 'single') == 'raft' && 'k8s/gke-test-job-raft' || 'k8s/gke-test-job' }}
       RUN_LABEL: gha-${{ github.run_id }}-${{ github.run_attempt }}
       TTL_MINUTES: '90'
       QUEUE_MINUTES: '120'
@@ -106,10 +113,15 @@ jobs:
         timeout-minutes: 90
         env:
           GHCR_TOKEN: ${{ github.token }}
+          TOPOLOGY: ${{ inputs.topology || 'single' }}
         run: |
           set -euo pipefail
           .gke-test-aw/scripts/gke-test/run.sh 2>&1 | tee "$EVIDENCE_DIR/keep/teardown.log"
-          verdict='[keep] PASS: readyz + round-trip + durability'
+          if [ "$TOPOLOGY" = raft ]; then
+            verdict='[keep] PASS: raft 3 replicas + leader failover + durability'
+          else
+            verdict='[keep] PASS: readyz + round-trip + durability'
+          fi
           sed -E 's/^\[[^]]*\] [^ ]+ //' "$EVIDENCE_DIR"/logs-*.txt \
             | grep -m 1 -x -F -- "$verdict" > "$EVIDENCE_DIR/keep/verdict.txt" || true
           test -s "$EVIDENCE_DIR/keep/verdict.txt" || { echo "verdict line missing" >&2; exit 1; }

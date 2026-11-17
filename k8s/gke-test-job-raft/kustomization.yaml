@@ -1,0 +1,14 @@
+# Test Job for the raft topology (3 replicas) of the shared GKE test cluster.
+# Copy of k8s/gke-test-job/ with verify-raft.sh. faberline/aw's
+# .github/workflows/gke-acceptance.yml applies it with `topology: raft`.
+# Rules: aw's docs/standards/test-cluster.md.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: keep
+resources:
+  - rbac.yaml
+  - job.yaml
+configMapGenerator:
+  - name: keep-test-script
+    files:
+      - verify-raft.sh
