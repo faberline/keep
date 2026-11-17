@@ -2,6 +2,7 @@
 
 pub mod candidate;
 pub mod candidate_contract;
+pub mod command;
 pub mod contract;
 pub mod fixtures;
 pub mod receipt;
