@@ -5,7 +5,8 @@
 # release line and is pruned by ghcr-test-image-cleanup.yml. Unlike lumen's,
 # this build has no musl/multi-arch matrix: the acceptance cluster's nodes are
 # amd64 e2 machines, and Dockerfile is a from-source workspace
-# build whose context must be the repo root.
+# build whose context must be the repo root. The test image is built with the
+# `raft` feature (replica mode), so a pod with KEEP_REPLICAS_PER_SHARD > 1 runs it.
 #
 # `workflow_call` outputs mirror the publish job's outputs so
 # gke-acceptance.yml can consume the pinned image directly.
@@ -85,6 +86,8 @@ jobs:
         with:
           context: .
           file: Dockerfile
+          build-args: |
+            CARGO_FEATURES=raft
           platforms: linux/amd64
           push: true
           # NEVER add `latest` or a semver tag here — dev/test line only.
