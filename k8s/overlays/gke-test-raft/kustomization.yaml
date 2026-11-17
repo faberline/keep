@@ -1,0 +1,95 @@
+# Shared GKE test cluster overlay, raft topology: 3 keep replicas that form
+# one raft group. faberline/aw deploys it through
+# .github/workflows/gke-acceptance.yml with `topology: raft`; the rules are in
+# aw's docs/standards/test-cluster.md.
+#
+# - Copy of k8s/overlays/gke-test with three changes: 3 replicas, the
+#   podManagementPolicy Parallel (raft members start together; OrderedReady
+#   would wait for a quorum that never starts), and the raft env of keep.
+# - nodeSelector + toleration: run only on pool-keep-server (aw's
+#   infra/gke-test/pools.yaml: e2-standard-4, because keep requests 2 CPU).
+#   The pool needs max_nodes >= 3, one node per replica (faberline/aw PR 582).
+# - One pod per node: a required pod anti-affinity that matches every pod of
+#   the namespace, so each replica has a node of its own.
+# - Requests without limits: the base sets limits for real clusters; the
+#   overlay removes them so the pod can use the whole node.
+# - The test client is a Job in k8s/gke-test-job-raft/ on pool-keep-client.
+# - ghcr-pull: the run creates this pull secret from its GITHUB_TOKEN.
+# - The run sets the image; a REPLACE_ME left here fails the run.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources: [../../base]
+replicas:
+  - name: keep
+    count: 3
+images:
+  - name: keep
+    newName: ghcr.io/faberline/keep
+    newTag: REPLACE_ME__TAG
+patches:
+  - target:
+      kind: StatefulSet
+      name: keep
+    patch: |-
+      apiVersion: apps/v1
+      kind: StatefulSet
+      metadata:
+        name: keep
+      spec:
+        template:
+          spec:
+            nodeSelector:
+              faberline.dev/pool: keep-server
+            tolerations:
+              - key: faberline.dev/pool
+                operator: Equal
+                value: keep-server
+                effect: NoSchedule
+            imagePullSecrets:
+              - name: ghcr-pull
+            affinity:
+              podAntiAffinity:
+                requiredDuringSchedulingIgnoredDuringExecution:
+                  - topologyKey: kubernetes.io/hostname
+                    labelSelector: {}
+  - target:
+      kind: StatefulSet
+      name: keep
+    patch: |-
+      - op: remove
+        path: /spec/template/spec/containers/0/resources/limits
+  - target:
+      kind: StatefulSet
+      name: keep
+    patch: |-
+      - op: replace
+        path: /spec/podManagementPolicy
+        value: Parallel
+  - target:
+      kind: StatefulSet
+      name: keep
+    patch: |-
+      apiVersion: apps/v1
+      kind: StatefulSet
+      metadata:
+        name: keep
+      spec:
+        template:
+          spec:
+            containers:
+              - name: keep
+                env:
+                  - name: SHARD_COUNT
+                    value: "1"
+                  - name: REPLICAS_PER_SHARD
+                    value: "3"
+                  - name: VOTER_COUNT
+                    value: "3"
+                  - name: KEEP_HEADLESS_SERVICE
+                    value: keep-headless
+                  - name: KEEP_SHARD_COUNT
+                    value: "1"
+                  - name: KEEP_REPLICAS_PER_SHARD
+                    value: "3"
+                  - name: KEEP_RAFT_MEMBERS_PER_SHARD
+                    value: "3"

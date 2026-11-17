@@ -1,0 +1,26 @@
+# Step 3 of verify.sh deletes keep-0 and waits for it to come back.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: keep-test
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: keep-test
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: keep-test
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: keep-test
+subjects:
+  - kind: ServiceAccount
+    name: keep-test
