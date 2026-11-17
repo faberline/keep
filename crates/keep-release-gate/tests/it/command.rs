@@ -353,3 +353,48 @@ fn verify_release_contract_refusal_exit_1() {
         )
     );
 }
+
+/// Copy the directory `from` into `to`, recursively.
+fn copy_dir(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let target = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_dir(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), &target).unwrap();
+        }
+    }
+}
+
+#[test]
+fn static_only_refuses_a_changed_apps_table() {
+    let source = repo_root();
+    let dir = tempfile::tempdir().unwrap();
+    copy_dir(
+        &source.join(".github/workflows"),
+        &dir.path().join(".github/workflows"),
+    );
+    copy_dir(
+        &source.join("scripts/release"),
+        &dir.path().join("scripts/release"),
+    );
+    let apps_sh = dir.path().join("scripts/release/apps.sh");
+    let text = std::fs::read_to_string(&apps_sh).unwrap();
+    let from = "printf '%s\\n' x86_64-unknown-linux-musl aarch64-unknown-linux-musl";
+    assert_eq!(text.matches(from).count(), 1);
+    std::fs::write(
+        &apps_sh,
+        text.replacen(from, "printf '%s\\n' x86_64-unknown-linux-musl", 1),
+    )
+    .unwrap();
+    assert_eq!(
+        verify_release_contract(&args(&["--app", "keep", "--static-only"]), dir.path()),
+        (
+            1,
+            String::new(),
+            "verify-release-contract: refused: apps.sh release_app_targets keep = ['x86_64-unknown-linux-musl'], this table says ['x86_64-unknown-linux-musl', 'aarch64-unknown-linux-musl']\n".to_string(),
+        )
+    );
+}
