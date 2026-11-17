@@ -51,7 +51,7 @@ jobs:
         with:
           tool: cargo-llvm-cov@0.9.1
       - run: cargo llvm-cov --workspace --locked --json --summary-only --output-path target/coverage.json
-      - uses: faberline/aw/.github/actions/coverage@49df274a62a227fd7b6f635f4ebf3ed4e81df349 # S8
+      - uses: faberline/aw/.github/actions/coverage@40ea346f14deda469089bb104d969624d4f924c6 # S8
         with:
           summary: target/coverage.json
       - run: cargo test --locked --workspace --doc
