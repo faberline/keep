@@ -1,6 +1,6 @@
 //! Tests for the `release-gate` command: `command::run` and the `release-gate` binary.
 
-use keep_release_gate::command::{run, USAGE};
+use keep_release_gate::command::{run, verify_release_contract, USAGE};
 use std::path::{Path, PathBuf};
 
 fn args(items: &[&str]) -> Vec<String> {
@@ -269,5 +269,87 @@ fn binary_runs() {
     assert_eq!(
         String::from_utf8(output.stderr).unwrap(),
         "release-gate receipt: --app is required\n"
+    );
+}
+
+fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+#[test]
+fn verify_release_contract_passes_on_repository() {
+    let result = verify_release_contract(&args(&["--app", "keep", "--static-only"]), &repo_root());
+    assert_eq!(
+        result,
+        (
+            0,
+            "release contract passed: keep\n".to_string(),
+            String::new()
+        )
+    );
+}
+
+#[test]
+fn verify_release_contract_usage_errors() {
+    let root = repo_root();
+    let cases: [(&[&str], &str); 5] = [
+        (
+            &[],
+            "release-gate verify-release-contract: --app is required\n",
+        ),
+        (
+            &["--app", "keep"],
+            "release-gate verify-release-contract: --static-only is required\n",
+        ),
+        (
+            &["--app", "sift", "--static-only"],
+            "release-gate verify-release-contract: invalid choice: sift\n",
+        ),
+        (
+            &["--bogus"],
+            "release-gate verify-release-contract: unknown option --bogus\n",
+        ),
+        (
+            &["--app"],
+            "release-gate verify-release-contract: --app needs a value\n",
+        ),
+    ];
+    for (items, stderr) in cases {
+        assert_eq!(
+            verify_release_contract(&args(items), &root),
+            (2, String::new(), stderr.to_string()),
+            "args {items:?}"
+        );
+    }
+}
+
+#[test]
+fn verify_release_contract_refusal_exit_1() {
+    let source = repo_root();
+    let dir = tempfile::tempdir().unwrap();
+    for relative in [
+        ".github/workflows/keep-release.yml",
+        ".github/workflows/keep-release-candidate.yml",
+        "scripts/release/apps.sh",
+    ] {
+        let target = dir.path().join(relative);
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        let text = std::fs::read_to_string(source.join(relative)).unwrap();
+        let text = if relative == ".github/workflows/keep-release.yml" {
+            let from = "service-release.yml@eddb20c39f82655f1b41348230f5bb0925827122";
+            assert!(text.contains(from));
+            text.replacen(from, "service-release.yml@main", 1)
+        } else {
+            text
+        };
+        std::fs::write(&target, text).unwrap();
+    }
+    assert_eq!(
+        verify_release_contract(&args(&["--app", "keep", "--static-only"]), dir.path()),
+        (
+            1,
+            String::new(),
+            "verify-release-contract: refused: keep promotion: the only uses must be faberline/aw service-release.yml pinned to a 40-hex commit, got ['faberline/aw/.github/workflows/service-release.yml@main']\n".to_string(),
+        )
     );
 }

@@ -15,7 +15,7 @@ fn lift<T>(result: crate::contract::Result<T>) -> Result<T> {
 }
 
 /// A Python-style list of strings: `['a', 'b']`.
-fn py_list<I, S>(items: I) -> String
+pub fn py_list<I, S>(items: I) -> String
 where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
