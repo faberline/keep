@@ -9,11 +9,11 @@ description = "keep-release-gate — release checks that replace the Python scri
 publish = false
 
 [dependencies]
+flate2.workspace = true
 regex.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
-
-[dev-dependencies]
+tar.workspace = true
 tempfile.workspace = true
 
 [lints]
