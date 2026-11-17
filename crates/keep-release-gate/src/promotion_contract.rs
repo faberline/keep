@@ -3,6 +3,7 @@
 
 use crate::candidate_contract::{check_candidate, py_list};
 use crate::contract::{fail, App, ContractError, Result};
+use crate::gke_acceptance_contract::{check_gke_acceptance, check_gke_acceptance_names};
 use crate::workflow_text::{
     action_values, all_run_scripts, job_block, job_ids, permission_pairs, with_values,
     workflow_inputs, workflow_triggers,
@@ -201,7 +202,11 @@ pub fn check_app(root: &Path, app: &App) -> Result<()> {
     check_candidate(app, &candidate).map_err(|error| ContractError(error.0))?;
     let promotion = read_workflow(root, &app.promotion_workflow())?;
     check_promotion(root, app, &promotion)?;
-    // check_gke_acceptance is added by #180.
+    if app.gke_backend == "gke-acceptance" {
+        let text = read_workflow(root, Path::new(".github/workflows/gke-acceptance.yml"))?;
+        check_gke_acceptance(&text)?;
+        check_gke_acceptance_names(&text)?;
+    }
     Ok(())
 }
 

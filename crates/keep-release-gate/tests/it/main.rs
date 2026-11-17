@@ -6,6 +6,7 @@ mod command;
 mod contract;
 mod fixture_run;
 mod gke_acceptance;
+mod gke_acceptance_contract;
 mod promotion_contract;
 mod receipt;
 mod util;
