@@ -3,8 +3,10 @@
 use crate::candidate::{
     app_targets, candidate_schema, final_jobs, workflow_ref, IMAGE_OWNER, REPOSITORY,
 };
+use crate::receipt::{ACCEPTANCE_JOB, HARNESS_STEP, PARK_STEP, VERIFY_IMAGE_STEP};
 use crate::util::sha256_hex;
 use serde_json::{json, Value};
+use std::path::Path;
 
 pub const FIXTURE_COMMIT: &str = "0123456789abcdef0123456789abcdef01234567";
 
@@ -52,4 +54,65 @@ pub fn candidate(app: &str, version: &str, commit: &str, run_id: &str, attempt: 
         },
         "jobs": Value::Object(final_jobs(app)),
     })
+}
+
+/// A gke-acceptance run record that `validate_gke_acceptance` accepts. Port of the script's `fixture_gke_acceptance`.
+pub fn gke_acceptance(app: &str, commit: &str, image: &str) -> Value {
+    let step = |name: &str| json!({"name": name, "status": "completed", "conclusion": "success", "number": 1});
+    let skipped = |name: &str| json!({"name": name, "status": "completed", "conclusion": "skipped", "steps": []});
+    json!({
+        "databaseId": 99001,
+        "attempt": 1,
+        "conclusion": "success",
+        "status": "completed",
+        "event": "workflow_dispatch",
+        "workflowName": "gke-acceptance",
+        "url": format!("https://github.com/{REPOSITORY}/actions/runs/99001"),
+        "headSha": commit,
+        "displayTitle": format!("gke-acceptance {app} @ {commit} image={image}"),
+        "jobs": [
+            skipped("build-keep"),
+            skipped("build-defer"),
+            skipped("build-relay"),
+            skipped("build-loom"),
+            {
+                "name": ACCEPTANCE_JOB,
+                "status": "completed",
+                "conclusion": "success",
+                "steps": [
+                    step("Set up job"),
+                    step("Run actions/checkout@v4"),
+                    step(VERIFY_IMAGE_STEP),
+                    step("Prepare evidence directory"),
+                    step("Authenticate to GCP (Workload Identity Federation)"),
+                    step("Set up gcloud + GKE auth plugin"),
+                    step(HARNESS_STEP),
+                    step("Upload evidence bundle"),
+                    step(PARK_STEP),
+                ],
+            },
+        ],
+    })
+}
+
+/// Write the harness evidence of `app` into `dir`. Port of the script's `write_harness_evidence`.
+pub fn write_harness_evidence(app: &str, dir: &Path, image: &str) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir.join(app))?;
+    std::fs::write(
+        dir.join("kubeconfig"),
+        "apiVersion: v1\nkind: Config\nusers: [{name: redacted}]\n",
+    )?;
+    std::fs::write(dir.join("cluster-name.txt"), "axiom-acceptance\n")?;
+    std::fs::write(dir.join("results.txt"), format!("{app} PASS\n"))?;
+    std::fs::write(
+        dir.join(app).join("verdict.txt"),
+        format!("[{app}] PASS: readyz + round-trip + durability\n"),
+    )?;
+    std::fs::write(
+        dir.join(app).join("manifests.yaml"),
+        format!(
+            "apiVersion: apps/v1\nkind: StatefulSet\nspec:\n  template:\n    spec:\n      containers:\n      - name: {app}\n        image: {image}\n"
+        ),
+    )?;
+    std::fs::write(dir.join(app).join("teardown.log"), "namespace deleted\n")
 }
