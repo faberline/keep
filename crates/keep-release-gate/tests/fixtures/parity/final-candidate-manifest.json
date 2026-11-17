@@ -1,0 +1,60 @@
+{
+ "artifacts": [
+  {
+   "archive": "keep-x86_64-unknown-linux-musl.tar.gz",
+   "archive_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+   "sidecar": "keep-x86_64-unknown-linux-musl.tar.gz.sha256",
+   "sidecar_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+   "target": "x86_64-unknown-linux-musl"
+  },
+  {
+   "archive": "keep-aarch64-unknown-linux-musl.tar.gz",
+   "archive_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+   "sidecar": "keep-aarch64-unknown-linux-musl.tar.gz.sha256",
+   "sidecar_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+   "target": "aarch64-unknown-linux-musl"
+  }
+ ],
+ "candidate_tag": "release-candidate-12345-1",
+ "commit": "0123456789abcdef0123456789abcdef01234567",
+ "image": {
+  "amd64_digest": "sha256:1e1ba4bc5d8a40fb3f596faef29e949eb73ebe0c24128c783f0f406d61c04512",
+  "arm64_digest": "sha256:8d7e658361cc52ca159150cb6db1526fa867059bd119d6da49167a0b1d902972",
+  "repository": "ghcr.io/faberline/keep",
+  "root_digest": "sha256:a13daa04b029cad7a1d5920c487efb9c6b7d845a249f22afa5fb37dfafe1b91b"
+ },
+ "jobs": {
+  "build": "success",
+  "ghcr-image-and-attest": "success",
+  "identity": "success",
+  "keep-release-gates": "success",
+  "manifest": "success",
+  "result": "success",
+  "verify-candidate": "success"
+ },
+ "pr": {
+  "number": 7,
+  "url": "https://github.com/faberline/keep/pull/7"
+ },
+ "repository": "faberline/keep",
+ "run_attempt": "1",
+ "run_id": "12345",
+ "run_url": "https://github.com/faberline/keep/actions/runs/12345/attempts/1",
+ "sboms": {
+  "amd64": {
+   "file": "spdx-amd64.json",
+   "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+  },
+  "arm64": {
+   "file": "spdx-arm64.json",
+   "sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+  }
+ },
+ "schema": "cclab.keep.candidate-manifest.v1",
+ "source_ref": "refs/heads/main",
+ "tag": "keep@0.4.13",
+ "version": "0.4.13",
+ "workflow_id": 42,
+ "workflow_path": ".github/workflows/keep-release-candidate.yml",
+ "workflow_ref": "faberline/keep/.github/workflows/keep-release-candidate.yml@refs/heads/main"
+}

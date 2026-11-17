@@ -1,0 +1,8 @@
+apiVersion: apps/v1
+kind: StatefulSet
+spec:
+  template:
+    spec:
+      containers:
+      - name: keep
+        image: ghcr.io/faberline/keep@sha256:a13daa04b029cad7a1d5920c487efb9c6b7d845a249f22afa5fb37dfafe1b91b

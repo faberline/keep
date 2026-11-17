@@ -1,9 +1,11 @@
 //! The gke-acceptance check of the release receipt. Port of `validate_gke_acceptance` in the receipt script.
 
-use crate::candidate::{CandidateSummary, IMAGE_OWNER, REPOSITORY};
-use crate::refusal::{refuse, Result};
-use crate::util::{is_int, read_regular, sha256_hex};
-use serde_json::{Map, Value};
+use crate::candidate::{
+    receipt_schema, validate_candidate, CandidateSummary, IMAGE_OWNER, REPOSITORY,
+};
+use crate::refusal::{refuse, Refusal, Result};
+use crate::util::{is_int, load_json, read_regular, sha256_hex};
+use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -167,4 +169,137 @@ pub fn validate_gke_acceptance(
         run_url,
         evidence,
     })
+}
+
+/// The files that a receipt run reads. `run`, `images`, `acceptance` and `cleanup` belong to the dropped `gcp` backend: they are accepted and ignored.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ReceiptInputs<'a> {
+    pub run: Option<&'a Path>,
+    pub images: Option<&'a Path>,
+    pub acceptance: Option<&'a Path>,
+    pub cleanup: Option<&'a Path>,
+    pub gh_run: Option<&'a Path>,
+    pub evidence_dir: Option<&'a Path>,
+}
+
+/// Rebuild every object with its keys in sorted order, at every level.
+fn sorted(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let ordered: BTreeMap<&String, Value> =
+                map.iter().map(|(key, item)| (key, sorted(item))).collect();
+            Value::Object(
+                ordered
+                    .into_iter()
+                    .map(|(key, item)| (key.clone(), item))
+                    .collect(),
+            )
+        }
+        Value::Array(items) => Value::Array(items.iter().map(sorted).collect()),
+        other => other.clone(),
+    }
+}
+
+/// The bytes of a receipt: compact JSON, keys sorted at every level, one trailing newline.
+pub fn receipt_bytes(receipt: &Value) -> Vec<u8> {
+    let mut bytes = serde_json::to_vec(&sorted(receipt)).expect("a JSON value serializes");
+    bytes.push(b'\n');
+    bytes
+}
+
+/// Whether `path` is a symbolic link (a missing path is not).
+fn is_symlink(path: &Path) -> bool {
+    std::fs::symlink_metadata(path)
+        .map(|meta| meta.file_type().is_symlink())
+        .unwrap_or(false)
+}
+
+/// Check the inputs, write the receipt and its sidecar, and return the receipt. Port of `make_receipt` in the receipt script (the `gke-acceptance` backend only).
+pub fn make_receipt(
+    app: &str,
+    backend: &str,
+    candidate_manifest: &Path,
+    output: &Path,
+    inputs: &ReceiptInputs,
+) -> Result<Value> {
+    if app != "keep" {
+        return refuse(format!("unknown shared-script app: {app} (known: keep)"));
+    }
+    if backend != "gke-acceptance" {
+        return refuse(format!(
+            "keep proves GKE acceptance with backend gke-acceptance, not {backend}"
+        ));
+    }
+    let (candidate_raw, candidate_map) = load_json(candidate_manifest, "candidate manifest")?;
+    let candidate = validate_candidate(app, &candidate_raw, &candidate_map)?;
+    let (Some(gh_run_path), Some(evidence_dir)) = (inputs.gh_run, inputs.evidence_dir) else {
+        return refuse("backend gke-acceptance needs --gh-run and --evidence-dir");
+    };
+    let (gh_raw, gh_map) = load_json(gh_run_path, "gh run record")?;
+    let acceptance = validate_gke_acceptance(app, &candidate, &gh_map, evidence_dir)?;
+
+    let mut evidence = Map::new();
+    for (key, digest) in &acceptance.evidence {
+        evidence.insert(key.clone(), json!(digest));
+    }
+    evidence.insert("gh_run_sha256".to_string(), json!(sha256_hex(&gh_raw)));
+    let functional: Map<String, Value> = HARNESS_FIELDS
+        .iter()
+        .map(|field| (field.to_string(), json!("passed")))
+        .collect();
+    let receipt = json!({
+        "schema": receipt_schema(app),
+        "complete": true,
+        "result": "passed",
+        "candidate": candidate.to_value(),
+        "gke": {
+            "backend": "gke-acceptance",
+            "run_id": acceptance.run_id,
+            "run_url": acceptance.run_url,
+            "image": format!("{IMAGE_OWNER}/{app}@{}", candidate.root_digest),
+            "image_provenance": "prebuilt",
+            "functional": functional,
+            "cleanup": {
+                "schema": "axiom.gke-harness.cleanup.v1",
+                "status": "clean",
+                "namespace_deleted": true,
+                "node_pool_parked": true,
+            },
+        },
+        "evidence": evidence,
+        "redaction": {
+            "kubeconfig_retained": false,
+            "token_retained": false,
+            "secret_retained": false,
+            "cluster_identity_retained": false,
+            "command_output_retained": false,
+        },
+    });
+
+    let bytes = receipt_bytes(&receipt);
+    if is_symlink(output) {
+        return refuse("output must not be a symlink");
+    }
+    let file_name = format!("{app}-gke-receipt.json");
+    if output.file_name().and_then(|name| name.to_str()) != Some(file_name.as_str()) {
+        return refuse(format!("output must be named {file_name}"));
+    }
+    let cannot_write = |path: &Path, error: std::io::Error| {
+        Refusal(format!("cannot write {}: {error}", path.display()))
+    };
+    if let Some(parent) = output
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent).map_err(|error| cannot_write(parent, error))?;
+    }
+    std::fs::write(output, &bytes).map_err(|error| cannot_write(output, error))?;
+
+    let sidecar = output.with_file_name(format!("{file_name}.sha256"));
+    if is_symlink(&sidecar) {
+        return refuse("sidecar output must not be a symlink");
+    }
+    let line = format!("{}  {file_name}\n", sha256_hex(&bytes));
+    std::fs::write(&sidecar, line).map_err(|error| cannot_write(&sidecar, error))?;
+    Ok(receipt)
 }

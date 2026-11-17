@@ -1,0 +1,98 @@
+{
+ "attempt": 1,
+ "conclusion": "success",
+ "databaseId": 99001,
+ "displayTitle": "gke-acceptance keep @ 0123456789abcdef0123456789abcdef01234567 image=ghcr.io/faberline/keep@sha256:a13daa04b029cad7a1d5920c487efb9c6b7d845a249f22afa5fb37dfafe1b91b",
+ "event": "workflow_dispatch",
+ "headSha": "0123456789abcdef0123456789abcdef01234567",
+ "jobs": [
+  {
+   "conclusion": "skipped",
+   "name": "build-keep",
+   "status": "completed",
+   "steps": []
+  },
+  {
+   "conclusion": "skipped",
+   "name": "build-defer",
+   "status": "completed",
+   "steps": []
+  },
+  {
+   "conclusion": "skipped",
+   "name": "build-relay",
+   "status": "completed",
+   "steps": []
+  },
+  {
+   "conclusion": "skipped",
+   "name": "build-loom",
+   "status": "completed",
+   "steps": []
+  },
+  {
+   "conclusion": "success",
+   "name": "deploy + verify on GKE",
+   "status": "completed",
+   "steps": [
+    {
+     "conclusion": "success",
+     "name": "Set up job",
+     "number": 1,
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "Run actions/checkout@v4",
+     "number": 1,
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "Verify prebuilt image input",
+     "number": 1,
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "Prepare evidence directory",
+     "number": 1,
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "Authenticate to GCP (Workload Identity Federation)",
+     "number": 1,
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "Set up gcloud + GKE auth plugin",
+     "number": 1,
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "Run acceptance harness",
+     "number": 1,
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "Upload evidence bundle",
+     "number": 1,
+     "status": "completed"
+    },
+    {
+     "conclusion": "success",
+     "name": "Park node pool (belt and suspenders)",
+     "number": 1,
+     "status": "completed"
+    }
+   ]
+  }
+ ],
+ "status": "completed",
+ "url": "https://github.com/faberline/keep/actions/runs/99001",
+ "workflowName": "gke-acceptance"
+}
