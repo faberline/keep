@@ -35,7 +35,7 @@ pub const RETIRED_RELEASE_ROUTES: [&str; 2] = [
 ];
 
 /// The Python `repr` of a string, for the messages that quote an anchor.
-fn py_repr(text: &str) -> String {
+pub fn py_repr(text: &str) -> String {
     let quote = if text.contains('\'') && !text.contains('"') {
         '"'
     } else {

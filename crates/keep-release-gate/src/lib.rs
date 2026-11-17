@@ -10,6 +10,7 @@ pub mod gke_acceptance_contract;
 pub mod promotion_contract;
 pub mod receipt;
 pub mod refusal;
+pub mod self_test;
 pub mod skill_contract;
 pub mod tables_contract;
 pub mod util;

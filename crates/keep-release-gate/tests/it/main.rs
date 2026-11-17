@@ -9,6 +9,7 @@ mod gke_acceptance;
 mod gke_acceptance_contract;
 mod promotion_contract;
 mod receipt;
+mod self_test;
 mod skill_contract;
 mod tables_contract;
 mod util;
