@@ -3,6 +3,7 @@
 use crate::contract::find_app;
 use crate::promotion_contract::check_app;
 use crate::receipt::{make_receipt, ReceiptInputs};
+use crate::tables_contract::{check_tables, receipt_rows};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -77,7 +78,9 @@ pub fn verify_release_contract(args: &[String], root: &Path) -> (i32, String, St
     let Ok(row) = find_app(&app) else {
         return verify_usage_error(&format!("invalid choice: {app}"));
     };
-    match check_app(root, &row) {
+    match check_app(root, &row)
+        .and_then(|()| check_tables(root, std::slice::from_ref(&row), &receipt_rows()))
+    {
         Ok(()) => (
             0,
             format!("release contract passed: {}\n", row.name),
