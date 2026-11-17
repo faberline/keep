@@ -10,5 +10,6 @@ pub mod gke_acceptance_contract;
 pub mod promotion_contract;
 pub mod receipt;
 pub mod refusal;
+pub mod tables_contract;
 pub mod util;
 pub mod workflow_text;
