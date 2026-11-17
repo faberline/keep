@@ -183,6 +183,35 @@ fn fixture_version_is_known_for_keep_only() {
 }
 
 #[test]
+fn run_command_refuses_an_empty_command() {
+    let err = run_command(&[], "demo", true, None).unwrap_err();
+    assert_eq!(err.0, "demo: empty command");
+}
+
+#[test]
+fn run_command_reports_a_program_that_does_not_start() {
+    let cmd: Vec<String> = vec!["/nonexistent/program-x".into()];
+    assert!(run_command(&cmd, "demo", true, None).is_err());
+}
+
+#[test]
+fn build_fixture_refuses_an_app_without_a_fixture_version() {
+    let mut app = find_app("keep").unwrap();
+    app.name = "loom".to_string();
+    let dir = tempfile::tempdir().unwrap();
+    let err = build_fixture(&app, dir.path()).unwrap_err();
+    assert_eq!(err.0, "no fixture version for loom");
+}
+
+#[test]
+fn run_fixture_refuses_an_app_without_targets() {
+    let mut app = find_app("keep").unwrap();
+    app.targets.clear();
+    let err = run_fixture(&app).unwrap_err();
+    assert_eq!(err.0, "keep has no targets");
+}
+
+#[test]
 fn write_json_under_a_regular_file_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     let blocker = dir.path().join("file");

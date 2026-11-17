@@ -40,6 +40,12 @@ fn io(error: io::Error) -> ContractError {
     ContractError(error.to_string())
 }
 
+fn refuse_fixture(app: &str, message: impl std::fmt::Display) -> ContractError {
+    ContractError(format!(
+        "{app} receipt maker refused the fixture: {message}"
+    ))
+}
+
 fn path_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
@@ -255,21 +261,15 @@ pub fn build_fixture(app: &App, root: &Path) -> Result<Fixture> {
     let receipt = root.join(&app.receipt_name);
     let evidence = root.join("evidence");
     std::fs::create_dir_all(&evidence).map_err(io)?;
-    let refused = |message: String| {
-        ContractError(format!(
-            "{} receipt maker refused the fixture: {message}",
-            app.name
-        ))
-    };
     let gh_run = evidence.join("gh-run.json");
     let bundle = evidence.join("bundle");
     write_json(
         &gh_run,
         &fixtures::gke_acceptance(&app.name, &commit, &image),
     )
-    .map_err(|error| refused(error.to_string()))?;
+    .map_err(|error| refuse_fixture(&app.name, error))?;
     fixtures::write_harness_evidence(&app.name, &bundle, &image)
-        .map_err(|error| refused(error.to_string()))?;
+        .map_err(|error| refuse_fixture(&app.name, error))?;
     make_receipt(
         &app.name,
         "gke-acceptance",
@@ -281,14 +281,10 @@ pub fn build_fixture(app: &App, root: &Path) -> Result<Fixture> {
             ..Default::default()
         },
     )
-    .map_err(|error: Refusal| refused(error.0))?;
+    .map_err(|error: Refusal| refuse_fixture(&app.name, error.0))?;
 
-    let receipt_sidecar = receipt.with_file_name(format!("{}.sha256", file_name_of(&receipt)));
-    let sidecar = if receipt_sidecar.is_file() {
-        receipt_sidecar
-    } else {
-        write_sidecar(&receipt).map_err(io)?
-    };
+    // `make_receipt` writes the sidecar next to the receipt.
+    let sidecar = receipt.with_file_name(format!("{}.sha256", file_name_of(&receipt)));
 
     let mut entries: Vec<PathBuf> = std::fs::read_dir(&candidate_dir)
         .map_err(io)?
@@ -414,11 +410,11 @@ pub fn run_fixture(app: &App) -> Result<(usize, usize)> {
         .tempdir()
         .map_err(io)?;
     let root = tmp.path();
-    let fx = build_fixture(app, root)?;
     let t0 = match app.targets.first() {
         Some(target) => target.clone(),
         None => return fail(format!("{name} has no targets")),
     };
+    let fx = build_fixture(app, root)?;
     let mut positives = 0;
     let mut negatives = 0;
 
