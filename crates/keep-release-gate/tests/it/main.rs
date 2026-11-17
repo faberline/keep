@@ -5,6 +5,7 @@ mod candidate_contract;
 mod command;
 mod contract;
 mod gke_acceptance;
+mod gke_acceptance_contract;
 mod promotion_contract;
 mod receipt;
 mod util;
