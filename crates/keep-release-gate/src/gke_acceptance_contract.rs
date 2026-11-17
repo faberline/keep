@@ -44,13 +44,13 @@ pub fn check_gke_acceptance(text: &str) -> Result<()> {
         ));
     }
     let inputs = workflow_inputs(text)?;
-    let expected_inputs: BTreeSet<String> = ["apps", "ref", "image"]
+    let expected_inputs: BTreeSet<String> = ["apps", "ref", "image", "topology"]
         .into_iter()
         .map(String::from)
         .collect();
     if inputs != expected_inputs {
         return fail(format!(
-            "{LABEL}: inputs must be apps, ref, image, got {}",
+            "{LABEL}: inputs must be apps, ref, image, topology, got {}",
             py_list(&inputs)
         ));
     }
