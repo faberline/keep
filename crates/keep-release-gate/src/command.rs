@@ -1,11 +1,17 @@
 //! The `release-gate` command: parse the arguments, run the checks and return the exit code and the text for stdout and stderr.
 
+use crate::contract::find_app;
+use crate::promotion_contract::check_app;
 use crate::receipt::{make_receipt, ReceiptInputs};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// The usage line of the command.
 pub const USAGE: &str = "usage: release-gate receipt --app keep --backend gke-acceptance --candidate-manifest <file> --output <file> --gh-run <file> --evidence-dir <dir>";
+
+/// The usage line of `verify-release-contract`.
+pub const VERIFY_USAGE: &str =
+    "usage: release-gate verify-release-contract --app keep --static-only";
 
 /// The options of `receipt`. Each one takes a value.
 const OPTIONS: [&str; 10] = [
@@ -29,10 +35,58 @@ pub fn run(args: &[String]) -> (i32, String, String) {
     match args.first().map(String::as_str) {
         None => (2, String::new(), format!("{USAGE}\n")),
         Some("receipt") => receipt(&args[1..]),
+        Some("verify-release-contract") => verify_release_contract(&args[1..], Path::new(".")),
         Some(other) => (
             2,
             String::new(),
             format!("release-gate: unknown subcommand {other}\n"),
+        ),
+    }
+}
+
+/// A usage error of `verify-release-contract`: exit 2 with `message` on stderr.
+fn verify_usage_error(message: &str) -> (i32, String, String) {
+    (
+        2,
+        String::new(),
+        format!("release-gate verify-release-contract: {message}\n"),
+    )
+}
+
+/// The `verify-release-contract` subcommand. `args` are the words after the command name; `root` is the repository root.
+pub fn verify_release_contract(args: &[String], root: &Path) -> (i32, String, String) {
+    let mut app: Option<String> = None;
+    let mut static_only = false;
+    let mut items = args.iter();
+    while let Some(item) = items.next() {
+        match item.as_str() {
+            "--static-only" => static_only = true,
+            "--app" => match items.next() {
+                Some(value) => app = Some(value.clone()),
+                None => return verify_usage_error("--app needs a value"),
+            },
+            other => return verify_usage_error(&format!("unknown option {other}")),
+        }
+    }
+    let Some(app) = app else {
+        return verify_usage_error("--app is required");
+    };
+    if !static_only {
+        return verify_usage_error("--static-only is required");
+    }
+    let Ok(row) = find_app(&app) else {
+        return verify_usage_error(&format!("invalid choice: {app}"));
+    };
+    match check_app(root, &row) {
+        Ok(()) => (
+            0,
+            format!("release contract passed: {}\n", row.name),
+            String::new(),
+        ),
+        Err(error) => (
+            1,
+            String::new(),
+            format!("verify-release-contract: refused: {error}\n"),
         ),
     }
 }
