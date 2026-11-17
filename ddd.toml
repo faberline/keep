@@ -7,7 +7,7 @@
 schema = 1
 
 [migration]
-enforce = false
+enforce = true
 
 [policy]
 version = 1
