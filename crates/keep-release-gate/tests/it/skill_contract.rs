@@ -133,6 +133,11 @@ fn replace_once_cases() {
         refusal_text(replace_once("a'b\nc", "x\ny'", "Y", "L")),
         "L: mutation anchor must appear exactly once: \"x\\ny'\" (0)"
     );
+    // Python repr of a string holding both quote kinds uses single quotes and escapes `'`.
+    assert_eq!(
+        refusal_text(replace_once("", "a'b\"c", "Y", "L")),
+        "L: mutation anchor must appear exactly once: 'a\\'b\"c' (0)"
+    );
     // Backslash, tab and carriage return are escaped as Python does.
     assert_eq!(
         refusal_text(replace_once("", "a\\b\tc\rd", "Y", "L")),
