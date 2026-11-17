@@ -4,6 +4,7 @@ pub mod candidate;
 pub mod candidate_contract;
 pub mod command;
 pub mod contract;
+pub mod fixture_run;
 pub mod fixtures;
 pub mod gke_acceptance_contract;
 pub mod promotion_contract;
