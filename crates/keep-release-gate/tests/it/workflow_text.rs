@@ -236,7 +236,7 @@ fn candidate_workflow_shape() {
     let gates = job_block(&text, "keep-release-gates").unwrap();
     let script = run_script(&step_block(&gates, "Run declared Keep gates").unwrap()).unwrap();
     assert!(script.contains("cargo test --locked -p keep"));
-    assert!(script.contains("verify-release-contract.py --app keep"));
+    assert!(script.contains("-p keep-release-gate -- verify-release-contract --app keep"));
     assert!(all_run_scripts(&text).iter().any(|s| s.contains(
         "cargo build --release --locked -p keep --bin keep --target ${{ matrix.target }}"
     )));

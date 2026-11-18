@@ -37,5 +37,4 @@ mutants.out.old
 
 # keep's default data dir when KEEP_DATA_DIR is unset.
 /data/
-__pycache__/
 
