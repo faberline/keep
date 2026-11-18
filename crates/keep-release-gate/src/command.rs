@@ -3,8 +3,10 @@
 use crate::contract::find_app;
 use crate::promotion_contract::check_app;
 use crate::receipt::{make_receipt, ReceiptInputs};
+use crate::self_test::{check_everything, self_test};
 use crate::tables_contract::{check_tables, receipt_rows};
 use std::collections::BTreeMap;
+use std::fmt::Display;
 use std::path::{Path, PathBuf};
 
 /// The usage line of the command.
@@ -12,7 +14,7 @@ pub const USAGE: &str = "usage: release-gate receipt --app keep --backend gke-ac
 
 /// The usage line of `verify-release-contract`.
 pub const VERIFY_USAGE: &str =
-    "usage: release-gate verify-release-contract --app keep --static-only";
+    "usage: release-gate verify-release-contract [--app keep] [--self-test] [--static-only]";
 
 /// The options of `receipt`. Each one takes a value.
 const OPTIONS: [&str; 10] = [
@@ -54,14 +56,28 @@ fn verify_usage_error(message: &str) -> (i32, String, String) {
     )
 }
 
+/// The text of a finished `verify-release-contract` run: the summary on stdout, or the refusal on stderr with exit 1.
+fn verify_finished<E: Display>(result: Result<String, E>) -> (i32, String, String) {
+    match result {
+        Ok(summary) => (0, format!("{summary}\n"), String::new()),
+        Err(error) => (
+            1,
+            String::new(),
+            format!("verify-release-contract: refused: {error}\n"),
+        ),
+    }
+}
+
 /// The `verify-release-contract` subcommand. `args` are the words after the command name; `root` is the repository root.
 pub fn verify_release_contract(args: &[String], root: &Path) -> (i32, String, String) {
     let mut app: Option<String> = None;
     let mut static_only = false;
+    let mut self_test_only = false;
     let mut items = args.iter();
     while let Some(item) = items.next() {
         match item.as_str() {
             "--static-only" => static_only = true,
+            "--self-test" => self_test_only = true,
             "--app" => match items.next() {
                 Some(value) => app = Some(value.clone()),
                 None => return verify_usage_error("--app needs a value"),
@@ -69,29 +85,24 @@ pub fn verify_release_contract(args: &[String], root: &Path) -> (i32, String, St
             other => return verify_usage_error(&format!("unknown option {other}")),
         }
     }
-    let Some(app) = app else {
-        return verify_usage_error("--app is required");
-    };
-    if !static_only {
-        return verify_usage_error("--static-only is required");
+    if self_test_only {
+        if app.is_some() || static_only {
+            return verify_usage_error("--self-test covers every onboarded app; drop --app");
+        }
+        return verify_finished(self_test(root));
     }
+    let app = match app {
+        Some(app) => app,
+        None if static_only => "keep".to_string(),
+        None => return verify_finished(check_everything(root)),
+    };
     let Ok(row) = find_app(&app) else {
         return verify_usage_error(&format!("invalid choice: {app}"));
     };
-    match check_app(root, &row)
+    let result = check_app(root, &row)
         .and_then(|()| check_tables(root, std::slice::from_ref(&row), &receipt_rows()))
-    {
-        Ok(()) => (
-            0,
-            format!("release contract passed: {}\n", row.name),
-            String::new(),
-        ),
-        Err(error) => (
-            1,
-            String::new(),
-            format!("verify-release-contract: refused: {error}\n"),
-        ),
-    }
+        .map(|()| format!("release contract passed: {}", row.name));
+    verify_finished(result)
 }
 
 /// A usage error of `receipt`: exit 2 with `message` on stderr.
