@@ -287,6 +287,70 @@ fn verify_release_contract_passes_on_repository() {
             String::new()
         )
     );
+    let expected = (
+        0,
+        "release contract passed: keep\n".to_string(),
+        String::new(),
+    );
+    assert_eq!(
+        verify_release_contract(&args(&["--app", "keep"]), &repo_root()),
+        expected
+    );
+    assert_eq!(
+        verify_release_contract(&args(&["--static-only"]), &repo_root()),
+        expected
+    );
+}
+
+#[test]
+fn verify_release_contract_without_option_runs_check_everything() {
+    assert_eq!(
+        verify_release_contract(&args(&[]), &repo_root()),
+        (
+            0,
+            "release contract passed: keep (1 apps), shared tables\n".to_string(),
+            String::new()
+        )
+    );
+}
+
+#[test]
+fn verify_release_contract_self_test_passes() {
+    assert_eq!(
+        verify_release_contract(&args(&["--self-test"]), &repo_root()),
+        (
+            0,
+            "release contract self-test passed: 5 positive checks, 36 negative controls refused, fixtures keep\n".to_string(),
+            String::new()
+        )
+    );
+}
+
+#[test]
+fn verify_release_contract_self_test_refusal_exit_1() {
+    let empty = tempfile::tempdir().unwrap();
+    let (code, stdout, stderr) = verify_release_contract(&args(&["--self-test"]), empty.path());
+    assert_eq!(code, 1);
+    assert_eq!(stdout, "");
+    assert!(
+        stderr.starts_with("verify-release-contract: refused: "),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn binary_runs_verify_release_contract() {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_release-gate"))
+        .args(["verify-release-contract", "--app", "keep"])
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "release contract passed: keep\n"
+    );
 }
 
 #[test]
@@ -294,16 +358,16 @@ fn verify_release_contract_usage_errors() {
     let root = repo_root();
     let cases: [(&[&str], &str); 5] = [
         (
-            &[],
-            "release-gate verify-release-contract: --app is required\n",
-        ),
-        (
-            &["--app", "keep"],
-            "release-gate verify-release-contract: --static-only is required\n",
-        ),
-        (
             &["--app", "sift", "--static-only"],
             "release-gate verify-release-contract: invalid choice: sift\n",
+        ),
+        (
+            &["--self-test", "--app", "keep"],
+            "release-gate verify-release-contract: --self-test covers every onboarded app; drop --app\n",
+        ),
+        (
+            &["--self-test", "--static-only"],
+            "release-gate verify-release-contract: --self-test covers every onboarded app; drop --app\n",
         ),
         (
             &["--bogus"],
