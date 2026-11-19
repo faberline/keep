@@ -7,6 +7,9 @@ use std::path::Path;
 
 const CORE_URL: &str = "https://github.com/faberline/core";
 
+/// The core release that keep pins. A re-pin changes this and the manifests together.
+const CORE_PIN: &str = "v0.5.1";
+
 const MEMBERS: [&str; 9] = [
     "keep",
     "keep-access",
@@ -179,4 +182,32 @@ fn member_core_violations_flags_git_source_and_version() {
     assert!(member_core_violations(inherited, &names).is_empty());
     let package = "[package]\nname = \"raft-runtime\"\n";
     assert!(member_core_violations(package, &names).is_empty());
+}
+
+#[test]
+fn core_pin_is_current_release() {
+    let tags = core_tags(&read("Cargo.toml")).unwrap_or_else(|error| panic!("{error}"));
+    let tag = one_tag(&tags).unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(tag, CORE_PIN);
+}
+
+#[test]
+fn lock_core_sources_match_pin() {
+    let lock = read("Cargo.lock");
+    let lines: Vec<&str> = lock
+        .lines()
+        .filter(|line| line.contains("github.com/faberline/core?tag="))
+        .collect();
+    assert!(
+        lines.len() >= 19,
+        "expected at least 19 core sources, found {}",
+        lines.len()
+    );
+    let expected = format!("faberline/core?tag={CORE_PIN}#");
+    for line in lines {
+        assert!(
+            line.contains(&expected),
+            "core source is not {CORE_PIN}: {line}"
+        );
+    }
 }
