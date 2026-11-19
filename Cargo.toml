@@ -33,20 +33,20 @@ keep-shared-kernel = { path = "crates/keep-shared-kernel", version = "0.4.13" }
 keep-storage = { path = "crates/keep-storage", version = "0.4.13" }
 
 # Shared faberline/core crates
-build-stamp = { git = "https://github.com/faberline/core", tag = "v0.5.0" }
-claim-token = { git = "https://github.com/faberline/core", tag = "v0.5.0" }
-cli-std = { git = "https://github.com/faberline/core", tag = "v0.5.0", default-features = false }
-metrics-prometheus = { git = "https://github.com/faberline/core", tag = "v0.5.0" }
-openapi-codegen = { git = "https://github.com/faberline/core", tag = "v0.5.0", version = "0.5" }
-peer-tls = { git = "https://github.com/faberline/core", tag = "v0.5.0" }
-raft-runtime = { git = "https://github.com/faberline/core", tag = "v0.5.0" }
-server-lifecycle = { git = "https://github.com/faberline/core", tag = "v0.5.0" }
-service-auth = { git = "https://github.com/faberline/core", tag = "v0.5.0" }
-service-backup = { git = "https://github.com/faberline/core", tag = "v0.5.0" }
-service-http = { git = "https://github.com/faberline/core", tag = "v0.5.0" }
-service-k8s = { git = "https://github.com/faberline/core", tag = "v0.5.0" }
-storage-durable = { git = "https://github.com/faberline/core", tag = "v0.5.0" }
-transport-h2c = { git = "https://github.com/faberline/core", tag = "v0.5.0" }
+build-stamp = { git = "https://github.com/faberline/core", tag = "v0.5.1" }
+claim-token = { git = "https://github.com/faberline/core", tag = "v0.5.1" }
+cli-std = { git = "https://github.com/faberline/core", tag = "v0.5.1", default-features = false }
+metrics-prometheus = { git = "https://github.com/faberline/core", tag = "v0.5.1" }
+openapi-codegen = { git = "https://github.com/faberline/core", tag = "v0.5.1", version = "0.5" }
+peer-tls = { git = "https://github.com/faberline/core", tag = "v0.5.1" }
+raft-runtime = { git = "https://github.com/faberline/core", tag = "v0.5.1" }
+server-lifecycle = { git = "https://github.com/faberline/core", tag = "v0.5.1" }
+service-auth = { git = "https://github.com/faberline/core", tag = "v0.5.1" }
+service-backup = { git = "https://github.com/faberline/core", tag = "v0.5.1" }
+service-http = { git = "https://github.com/faberline/core", tag = "v0.5.1" }
+service-k8s = { git = "https://github.com/faberline/core", tag = "v0.5.1" }
+storage-durable = { git = "https://github.com/faberline/core", tag = "v0.5.1" }
+transport-h2c = { git = "https://github.com/faberline/core", tag = "v0.5.1" }
 
 # Async runtime & core utilities
 anyhow = "1.0"
