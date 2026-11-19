@@ -8,7 +8,7 @@ use std::path::Path;
 const CORE_URL: &str = "https://github.com/faberline/core";
 
 /// The core release that keep pins. A re-pin changes this and the manifests together.
-const CORE_PIN: &str = "v0.5.1";
+const CORE_PIN: &str = "v0.5.2";
 
 const MEMBERS: [&str; 9] = [
     "keep",
