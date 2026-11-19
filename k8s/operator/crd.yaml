@@ -91,7 +91,7 @@ spec:
                 type: string
               replicasPerShard:
                 default: 1
-                description: Starting/minimum members per shard. With startup-static raft-runtime membership this is also the fixed desired value; a future membership controller may plan whole replica layers above this floor.
+                description: Desired members per shard. Changing it is a Raft membership transition (add learner, promote, demote, remove) that the controller completes one step at a time before it changes the pod count.
                 type: integer
                 minimum: 0.0
               resources:
