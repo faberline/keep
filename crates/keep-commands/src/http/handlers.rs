@@ -14,7 +14,7 @@ use axum::{
 use serde::Deserialize;
 
 use crate::cluster::ClusterState;
-use crate::http::error::ApiErr;
+use crate::http::error::{ApiErr, ApiError};
 use crate::http::models::*;
 use crate::http::AppState;
 use crate::persistence::format::WalOp;

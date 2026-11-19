@@ -8,7 +8,7 @@ use axum::{
     Json,
 };
 
-use crate::http::error::ApiErr;
+use crate::http::error::{ApiErr, ApiError};
 use crate::http::handlers::{ack_durable, key_of, propose_write, ttl, TtlQuery};
 use crate::http::models::*;
 use crate::http::AppState;
@@ -173,6 +173,7 @@ pub async fn get_input(
 /// Store a job input by id (producer writes the input — #167).
 #[utoipa::path(
     put, path = "/inputs/{id}", tag = "Claim-check",
+    request_body(content = Vec<u8>, content_type = "application/octet-stream"),
     params(("id" = String, Path, description = "Job input id")),
     responses((status = 200, description = "Stored", body = OkResponse))
 )]
@@ -208,6 +209,7 @@ pub async fn get_result(
 /// Store a job result by id (worker writes its result — #167).
 #[utoipa::path(
     put, path = "/results/{id}", tag = "Claim-check",
+    request_body(content = Vec<u8>, content_type = "application/octet-stream"),
     params(("id" = String, Path, description = "Job result id")),
     responses((status = 200, description = "Stored", body = OkResponse))
 )]

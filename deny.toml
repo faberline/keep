@@ -16,7 +16,6 @@ ignore = [
     { id = "RUSTSEC-2025-0012", reason = "backoff 0.4.0 is unmaintained; no safe upgrade. Path: kube-runtime 0.98.0 -> backoff 0.4.0 (kube-runtime is used through kube by keep-operator and the keep tests)." },
     { id = "RUSTSEC-2024-0384", reason = "instant 0.1.13 is unmaintained; no safe upgrade. Path: kube-runtime 0.98.0 -> backoff 0.4.0 -> instant 0.1.13." },
     { id = "RUSTSEC-2025-0141", reason = "bincode 1.3.3 is unmaintained; no safe upgrade. Path: workspace crates keep-keyspace and keep-storage -> bincode 1.3.3." },
-    { id = "RUSTSEC-2024-0370", reason = "proc-macro-error 1.0.4 is unmaintained; no safe upgrade. Build time only. Path: utoipa-gen 4.3.1 -> proc-macro-error 1.0.4." },
     { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile 2.2.0 is unmaintained; no safe upgrade. Path: kube-client 0.98.0 -> rustls-pemfile 2.2.0." },
     { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml 0.2.11 is unmaintained; no safe upgrade. Path: serde_yaml 0.9.34 (deprecated; used by keep, keep-commands, keep-operator and kube-client) -> unsafe-libyaml 0.2.11." },
     { id = "RUSTSEC-2026-0543", reason = "chrono 0.4.44 is unmaintained; no safe upgrade. Path: k8s-openapi 0.24.0 (used by keep-operator) -> chrono 0.4.44; and kube 0.98.0 (used by keep-operator and, as a dev dependency, by keep) -> chrono 0.4.44." },

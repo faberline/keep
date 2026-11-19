@@ -76,7 +76,7 @@ axum = { version = "0.8", features = ["ws"] }
 reqwest = { version = "0.12", default-features = false, features = ["charset", "http2", "system-proxy", "rustls-tls-native-roots", "json", "cookies", "gzip", "brotli", "multipart", "stream"] }
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.5", features = ["cors", "compression-gzip", "trace"] }
-utoipa = { version = "4", features = ["axum_extras"] }
+utoipa = { version = "5", features = ["axum_extras"] }
 
 # Kubernetes operator
 k8s-openapi = { version = "0.24", features = ["v1_32"] }

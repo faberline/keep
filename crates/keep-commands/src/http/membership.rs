@@ -10,7 +10,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::http::error::ApiErr;
+use crate::http::error::{ApiErr, ApiError};
 use crate::http::AppState;
 
 /// Body of `POST /admin/raft/{shard}/members`.

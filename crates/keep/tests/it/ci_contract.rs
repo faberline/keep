@@ -191,7 +191,7 @@ fn audit_config_has_no_ignores() {
 }
 
 /// Each remaining cargo-deny ignore names its dependency path, and the list
-/// holds exactly the seven unmaintained-crate advisories.
+/// holds exactly the six unmaintained-crate advisories.
 #[test]
 fn deny_ignores_name_their_path() {
     let text = read("deny.toml");
@@ -199,7 +199,6 @@ fn deny_ignores_name_their_path() {
         "RUSTSEC-2025-0012",
         "RUSTSEC-2024-0384",
         "RUSTSEC-2025-0141",
-        "RUSTSEC-2024-0370",
         "RUSTSEC-2025-0134",
         "RUSTSEC-2024-0449",
         "RUSTSEC-2026-0543",
@@ -211,7 +210,7 @@ fn deny_ignores_name_their_path() {
     assert_eq!(
         entries,
         ids.len(),
-        "deny.toml must hold exactly seven RUSTSEC ignores"
+        "deny.toml must hold exactly six RUSTSEC ignores"
     );
     for id in ids {
         let needle = format!("id = \"{id}\"");
