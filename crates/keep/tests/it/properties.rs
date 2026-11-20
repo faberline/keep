@@ -55,7 +55,7 @@ proptest! {
     ) {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("backup-1.json");
-        let snapshot = KeepSnapshot { version: KEEP_SNAPSHOT_VERSION, values };
+        let snapshot = KeepSnapshot { version: KEEP_SNAPSHOT_VERSION, values, expires_at_unix_ms: Vec::new() };
         std::fs::write(&path, serde_json::to_vec(&snapshot).unwrap()).unwrap();
         let back = read_snapshot_file(&path).unwrap();
         prop_assert_eq!(back, snapshot);
@@ -161,7 +161,7 @@ fn regression_truncated_backup_json_is_err_not_panic() {
 fn regression_wrong_backup_version_is_err() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("backup-1.json");
-    std::fs::write(&path, br#"{"version":2,"values":[]}"#).unwrap();
+    std::fs::write(&path, br#"{"version":3,"values":[]}"#).unwrap();
     let err = read_snapshot_file(&path).unwrap_err();
     assert!(format!("{err:?}").contains("unsupported snapshot version"));
 }

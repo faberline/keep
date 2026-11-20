@@ -16,8 +16,9 @@
 //!
 //! @spec .aw/tech-design/projects/keep/logic/adopt-libs-service-backup-snapshot-sink-keep-backup-verb.md
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -25,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use keep_keyspace::engine::KvEngine;
 use keep_keyspace::persistence::recovery::RecoveryManager;
 use keep_keyspace::persistence::snapshot::SnapshotWriter;
-use keep_shared_kernel::types::KvValue;
+use keep_shared_kernel::types::{KvKey, KvValue};
 use keep_storage::SnapshotConfig;
 
 pub use service_backup::{
@@ -34,28 +35,54 @@ pub use service_backup::{
 };
 
 /// Snapshot payload format version (bump on an incompatible layout change).
-pub const KEEP_SNAPSHOT_VERSION: u32 = 1;
+/// Version 2 adds `expires_at_unix_ms`; version 1 still restores.
+pub const KEEP_SNAPSHOT_VERSION: u32 = 2;
+
+/// Oldest snapshot payload version that still restores (it has no expiry list).
+pub const KEEP_SNAPSHOT_MIN_VERSION: u32 = 1;
 
 /// A consistent, self-describing snapshot of keep's full key/value state.
 ///
-/// TTL metadata is intentionally dropped — same as [`KvEngine::dump_values`]; a
-/// restore re-imports values without expiry.
+/// From version 2 the TTL of each key is kept in `expires_at_unix_ms` as an
+/// absolute time; a restore sets the expiry again and skips keys that expired.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct KeepSnapshot {
     /// Payload format version.
     pub version: u32,
     /// Every live (non-expired) key→value pair across all shards.
     pub values: Vec<(String, KvValue)>,
+    /// Absolute expiry of each key that has a TTL, in milliseconds since the
+    /// Unix epoch. Only keys with a TTL are listed; absent in version 1.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expires_at_unix_ms: Vec<(String, u64)>,
 }
 
 impl KeepSnapshot {
     /// Build a snapshot from a live engine (R1).
     pub fn from_engine(engine: &KvEngine) -> Self {
+        let now_ms = unix_now_ms();
+        let mut values = Vec::new();
+        let mut expires_at_unix_ms = Vec::new();
+        for (key, value, remaining) in engine.dump_entries() {
+            if let Some(rem) = remaining {
+                expires_at_unix_ms.push((key.clone(), now_ms + rem.as_millis() as u64));
+            }
+            values.push((key, value));
+        }
         Self {
             version: KEEP_SNAPSHOT_VERSION,
-            values: engine.dump_values(),
+            values,
+            expires_at_unix_ms,
         }
     }
+}
+
+/// Milliseconds since the Unix epoch, now.
+fn unix_now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 /// Serialize a consistent snapshot of `engine` to JSON bytes (R1).
@@ -151,11 +178,12 @@ pub fn read_snapshot_file(path: &Path) -> Result<KeepSnapshot> {
         std::fs::read(path).with_context(|| format!("read backup artifact {}", path.display()))?;
     let snap: KeepSnapshot = serde_json::from_slice(&bytes)
         .with_context(|| format!("backup artifact {} is corrupt", path.display()))?;
-    if snap.version != KEEP_SNAPSHOT_VERSION {
+    if !(KEEP_SNAPSHOT_MIN_VERSION..=KEEP_SNAPSHOT_VERSION).contains(&snap.version) {
         anyhow::bail!(
-            "backup artifact {} has unsupported snapshot version {} (this keep reads version {})",
+            "backup artifact {} has unsupported snapshot version {} (this keep reads version {} to {})",
             path.display(),
             snap.version,
+            KEEP_SNAPSHOT_MIN_VERSION,
             KEEP_SNAPSHOT_VERSION
         );
     }
@@ -203,9 +231,25 @@ pub fn restore_to_data_dir(
         }
     }
 
-    let keys = snap.values.len();
+    // Keys that expired before this restore are skipped; the rest get back
+    // their remaining TTL. Only the input checks above can fail the restore.
+    let now_ms = unix_now_ms();
+    let expires: HashMap<String, u64> = snap.expires_at_unix_ms.into_iter().collect();
     let engine = KvEngine::with_shards(shards);
-    engine.load_values(snap.values);
+    let mut keys = 0;
+    for (key, value) in snap.values {
+        let ttl = match expires.get(&key) {
+            Some(&abs_ms) if abs_ms <= now_ms => continue,
+            Some(&abs_ms) => Some(Duration::from_millis(abs_ms - now_ms)),
+            None => None,
+        };
+        let Ok(key) = KvKey::new(key) else {
+            continue;
+        };
+        if engine.set(&key, value, ttl).is_ok() {
+            keys += 1;
+        }
+    }
     let written =
         SnapshotWriter::new(SnapshotConfig::default()).create_snapshot(&engine, data_dir, 0)?;
     Ok(RestoreResult {

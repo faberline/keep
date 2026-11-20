@@ -95,8 +95,8 @@ keep restore --source file:///var/backups/keep --data-dir ./restored --shards 25
 `backup-<unix seconds>.json` in it) or one exact file, such as
 `file:///var/backups/keep/backup-123.json`. Restore refuses a non-empty
 `--data-dir` unless `--force` is given, and it reads `file://` sources only;
-copy `s3://` or `gs://` backups to a local file first. TTLs are not part of a
-backup, so restored keys have no expiry. Use the same `--shards` value as the
+copy `s3://` or `gs://` backups to a local file first. A backup keeps the expiry
+time of each key; restore gives it back and skips a key that expired before the restore. A version 1 backup restores without expiry. Use the same `--shards` value as the
 server. Then start the server with `--data-dir ./restored` and check `GET /readyz`
 and the `keys` field of `GET /info`.
 

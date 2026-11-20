@@ -122,7 +122,7 @@ fn backup_with_a_newer_version_is_refused_and_data_dir_stays_empty() {
     let src = TempDir::new().unwrap();
     std::fs::write(
         src.path().join("backup-100.json"),
-        br#"{"version":2,"values":[]}"#,
+        br#"{"version":3,"values":[]}"#,
     )
     .unwrap();
 
