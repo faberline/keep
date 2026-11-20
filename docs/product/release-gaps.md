@@ -7,7 +7,7 @@ It changes no workflow. The gates of the promotion workflow run inside the share
 workflow `faberline/aw/.github/workflows/service-release.yml`, which keep calls from
 the job `release`; this page takes that standard's word for them and does not
 re-run them here. The paid GKE failure drills and the 24-hour soak are not rows
-here: they wait for the user (issues #30 and #53).
+here: they wait for the owner and no issue tracks them yet.
 
 ## Gates
 
