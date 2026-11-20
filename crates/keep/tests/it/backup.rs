@@ -22,6 +22,7 @@ use keep::persistence::snapshot::SnapshotWriter;
 use keep::storage::SnapshotConfig;
 use keep::{KvEngine, KvKey, KvValue};
 use std::path::Path;
+use std::time::Duration;
 
 /// R1 — `snapshot_bytes` captures the engine's live key/value set into a
 /// versioned payload that deserializes back to the same values.
@@ -355,5 +356,131 @@ fn restore_verb_round_trips_through_the_binary() {
     let second = run();
     assert!(!second.status.success());
     assert!(String::from_utf8_lossy(&second.stderr).contains("is not empty"));
+}
+
+/// TTL — a restored key keeps its expiry; a key stored without a TTL stays without one.
+#[test]
+fn restored_key_keeps_its_ttl() {
+    let engine = KvEngine::with_shards(4);
+    engine
+        .set(
+            &KvKey::new("ttl").unwrap(),
+            KvValue::Int(1),
+            Some(Duration::from_secs(600)),
+        )
+        .unwrap();
+    engine
+        .set(&KvKey::new("plain").unwrap(), KvValue::Int(2), None)
+        .unwrap();
+    let src = tempfile::tempdir().unwrap();
+    std::fs::write(
+        src.path().join("backup-100.json"),
+        snapshot_bytes(&engine).unwrap(),
+    )
+    .unwrap();
+
+    let root = tempfile::tempdir().unwrap();
+    let out = root.path().join("data");
+    let res = restore_to_data_dir(&file_uri(src.path()), &out, 4, false).unwrap();
+    assert_eq!(res.keys, 2);
+
+    let (restored, _) = RecoveryManager::recover(&out, 4).unwrap();
+    let ttl = restored.pttl(&KvKey::new("ttl").unwrap());
+    assert!(ttl > 0 && ttl <= 600_000, "restored pttl was {ttl}");
+    assert_eq!(restored.pttl(&KvKey::new("plain").unwrap()), -1);
+    assert_eq!(
+        restored.get(&KvKey::new("ttl").unwrap()),
+        Some(KvValue::Int(1))
+    );
+    assert_eq!(
+        restored.get(&KvKey::new("plain").unwrap()),
+        Some(KvValue::Int(2))
+    );
+}
+
+/// TTL — a key that expired before the restore is not restored; the others are.
+#[test]
+fn restore_skips_a_key_that_expired_before_the_restore() {
+    let src = tempfile::tempdir().unwrap();
+    std::fs::write(
+        src.path().join("backup-100.json"),
+        r#"{"version":2,"values":[["gone",{"Int":1}],["live",{"Int":2}]],"expires_at_unix_ms":[["gone",1]]}"#,
+    )
+    .unwrap();
+
+    let root = tempfile::tempdir().unwrap();
+    let out = root.path().join("data");
+    let res = restore_to_data_dir(&file_uri(src.path()), &out, 4, false).unwrap();
+    assert_eq!(res.keys, 1);
+
+    let (restored, _) = RecoveryManager::recover(&out, 4).unwrap();
+    assert_eq!(restored.get(&KvKey::new("gone").unwrap()), None);
+    assert_eq!(
+        restored.get(&KvKey::new("live").unwrap()),
+        Some(KvValue::Int(2))
+    );
+}
+
+/// Format — a version 1 backup (no expiry list) still restores, without expiry.
+#[test]
+fn version_1_backup_still_restores() {
+    let src = tempfile::tempdir().unwrap();
+    std::fs::write(
+        src.path().join("backup-100.json"),
+        r#"{"version":1,"values":[["a",{"Int":1}]]}"#,
+    )
+    .unwrap();
+
+    let root = tempfile::tempdir().unwrap();
+    let out = root.path().join("data");
+    let res = restore_to_data_dir(&file_uri(src.path()), &out, 4, false).unwrap();
+    assert_eq!(res.keys, 1);
+
+    let (restored, _) = RecoveryManager::recover(&out, 4).unwrap();
+    assert_eq!(
+        restored.get(&KvKey::new("a").unwrap()),
+        Some(KvValue::Int(1))
+    );
+    assert_eq!(restored.pttl(&KvKey::new("a").unwrap()), -1);
+}
+
+/// Format — a snapshot of keys without a TTL is version 2 and has no expiry list.
+#[test]
+fn snapshot_bytes_has_no_expiry_list_without_ttl() {
+    let engine = KvEngine::with_shards(4);
+    engine
+        .set(&KvKey::new("a").unwrap(), KvValue::Int(1), None)
+        .unwrap();
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&snapshot_bytes(&engine).unwrap()).unwrap();
+    assert_eq!(json["version"], 2);
+    assert!(json.get("expires_at_unix_ms").is_none());
+}
+
+/// TTL end to end — `run_backup` keeps the expiry of a key through the artifact.
+#[test]
+fn run_backup_keeps_ttl_end_to_end() {
+    let src = tempfile::tempdir().unwrap();
+    let engine = KvEngine::with_shards(4);
+    engine
+        .set(
+            &KvKey::new("ttl").unwrap(),
+            KvValue::Int(1),
+            Some(Duration::from_secs(600)),
+        )
+        .unwrap();
+    SnapshotWriter::new(SnapshotConfig::default())
+        .create_snapshot(&engine, src.path(), 0)
+        .unwrap();
+    let dest = tempfile::tempdir().unwrap();
+    let dest_uri = BackupDestination::from_uri(&file_uri(dest.path())).unwrap();
+    run_backup(src.path(), 4, &dest_uri, &RetentionPolicy::default()).unwrap();
+
+    let root = tempfile::tempdir().unwrap();
+    let out = root.path().join("data");
+    restore_to_data_dir(&file_uri(dest.path()), &out, 4, false).unwrap();
+    let (restored, _) = RecoveryManager::recover(&out, 4).unwrap();
+    assert!(restored.pttl(&KvKey::new("ttl").unwrap()) > 0);
 }
 // HANDWRITE-END

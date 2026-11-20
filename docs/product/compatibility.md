@@ -6,8 +6,10 @@ keep is released as `keep@X.Y.Z` (a milestone `keep@X.Y.Z` in the issue tracker)
 
 - snapshot file version: 2
 - snapshot file magic: `KVSN0001`
-- backup payload version: 1
+- backup payload version: 2
 - WAL file: written by faberline/core `storage-durable` (framed log). The retired `KVWAL001` WAL format is refused at startup and the file is not changed.
+
+A backup of payload version 1 (no key expiry) still restores; its keys have no expiry.
 
 Rules:
 1. Release N+1 reads every file that release N wrote. A snapshot or backup from N restores on N+1.
