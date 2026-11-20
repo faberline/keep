@@ -11,6 +11,7 @@ mod deploy_cli;
 mod docs_lint;
 mod durability;
 mod gke_raft_overlay;
+mod ha_overlay;
 mod http_api;
 mod https_api;
 mod operator;

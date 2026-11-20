@@ -10,7 +10,8 @@ spec:
   # keep is stateful: each pod owns a durable disk tier (WAL + snapshots) on
   # its own PVC, recovered on cold start. Replicas here are independent stores,
   # NOT replicas of one dataset — sharding / raft HA is tracked separately
-  # (keep epic #121). The base floor is a single node.
+  # (keep epic #121). The 3-voter raft HA install is k8s/overlays/ha.
+  # The base floor is a single node.
   serviceName: keep-headless
   replicas: 1
   revisionHistoryLimit: 5

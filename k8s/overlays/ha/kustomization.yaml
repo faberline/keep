@@ -1,0 +1,64 @@
+# HA install: 3 keep replicas forming one raft group (3 voters). Quorum is
+# 2 of 3, so the group keeps working while one pod is down.
+# Set the image tag yourself before you apply, for example:
+#   kustomize edit set image keep=<image>:<tag>
+# Apply with: kubectl apply -k k8s/overlays/ha
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources: [../../base]
+replicas:
+  - name: keep
+    count: 3
+patches:
+  - target:
+      kind: StatefulSet
+      name: keep
+    patch: |-
+      - op: replace
+        path: /spec/podManagementPolicy
+        value: Parallel
+  - target:
+      kind: StatefulSet
+      name: keep
+    patch: |-
+      apiVersion: apps/v1
+      kind: StatefulSet
+      metadata:
+        name: keep
+      spec:
+        template:
+          spec:
+            containers:
+              - name: keep
+                env:
+                  - name: SHARD_COUNT
+                    value: "1"
+                  - name: REPLICAS_PER_SHARD
+                    value: "3"
+                  - name: VOTER_COUNT
+                    value: "3"
+                  - name: KEEP_HEADLESS_SERVICE
+                    value: keep-headless
+                  - name: KEEP_SHARD_COUNT
+                    value: "1"
+                  - name: KEEP_REPLICAS_PER_SHARD
+                    value: "3"
+                  - name: KEEP_RAFT_MEMBERS_PER_SHARD
+                    value: "3"
+            affinity:
+              podAntiAffinity:
+                preferredDuringSchedulingIgnoredDuringExecution:
+                  - weight: 100
+                    podAffinityTerm:
+                      topologyKey: kubernetes.io/hostname
+                      labelSelector:
+                        matchLabels:
+                          app: keep
+                          role: server
+  - target:
+      kind: PodDisruptionBudget
+      name: keep
+    patch: |-
+      - op: replace
+        path: /spec/maxUnavailable
+        value: 1
