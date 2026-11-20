@@ -5,6 +5,7 @@
 //! is a thin, typed adapter onto [`crate::engine::KvEngine`].
 
 pub use keep_access::auth;
+pub mod audit;
 pub mod claims;
 pub mod error;
 pub mod handlers;
@@ -51,6 +52,8 @@ pub struct AppState {
     pub api_token: Option<Arc<String>>,
     /// Optional read-only bearer token (KEEP_API_TOKEN_READONLY): GET/HEAD data-plane routes only.
     pub read_only_token: Option<Arc<String>>,
+    /// Optional audit sink (`KEEP_AUDIT_LOG`); `None` = no audit.
+    pub audit: Option<audit::AuditSink>,
     /// Per-shard raft hosts used by replica-mode write handlers. Absent in the
     /// default/single-node fast path.
     #[cfg(feature = "raft")]
@@ -69,6 +72,7 @@ impl AppState {
             verifier: None,
             api_token: None,
             read_only_token: None,
+            audit: None,
             #[cfg(feature = "raft")]
             raft_hosts: None,
             draining: Arc::new(AtomicBool::new(false)),
@@ -114,6 +118,12 @@ impl AppState {
         if !token.is_empty() {
             self.read_only_token = Some(Arc::new(token));
         }
+        self
+    }
+
+    /// Write an audit record for each data-plane write and each 401/403.
+    pub fn with_audit_sink(mut self, sink: audit::AuditSink) -> Self {
+        self.audit = Some(sink);
         self
     }
 

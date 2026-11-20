@@ -25,6 +25,7 @@ there is no `serve` subcommand.
 | `--expiry-interval-ms` | `KEEP_EXPIRY_INTERVAL_MS` | `1000` | Interval of the active TTL expiry sweep in milliseconds. `0` turns it off. |
 | `--api-token` | `KEEP_API_TOKEN` | unset | Bearer token that every data-plane route requires. |
 | `--api-token-readonly` | `KEEP_API_TOKEN_READONLY` | unset | Bearer token that may only read. A write with it gets `403`. |
+| `--audit-log` | `KEEP_AUDIT_LOG` | `false` | Write one audit record for each write and each 401 or 403 on the data plane. |
 | `--tls-cert` | `KEEP_TLS_CERT` | unset | PEM certificate chain. With `--tls-key`, the public API is served over HTTPS. |
 | `--tls-key` | `KEEP_TLS_KEY` | unset | PEM private key for `--tls-cert`. |
 | `--log-level` | `KEEP_LOG_LEVEL` | `info` | `trace`, `debug`, `info`, `warn` or `error`. `RUST_LOG` overrides it. |

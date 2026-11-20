@@ -40,6 +40,7 @@ This page lists what keep protects, where trust changes, and what is accepted. I
 - **T5: mitigated when TLS is on; `accepted` otherwise.** HTTPS with `--tls-cert` and `--tls-key` mitigates it. The default is cleartext h2c, so deployments that do not set both options accept this threat.
 - **T6: `accepted`.** Reason: keep does not encrypt the WAL, snapshots or blobs at rest. Use an encrypted volume.
 - **T7: partly mitigated; `accepted` for request rate.** `KEEP_BODY_LIMIT` (`--body-limit`) bounds the request body; the default is 16 MiB (`DEFAULT_BODY_LIMIT = 16 * 1024 * 1024` in `crates/keep-commands/src/http.rs`). `KEEP_MAX_DISK_BYTES` bounds the disk tier. Many concurrent requests are not rate-limited by keep: `accepted`.
+- **Audit log.** `KEEP_AUDIT_LOG` records each data-plane write and each 401 or 403 (`crates/keep-commands/src/http/audit.rs`). The tests `audit_records_a_write` and `audit_records_a_failed_authentication` in `http_api.rs` prove it.
 
 ## Residual risk
 

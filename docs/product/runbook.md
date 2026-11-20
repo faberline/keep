@@ -100,6 +100,18 @@ time of each key; restore gives it back and skips a key that expired before the 
 server. Then start the server with `--data-dir ./restored` and check `GET /readyz`
 and the `keys` field of `GET /info`.
 
+## Audit log
+
+Turn it on with `KEEP_AUDIT_LOG=true` (or `--audit-log`) and restart. Each
+data-plane write and each 401 or 403 makes one record. The records go to the
+standard output of the keep process as `tracing` events with the target
+`keep::audit`, and the fields `ts_unix_ms`, `event` (`write` or `auth_failure`),
+`principal`, `operation`, `audit_target` and `result`. With
+`KEEP_LOG_FORMAT=json` each record is one JSON line that a collector can read.
+Filter them with `RUST_LOG=keep::audit=info`. A record never holds a value, a
+query string or a token. A successful read is not recorded. Find them with
+`kubectl logs statefulset/keep | grep keep::audit`.
+
 ## Token rotation
 
 Keep reads `KEEP_API_TOKEN` and `KEEP_API_TOKEN_READONLY` once, at startup. There
