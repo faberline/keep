@@ -296,6 +296,32 @@ fn readme_links_both_pages() {
 }
 
 #[test]
+fn ha_status_and_release_gaps_are_current() {
+    let readme = doc("README.md");
+    assert!(
+        readme.contains("k8s/overlays/ha"),
+        "README must name the HA overlay"
+    );
+    assert!(
+        readme.contains("raft_failover.rs"),
+        "README must name the failover test"
+    );
+    assert!(
+        !readme.contains("failover remains staged"),
+        "README HA status is stale"
+    );
+    let gaps = doc("docs/product/release-gaps.md");
+    assert!(
+        !gaps.contains("#30"),
+        "release-gaps.md points to closed issue #30"
+    );
+    assert!(
+        !gaps.contains("#53"),
+        "release-gaps.md points to closed issue #53"
+    );
+}
+
+#[test]
 fn threat_model_has_required_sections() {
     let md = doc("docs/product/threat-model.md");
     let required = [
