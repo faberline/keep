@@ -3,6 +3,36 @@ use rust_decimal::Decimal;
 use std::thread;
 
 #[test]
+fn dump_entries_reports_the_remaining_ttl() {
+    let engine = KvEngine::new();
+    engine
+        .set(
+            &KvKey::new("a").unwrap(),
+            KvValue::Int(1),
+            Some(Duration::from_secs(60)),
+        )
+        .unwrap();
+    engine
+        .set(&KvKey::new("b").unwrap(), KvValue::Int(2), None)
+        .unwrap();
+
+    let entries = engine.dump_entries();
+    let ttl_of = |name: &str| {
+        entries
+            .iter()
+            .find(|(k, _, _)| k == name)
+            .unwrap_or_else(|| panic!("{name} missing from dump_entries"))
+            .2
+    };
+    let a = ttl_of("a").expect("a has a TTL");
+    assert!(
+        a > Duration::ZERO && a <= Duration::from_secs(60),
+        "a ttl {a:?}"
+    );
+    assert_eq!(ttl_of("b"), None);
+}
+
+#[test]
 fn test_basic_set_get() {
     let engine = KvEngine::new();
     let key = KvKey::new("test_key").unwrap();
