@@ -856,6 +856,25 @@ impl KvEngine {
         out
     }
 
+    /// Dump every live (non-expired) key→value across all shards, with the
+    /// remaining TTL of each key that has one (`None` = no expiry). Snapshot
+    /// helper for `keep backup`; `dump_values` stays the TTL-free variant.
+    pub fn dump_entries(&self) -> Vec<(String, KvValue, Option<Duration>)> {
+        let now = Instant::now();
+        let mut out = Vec::new();
+        for s in 0..self.num_shards {
+            if let Some(map) = self.export_shard(s) {
+                for (k, e) in map {
+                    if !e.is_expired() {
+                        let remaining = e.expires_at.map(|t| t.saturating_duration_since(now));
+                        out.push((k, e.value, remaining));
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// Restore key→value pairs (snapshot install). Overwrites existing keys; no
     /// TTL is set.
     pub fn load_values(&self, items: Vec<(String, KvValue)>) {
