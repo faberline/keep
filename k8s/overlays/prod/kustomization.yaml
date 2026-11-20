@@ -8,7 +8,8 @@ resources:
 
 # prod: full-size store node(s), JSON logs, a large durable disk tier and a
 # CPU/mem envelope that lets the sharded engine saturate cores. Replicas are
-# independent stores until sharding/raft HA lands (keep epic #121).
+# independent stores until sharding/raft HA lands (keep epic #121). For the
+# 3-voter raft HA install, see k8s/overlays/ha.
 
 patches:
   - target:

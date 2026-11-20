@@ -81,6 +81,19 @@ With a token set, a missing or wrong bearer token returns `401` with error
 `unauthorized`. A read-only token that tries to write returns `403` with error
 `forbidden`.
 
+## Run three replicas (HA)
+
+The HA overlay gives 3 replicas that form one raft group: 3 voters, so the
+group keeps working while one pod is down. Set the image tag before you apply
+it, with `kustomize edit set image keep=<image>:<tag>`. Then apply the overlay:
+
+```bash
+kubectl apply -k k8s/overlays/ha
+```
+
+The base and the `dev`, `staging` and `prod` overlays stay single-store. Only
+`k8s/overlays/ha` sets three voters.
+
 ## Check health
 
 ```bash
