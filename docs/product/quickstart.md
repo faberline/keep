@@ -2,8 +2,8 @@
 
 This page gets one Keep server running, sets and reads a key, and checks its
 health. The `keep` commands on this page are checked against the real CLI help
-by `crates/keep/tests/it/docs_lint.rs`. Docker, `curl` and `kubectl` lines are not
-tested.
+by `crates/keep/tests/it/docs_lint.rs`. The `kubectl` lines and the `docker build`
+line are not tested; see "Run the image".
 
 ## Run the binary
 
@@ -41,7 +41,11 @@ For durable storage, mount a writable volume at the data directory and make
 sure it is owned by uid `65532`, as in `k8s/base/statefulset.yaml`
 (`fsGroup: 65532`, data mounted at `/data`, `KEEP_DATA_DIR`).
 
-Docker commands in this page are not tested.
+The `docker build` line is not tested: CI builds the from-source `Dockerfile` as
+`keep:local`, because the release in that line is not published. The `docker run`
+line, and the `curl` lines for `/kv/hello`, `/healthz` and `/readyz`, are run
+against that image in CI by the test `quickstart_image::quickstart_runs_on_the_image`
+(`crates/keep/tests/it/quickstart_image.rs`). The lines for `kubectl` are not tested.
 
 ## Set and get a key
 

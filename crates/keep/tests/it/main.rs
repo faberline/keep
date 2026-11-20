@@ -17,6 +17,7 @@ mod https_api;
 mod operator;
 mod perf_gate_workflow;
 mod properties;
+mod quickstart_image;
 mod raft_failover;
 mod raft_membership;
 mod raft_node;
