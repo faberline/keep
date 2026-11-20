@@ -11,7 +11,7 @@ use axum::{
 };
 use service_http::MetricsProvider;
 
-use crate::http::{handlers, hash, lists, membership, meta, metrics, sets, zsets, AppState};
+use crate::http::{audit, handlers, hash, lists, membership, meta, metrics, sets, zsets, AppState};
 
 /// The keep OpenAPI document — the accessor the shared `service_http`
 /// `/openapi.json` and `/docs` routes serve.
@@ -116,6 +116,8 @@ pub fn router(state: AppState) -> Router {
         // Per-route request metrics (counts + latency). route_layer => only for
         // matched data-plane routes, and MatchedPath is populated.
         .route_layer(from_fn_with_state(state.clone(), enforce_api_token))
+        // Outside the token check, so a 401 or 403 from it is audited too.
+        .route_layer(from_fn_with_state(state.clone(), audit::audit))
         .route_layer(from_fn_with_state(req_metrics, metrics::track))
         .layer(service_http::body_limit_layer(body_limit));
 

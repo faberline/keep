@@ -1271,3 +1271,121 @@ async fn membership_endpoints_are_in_openapi() {
         assert!(paths.contains_key(p), "openapi documents {p}");
     }
 }
+
+// ---- audit log (`KEEP_AUDIT_LOG`, crates/keep-commands/src/http/audit.rs) ----
+
+type AuditLog = Arc<std::sync::Mutex<Vec<keep::http::audit::AuditRecord>>>;
+
+/// A sink that keeps a copy of every record it gets.
+fn collecting_sink() -> (keep::http::audit::AuditSink, AuditLog) {
+    let log: AuditLog = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sink_log = log.clone();
+    let sink: keep::http::audit::AuditSink = Arc::new(move |r: &keep::http::audit::AuditRecord| {
+        sink_log.lock().unwrap().push(r.clone());
+    });
+    (sink, log)
+}
+
+fn audited_state(token: &str) -> (AppState, AuditLog) {
+    let (sink, log) = collecting_sink();
+    let state = AppState::new(Arc::new(KvEngine::with_shards(16)))
+        .with_api_token(token)
+        .with_audit_sink(sink);
+    (state, log)
+}
+
+#[tokio::test]
+async fn audit_records_a_write() {
+    let (state, log) = audited_state("secret");
+    let app = router(state);
+
+    let req = Request::builder()
+        .method("PUT")
+        .uri("/kv/audit-key")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::AUTHORIZATION, "Bearer secret")
+        .body(Body::from(json!({"value": "top-secret-value"}).to_string()))
+        .unwrap();
+    let (st, _) = send(&app, req).await;
+    assert_eq!(st, StatusCode::OK);
+
+    let records = log.lock().unwrap().clone();
+    assert_eq!(records.len(), 1, "one record per write: {records:?}");
+    let r = &records[0];
+    assert_eq!(r.event, "write");
+    assert_eq!(r.principal, "api-token");
+    assert_eq!(r.operation, "PUT /kv/{key}");
+    assert_eq!(r.target, "/kv/audit-key");
+    assert_eq!(r.result, 200);
+    assert!(r.ts_unix_ms > 0);
+
+    // No value and no token in the record, in any form.
+    let debug = format!("{records:?}");
+    assert!(!debug.contains("secret"), "record leaks a secret: {debug}");
+    let json = serde_json::to_string(r).unwrap();
+    assert!(
+        !json.contains("secret"),
+        "record JSON leaks a secret: {json}"
+    );
+}
+
+#[tokio::test]
+async fn audit_records_a_failed_authentication() {
+    let (state, log) = audited_state("secret");
+    let app = router(state);
+
+    let (st, _) = send_with_token(&app, "GET", "/kv/audit-key", None).await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+    {
+        let records = log.lock().unwrap();
+        assert_eq!(records.len(), 1, "one record per 401: {records:?}");
+        assert_eq!(records[0].event, "auth_failure");
+        assert_eq!(records[0].principal, "unauthenticated");
+        assert_eq!(records[0].operation, "GET /kv/{key}");
+        assert_eq!(records[0].result, 401);
+    }
+
+    let (st, _) = send_with_token(&app, "GET", "/kv/audit-key", Some("wrong-token")).await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED);
+    let records = log.lock().unwrap().clone();
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[1].result, 401);
+    assert!(!format!("{records:?}").contains("wrong-token"));
+}
+
+#[tokio::test]
+async fn audit_records_a_read_only_token_write_as_failure() {
+    let (sink, log) = collecting_sink();
+    let state = AppState::new(Arc::new(KvEngine::with_shards(16)))
+        .with_read_only_token("ro")
+        .with_audit_sink(sink);
+    let app = router(state);
+
+    let (st, _) = send_with_token(&app, "PUT", "/kv/k1", Some("ro")).await;
+    assert_eq!(st, StatusCode::FORBIDDEN);
+    let records = log.lock().unwrap().clone();
+    assert_eq!(records.len(), 1, "one record per 403: {records:?}");
+    assert_eq!(records[0].event, "auth_failure");
+    assert_eq!(records[0].principal, "read-only-token");
+    assert_eq!(records[0].result, 403);
+}
+
+#[tokio::test]
+async fn audit_skips_a_successful_read() {
+    let (state, log) = audited_state("secret");
+    let app = router(state);
+
+    let (st, _) = send_with_token(&app, "GET", "/kv/k1", Some("secret")).await;
+    assert_ne!(st, StatusCode::UNAUTHORIZED);
+    assert!(log.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn audit_is_off_by_default() {
+    let state = AppState::new(Arc::new(KvEngine::with_shards(16)));
+    assert!(state.audit.is_none());
+    let app = router(state);
+
+    let (st, _) = send_with_token(&app, "PUT", "/kv/k1", None).await;
+    assert_eq!(st, StatusCode::OK);
+}
