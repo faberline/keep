@@ -64,6 +64,9 @@ pub(crate) struct ServeArgs {
     /// Optional blanket Bearer API token required on data-plane routes.
     #[arg(long, env = "KEEP_API_TOKEN")]
     pub(crate) api_token: Option<String>,
+    /// Write an audit record (tracing target `keep::audit`) for each data-plane write and each 401/403.
+    #[arg(long, env = "KEEP_AUDIT_LOG", default_value_t = false)]
+    pub(crate) audit_log: bool,
     /// PEM certificate chain; with --tls-key, serve the public API over HTTPS.
     #[arg(long, env = "KEEP_TLS_CERT")]
     pub(crate) tls_cert: Option<PathBuf>,
@@ -272,6 +275,10 @@ pub(crate) async fn serve_main(args: ServeArgs, worker_threads: usize) -> Result
             state = state.with_read_only_token(token);
             tracing::info!("read-only API token enforcement ON");
         }
+    }
+    if args.audit_log {
+        state = state.with_audit_sink(keep::http::audit::tracing_sink());
+        tracing::info!("audit log ON");
     }
     // Scoped claim-check tokens (#446): enforce when KEEP_TOKEN_SECRET is set.
     if let Ok(secret) = std::env::var("KEEP_TOKEN_SECRET") {
