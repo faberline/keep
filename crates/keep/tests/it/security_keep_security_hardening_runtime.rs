@@ -1,23 +1,23 @@
-// SPEC-MANAGED: external-contracts/security-hardening/security/security-evidence.md#keep-security-hardening-guard-scan
+// SPEC-MANAGED: external-contracts/security-hardening/security/security-evidence.md#keep-security-hardening-runtime
 // CODEGEN-BEGIN
 // AW-EC-BEGIN
-// @ec keep-security-hardening-guard-scan
+// @ec keep-security-hardening-runtime
 // @capability security-hardening
-// @claim guard-static-runtime-evidence
-// @contract keep-guard-security-report
+// @claim runtime-security-evidence
+// @contract keep-runtime-security-report
 // @category security
 // @required_for_production false
-// @command vat run guard-security
+// @command vat run security-runtime
 // AW-EC-END
 
-// Contract: guard scan over keep reports no untriaged Docker, Kubernetes, or static security findings.
-// Contract: guard attaches meter evidence for Keep's public HTTP route smoke.
-// Contract: The security evidence runs inside vat so generated reports and transient files do not mutate the host checkout.
+// Contract: runtime security suites (public HTTP route smoke and public API TLS) pass with a nonzero test count.
+// Contract: The suites run inside vat so reports and transient files do not mutate the host checkout.
+// Contract: No guard scan is required; the static check is aw security check (standard S10).
 #[test]
 #[ignore = "AW EC gate: run via `aw health --verify-ec` or `cargo test -- --ignored`"]
-fn keep_security_hardening_guard_scan() {
-    let command = "vat run guard-security";
-    let id = "keep-security-hardening-guard-scan";
+fn keep_security_hardening_runtime() {
+    let command = "vat run security-runtime";
+    let id = "keep-security-hardening-runtime";
     let mut root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     while !root.join(".aw").is_dir() {
         assert!(

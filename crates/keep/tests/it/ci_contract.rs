@@ -2,7 +2,8 @@
 //! the release depends on. The CI workflow (.github/workflows/ci.yml) runs
 //! cargo audit and its `gate` job needs every test job; the audit and deny
 //! configs keep their ignores named. These tests read repository files as
-//! text; no workflow, image or cargo command is run.
+//! text; no workflow, image or cargo command is run. vat.toml and aw.toml are
+//! also read as text, to check the security gate runner.
 
 use std::path::Path;
 
@@ -223,4 +224,62 @@ fn deny_ignores_name_their_path() {
             "the deny.toml reason for {id} does not name its dependency path: {line}"
         );
     }
+}
+
+/// The keep security gate runs the runtime security suites in vat and no
+/// longer runs `guard scan`: the vat.toml runner `guard-security` is gone, and
+/// the runner `security-runtime` runs the public HTTP and TLS suites with a
+/// 600 s timeout. The guard manifest is removed.
+#[test]
+fn vat_security_runner_has_no_guard_scan() {
+    let vat = read("vat.toml");
+    assert!(
+        !vat.contains("id = \"guard-security\""),
+        "vat.toml still has the runner guard-security"
+    );
+    assert!(
+        vat.contains("id = \"security-runtime\""),
+        "vat.toml has no runner security-runtime"
+    );
+    let after = vat
+        .split("id = \"security-runtime\"")
+        .nth(1)
+        .expect("runner security-runtime is not found");
+    let runner = after.split("[[runners]]").next().unwrap_or("");
+    for needle in ["\"https_api::\"", "\"http_api::\"", "timeout_s = 600"] {
+        assert!(
+            runner.contains(needle),
+            "runner security-runtime does not contain {needle}: {runner}"
+        );
+    }
+    assert!(
+        !Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../guard-keep-security.toml")
+            .exists(),
+        "guard-keep-security.toml is still in the repository"
+    );
+}
+
+/// The renamed security case runs `vat run security-runtime`, not the guard
+/// scan, and aw.toml names no guard entry for it.
+#[test]
+fn security_case_runs_vat_security_runtime() {
+    let case = read("crates/keep/tests/it/security_keep_security_hardening_runtime.rs");
+    assert!(
+        case.contains("vat run security-runtime"),
+        "the security case does not run vat run security-runtime"
+    );
+    assert!(
+        !case.contains("vat run guard-security"),
+        "the security case still runs vat run guard-security"
+    );
+    let aw = read("aw.toml");
+    assert!(
+        aw.contains("command = \"vat run security-runtime\""),
+        "aw.toml does not name vat run security-runtime for the security case"
+    );
+    assert!(
+        !aw.contains("keep-guard-security") && !aw.contains("[ec.security]"),
+        "aw.toml still has the guard entries"
+    );
 }

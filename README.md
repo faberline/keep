@@ -136,12 +136,12 @@ adding explicit negative gates for authn/z, TLS, network policy, and malformed
 or oversized request handling before production readiness.
 
 - Root WI: none; this capability predates the tracker.
-- Surfaces: Guard/Vat: `vat.toml#guard-security` - isolated guard
-  scan with meter runtime evidence.; HTTP: keep public API - request body and
+- Surfaces: Vat: `vat.toml#security-runtime` - isolated runtime security
+  suites.; HTTP: keep public API - request body and
   data-plane boundary.; K8s: `k8s` - deployment boundary for future
   network policy and identity.
-- Gate — security: `vat run guard-security`
-  - guard-owned static/runtime evidence
+- Gate — security: `vat run security-runtime`
+  - runtime security evidence; static check: aw security check
 - Gate — behavior: `cargo test -p keep --test it http_api::` - body-limit and
   public-route smoke
 - Source: `vat.toml`, `src/http/routes.rs`,
@@ -151,9 +151,9 @@ or oversized request handling before production readiness.
 |---|---|---:|---|
 | body-limit-and-public-route-boundary | epic | - | src/http/routes.rs; tests/it/http_api.rs |
 | public-api-tls | epic | - | src/https.rs; tests/it/https_api.rs |
-| auth-network-policy-boundary | epic | - | pending guard/negative security inventory |
-| guard-static-runtime-evidence | epic | - | vat.toml#guard-security |
-| malformed-and-oversized-request-negative-tests | epic | - | vat.toml#guard-security |
+| auth-network-policy-boundary | epic | - | pending negative security inventory |
+| runtime-security-evidence | epic | - | vat.toml#security-runtime |
+| malformed-and-oversized-request-negative-tests | epic | - | tests/it/http_api.rs |
 
 ### HTTP/2 API List
 
