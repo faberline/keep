@@ -15,6 +15,7 @@ mod ha_overlay;
 mod http_api;
 mod https_api;
 mod operator;
+mod peer_mtls;
 mod perf_gate_workflow;
 mod properties;
 mod quickstart_image;

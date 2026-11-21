@@ -124,6 +124,10 @@ pub(crate) struct ServeArgs {
     /// Peer base URLs (comma-separated), index = node ordinal.
     #[arg(long, env = "KEEP_PEERS", value_delimiter = ',')]
     pub(crate) peers: Vec<String>,
+    /// Serve the raft peer routes on this port over mutual TLS (KEEP_PEER_TLS_CERT, KEEP_PEER_TLS_KEY, KEEP_PEER_TLS_CA, KEEP_PEER_MTLS=on).
+    #[cfg_attr(not(feature = "raft"), allow(dead_code))]
+    #[arg(long, env = "KEEP_PEER_PORT")]
+    pub(crate) peer_port: Option<u16>,
 }
 
 // <HANDWRITE gap="missing-generator:logic" tracker="#2414" reason="logic section in keep.rs is hand-written pending codegen support">
@@ -308,16 +312,53 @@ pub(crate) async fn serve_main(args: ServeArgs, worker_threads: usize) -> Result
             std::env::var("KEEP_RAFT_MEMBERS_PER_SHARD").ok().as_deref(),
             replicas,
         );
-        let hosts = Arc::new(
-            keep::raft::ShardHosts::with_members(
-                (*state.cluster).clone(),
-                state.engine.clone(),
-                &args.data_dir,
-                replicas,
-                members,
-            )
-            .await?,
-        );
+        let peer_transport = match args.peer_port {
+            Some(_) => {
+                let cfg = peer_tls::PeerTlsConfig::from_env("KEEP_PEER")?.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "KEEP_PEER_PORT needs KEEP_PEER_TLS_CERT, KEEP_PEER_TLS_KEY, KEEP_PEER_TLS_CA and KEEP_PEER_MTLS=on"
+                    )
+                })?;
+                Some(raft_runtime::PeerTransport::from_config(&cfg)?)
+            }
+            None => None,
+        };
+        let hosts = Arc::new(match &peer_transport {
+            Some(transport) => {
+                keep::raft::ShardHosts::with_peer_transport(
+                    (*state.cluster).clone(),
+                    state.engine.clone(),
+                    &args.data_dir,
+                    replicas,
+                    members,
+                    transport.clone(),
+                )
+                .await?
+            }
+            None => {
+                keep::raft::ShardHosts::with_members(
+                    (*state.cluster).clone(),
+                    state.engine.clone(),
+                    &args.data_dir,
+                    replicas,
+                    members,
+                )
+                .await?
+            }
+        });
+        if let (Some(port), Some(transport)) = (args.peer_port, peer_transport) {
+            let peer_listener = TcpListener::bind((args.host.as_str(), port)).await?;
+            let peer_router = hosts.router();
+            tokio::spawn(async move {
+                if let Err(error) = transport
+                    .serve(peer_listener, peer_router, std::future::pending::<()>())
+                    .await
+                {
+                    warn!(%error, "raft: peer transport stopped");
+                }
+            });
+            info!(peer_port = port, "raft: peer routes on the mutual TLS port");
+        }
         info!(
             shard_hosts = hosts.host_count(),
             replicas_per_shard = replicas,
@@ -336,7 +377,7 @@ pub(crate) async fn serve_main(args: ServeArgs, worker_threads: usize) -> Result
     #[cfg_attr(not(feature = "raft"), allow(unused_mut))]
     let mut app = keep::router(state.clone());
     #[cfg(feature = "raft")]
-    if let Some(hosts) = &shard_hosts {
+    if let (Some(hosts), None) = (&shard_hosts, args.peer_port) {
         app = app.merge(hosts.router());
     }
 

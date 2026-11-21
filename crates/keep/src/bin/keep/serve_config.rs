@@ -100,7 +100,18 @@ pub(crate) fn derive_cluster_config(args: &crate::serve::ServeArgs) -> Result<ke
     let headless =
         std::env::var("KEEP_HEADLESS_SERVICE").unwrap_or_else(|_| "keep-headless".to_string());
     let dims = raft_runtime::ClusterDims::from_env()?;
-    let topo = raft_runtime::ClusterTopology::from_env("keep", &headless, args.port, "KEEP_PEERS")?;
+    let topo = match args.peer_port {
+        Some(port) => raft_runtime::ClusterTopology::from_env_with_scheme(
+            "keep",
+            &headless,
+            port,
+            "KEEP_PEERS",
+            "https",
+        )?,
+        None => {
+            raft_runtime::ClusterTopology::from_env("keep", &headless, args.port, "KEEP_PEERS")?
+        }
+    };
     let node_count = topo.replicas_per_shard.max(1) as usize;
     let mut peers = vec![String::new(); node_count];
     for (node, url) in topo.peers {
@@ -260,6 +271,24 @@ mod tests {
         assert_eq!(cluster.shard_count, 1);
         assert_eq!(cluster.peers[0], "http://keep-0.keep-headless:7117");
         assert_eq!(cluster.peers[1], "http://keep-1.keep-headless:7117");
+        assert_eq!(cluster.peers[2], "");
+        clear_topology_env();
+    }
+
+    #[test]
+    fn cluster_topology_uses_https_and_the_peer_port_when_set() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        clear_topology_env();
+        std::env::set_var("POD_NAME", "keep-2");
+        std::env::set_var("SHARD_COUNT", "1");
+        std::env::set_var("REPLICAS_PER_SHARD", "3");
+        std::env::set_var("VOTER_COUNT", "3");
+        std::env::set_var("KEEP_HEADLESS_SERVICE", "keep-headless");
+
+        let cluster = derive_cluster_config(&serve_args(&["--peer-port", "7118"])).unwrap();
+
+        assert_eq!(cluster.peers[0], "https://keep-0.keep-headless:7118");
+        assert_eq!(cluster.peers[1], "https://keep-1.keep-headless:7118");
         assert_eq!(cluster.peers[2], "");
         clear_topology_env();
     }
