@@ -136,6 +136,8 @@ jobs:
         run: kubectl kustomize k8s/overlays/gke-test-raft > /dev/null
       - run: shellcheck -x -S warning k8s/gke-test-job-raft/verify-raft.sh
       - run: kubectl kustomize k8s/gke-test-job-raft > /dev/null
+      - name: Render ha overlay
+        run: kubectl kustomize k8s/overlays/ha > /dev/null
 
   test-quickstart-image:
     name: "test: quickstart on the image"
