@@ -1,0 +1,28 @@
+# Only keep Pods reach the peer port 7118. Clients still reach port 7117.
+# The cluster needs a CNI that enforces NetworkPolicy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: keep-peer
+  namespace: keep
+spec:
+  podSelector:
+    matchLabels:
+      app: keep
+      role: server
+  policyTypes:
+    - Ingress
+  ingress:
+    # Clients: port 7117 from any source.
+    - ports:
+        - protocol: TCP
+          port: 7117
+    # Peers: port 7118 only from keep Pods.
+    - from:
+        - podSelector:
+            matchLabels:
+              app: keep
+              role: server
+      ports:
+        - protocol: TCP
+          port: 7118

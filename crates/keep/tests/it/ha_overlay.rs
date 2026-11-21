@@ -141,3 +141,102 @@ fn ha_overlay_keeps_base_single_replica() {
         "base StatefulSet no longer has `replicas: 1`"
     );
 }
+
+#[test]
+fn ha_overlay_sets_the_peer_port_and_mtls_env() {
+    let overlay = read("k8s/overlays/ha/kustomization.yaml");
+    let expected = [
+        ("KEEP_PEER_PORT", "value: \"7118\""),
+        ("KEEP_PEER_MTLS", "value: \"on\""),
+        ("KEEP_PEER_TLS_CERT", "value: /etc/keep/peer-tls/tls.crt"),
+        ("KEEP_PEER_TLS_KEY", "value: /etc/keep/peer-tls/tls.key"),
+        ("KEEP_PEER_TLS_CA", "value: /etc/keep/peer-tls/ca.crt"),
+    ];
+    for (name, value) in expected {
+        assert_eq!(
+            value_after_env_name(&overlay, name).as_deref(),
+            Some(value),
+            "the value after `name: {name}` is not `{value}`"
+        );
+    }
+}
+
+#[test]
+fn ha_overlay_mounts_the_peer_tls_secret() {
+    let overlay = read("k8s/overlays/ha/kustomization.yaml");
+    for text in [
+        "secretName: keep-peer-tls",
+        "mountPath: /etc/keep/peer-tls",
+        "readOnly: true",
+    ] {
+        assert!(
+            overlay.contains(text),
+            "ha overlay does not contain `{text}`"
+        );
+    }
+}
+
+#[test]
+fn ha_overlay_adds_the_peer_port_to_the_headless_service_only() {
+    let overlay = read("k8s/overlays/ha/kustomization.yaml");
+    assert_eq!(
+        overlay.matches("/spec/ports/-").count(),
+        1,
+        "ha overlay must add one port with `path: /spec/ports/-`"
+    );
+    assert!(
+        overlay.contains("name: keep-headless"),
+        "ha overlay has no patch that targets keep-headless"
+    );
+    assert!(
+        overlay.contains("port: 7118"),
+        "ha overlay does not add port 7118"
+    );
+}
+
+#[test]
+fn ha_overlay_network_policy_limits_the_peer_port() {
+    let overlay = read("k8s/overlays/ha/kustomization.yaml");
+    assert!(
+        overlay.contains("networkpolicy.yaml"),
+        "ha overlay does not list networkpolicy.yaml under resources"
+    );
+    let policy = read("k8s/overlays/ha/networkpolicy.yaml");
+    for text in [
+        "kind: NetworkPolicy",
+        "Ingress",
+        "namespace: keep",
+        "app: keep",
+        "role: server",
+    ] {
+        assert!(
+            policy.contains(text),
+            "networkpolicy.yaml does not contain `{text}`"
+        );
+    }
+    assert_eq!(
+        policy.matches("port: 7118").count(),
+        1,
+        "networkpolicy.yaml must list port 7118 once"
+    );
+    assert_eq!(
+        policy.matches("port: 7117").count(),
+        1,
+        "networkpolicy.yaml must list port 7117 once"
+    );
+    let (before_first_from, after_first_from) = policy
+        .split_once("from:")
+        .expect("networkpolicy.yaml has no `from:`");
+    assert!(
+        before_first_from.contains("port: 7117"),
+        "the client rule for port 7117 must come before the first `from:` and have no `from:`"
+    );
+    assert!(
+        after_first_from.contains("port: 7118"),
+        "the peer rule for port 7118 must come after the first `from:`"
+    );
+    assert!(
+        after_first_from.contains("app: keep"),
+        "the peer rule must be limited to keep Pods (`app: keep`)"
+    );
+}
