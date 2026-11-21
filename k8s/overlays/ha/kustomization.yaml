@@ -2,10 +2,14 @@
 # 2 of 3, so the group keeps working while one pod is down.
 # Set the image tag yourself before you apply, for example:
 #   kustomize edit set image keep=<image>:<tag>
+# The peer port 7118 uses mutual TLS. The cluster operator must create the
+# Secret keep-peer-tls before kubectl apply. It has the type kubernetes.io/tls
+# and the keys tls.crt, tls.key and ca.crt. Its certificate needs the DNS SAN
+# *.keep-headless and both server and client auth. The client port 7117 stays open.
 # Apply with: kubectl apply -k k8s/overlays/ha
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-resources: [../../base]
+resources: [../../base, networkpolicy.yaml]
 replicas:
   - name: keep
     count: 3
@@ -30,6 +34,10 @@ patches:
           spec:
             containers:
               - name: keep
+                ports:
+                  - name: peer
+                    containerPort: 7118
+                    protocol: TCP
                 env:
                   - name: SHARD_COUNT
                     value: "1"
@@ -45,6 +53,24 @@ patches:
                     value: "3"
                   - name: KEEP_RAFT_MEMBERS_PER_SHARD
                     value: "3"
+                  - name: KEEP_PEER_PORT
+                    value: "7118"
+                  - name: KEEP_PEER_MTLS
+                    value: "on"
+                  - name: KEEP_PEER_TLS_CERT
+                    value: /etc/keep/peer-tls/tls.crt
+                  - name: KEEP_PEER_TLS_KEY
+                    value: /etc/keep/peer-tls/tls.key
+                  - name: KEEP_PEER_TLS_CA
+                    value: /etc/keep/peer-tls/ca.crt
+                volumeMounts:
+                  - name: peer-tls
+                    mountPath: /etc/keep/peer-tls
+                    readOnly: true
+            volumes:
+              - name: peer-tls
+                secret:
+                  secretName: keep-peer-tls
             affinity:
               podAntiAffinity:
                 preferredDuringSchedulingIgnoredDuringExecution:
@@ -55,6 +81,13 @@ patches:
                         matchLabels:
                           app: keep
                           role: server
+  - target:
+      kind: Service
+      name: keep-headless
+    patch: |-
+      - op: add
+        path: /spec/ports/-
+        value: {name: peer, port: 7118, targetPort: peer, protocol: TCP}
   - target:
       kind: PodDisruptionBudget
       name: keep
