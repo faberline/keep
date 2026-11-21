@@ -1,47 +1,28 @@
 ---
 id: keep-security-hardening-ec
-summary: Keep security evidence is guard-owned and vat-isolated, with meter evidence attached for public-route smoke.
-fill_sections: [e2e-test, tool-contract]
+summary: Keep security evidence is the vat-isolated runtime suites; the static check is aw security check.
+fill_sections: [e2e-test]
 ---
 
 # EC: Security Hardening
 
-Keep's security gate is the guard report over the HTTP/Kubernetes/container
-surface. guard attaches meter evidence for public-route smoke so request-boundary
-security cannot be marked complete without runtime proof.
+Keep's security gate is the runtime security suites over the public HTTP and TLS surface, run inside vat. The static check is aw security check (standard S10); it is not part of this gate.
 
 ## External Contract
 <!-- type: e2e-test lang: yaml -->
 
 ```yaml
 e2e_tests:
-  - id: keep-security-hardening-guard-scan
+  - id: keep-security-hardening-runtime
     capability_id: security-hardening
-    claim_id: guard-static-runtime-evidence
-    contract_id: keep-guard-security-report
+    claim_id: runtime-security-evidence
+    contract_id: keep-runtime-security-report
     category: security
-    test_path: crates/keep/tests/it/security_keep_security_hardening_guard_scan.rs
-    command: "vat run guard-security"
+    test_path: crates/keep/tests/it/security_keep_security_hardening_runtime.rs
+    command: "vat run security-runtime"
     required_for_production: false
     assertions:
-      - "guard scan over keep reports no untriaged Docker, Kubernetes, or static security findings."
-      - "guard attaches meter evidence for Keep's public HTTP route smoke."
-      - "The security evidence runs inside vat so generated reports and transient files do not mutate the host checkout."
-```
-
-## Tool Contract
-<!-- type: tool-contract lang: yaml -->
-
-```yaml
-tool_contracts:
-  - id: keep-guard-security
-    tool: guard
-    manifest: guard-keep-security.toml
-    category: security
-    command: "vat run guard-security"
-    native:
-      version: 1
-      project: keep
-      source_contract: keep-security-hardening-guard-scan
-      delegate_command: "vat run guard-security"
+      - "The runtime security suites (public HTTP route smoke and public API TLS) pass and run a nonzero number of tests."
+      - "The suites run inside vat so generated reports and transient files do not mutate the host checkout."
+      - "No guard scan is required; aw security check is the static security check."
 ```
