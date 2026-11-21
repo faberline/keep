@@ -51,6 +51,10 @@ there is no `serve` subcommand.
 | `KEEP_TOKEN_SECRET` | `crates/keep/src/bin/keep/serve.rs` | Turns on scoped claim-check tokens for the `/inputs/*` and `/results/*` routes. Unset or empty means no enforcement. |
 | `KEEP_REPLICAS_PER_SHARD` | `crates/keep/src/bin/keep/serve.rs` | Replica count per shard when raft replica mode is on. It is read only in a build with the `raft` feature, and defaults to `1`. |
 | `KEEP_HEADLESS_SERVICE` | `crates/keep/src/bin/keep/serve_config.rs` | Headless Kubernetes service name used to find raft peers. Defaults to `keep-headless`. |
+| `KEEP_PEER_TLS_CERT` | `crates/keep/src/bin/keep/serve.rs` | PEM certificate chain of this node for the peer port; set it with `KEEP_PEER_TLS_KEY` and `KEEP_PEER_TLS_CA`. |
+| `KEEP_PEER_TLS_KEY` | `crates/keep/src/bin/keep/serve.rs` | PEM private key for `KEEP_PEER_TLS_CERT`. |
+| `KEEP_PEER_TLS_CA` | `crates/keep/src/bin/keep/serve.rs` | PEM CA that must have signed every peer client certificate. |
+| `KEEP_PEER_MTLS` | `crates/keep/src/bin/keep/serve.rs` | `on` is required when `KEEP_PEER_PORT` is set; startup stops otherwise. |
 
 Test and perf-gate variables, such as `KEEP_PERF_*` and `KEEP_UPDATE_SURFACE`,
 are not listed here.
