@@ -59,6 +59,7 @@ jobs:
       - run: "cargo test --locked -p keep --features raft --test it raft_failover::"
       - run: "cargo test --locked -p keep --features raft --test it raft_node::"
       - run: "cargo test --locked -p keep --features raft --test it rolling_restart::"
+      - run: "cargo test --locked -p keep --features raft --test it peer_mtls::"
       - run: "cargo test --locked -p keep --features raft --test it raft_membership::"
       - run: cargo test --locked -p keep-replication --features raft --lib
       - run: cargo test --locked -p keep --features raft --bin keep
