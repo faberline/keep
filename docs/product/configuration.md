@@ -42,6 +42,7 @@ there is no `serve` subcommand.
 | `--node-count` | `KEEP_NODE_COUNT` | `1` | Number of nodes in the cluster. |
 | `--shard-count` | `KEEP_SHARD_COUNT` | `1` | Virtual shard count for client-side routing. It must be at least `--node-count`. |
 | `--peers` | `KEEP_PEERS` | unset | Peer base URLs, comma-separated. The index is the node ordinal. |
+| `--peer-port` | `KEEP_PEER_PORT` | unset | Serve the raft peer routes only on this port, over mutual TLS. It needs `KEEP_PEER_TLS_CERT`, `KEEP_PEER_TLS_KEY`, `KEEP_PEER_TLS_CA` and `KEEP_PEER_MTLS=on`, and the process refuses to start without them. The public port then has no peer routes. Unset keeps the peer routes on `--port`. |
 
 ## Environment variables without a flag
 

@@ -178,6 +178,7 @@ impl ShardHosts {
             replicas_per_shard,
             replicas_per_shard,
             snapshot_every,
+            None,
         )
         .await
     }
@@ -199,6 +200,29 @@ impl ShardHosts {
             replicas_per_shard,
             members_per_shard,
             SNAPSHOT_EVERY,
+            None,
+        )
+        .await
+    }
+
+    /// As [`with_members`](Self::with_members), but the peer raft RPCs of every
+    /// hosted shard go through `peer_transport` (mutual TLS, its own listener).
+    pub async fn with_peer_transport(
+        cluster: ClusterConfig,
+        engine: Arc<KvEngine>,
+        data_dir: &Path,
+        replicas_per_shard: u32,
+        members_per_shard: u32,
+        peer_transport: raft_runtime::PeerTransport,
+    ) -> Result<Self> {
+        Self::open(
+            cluster,
+            engine,
+            data_dir,
+            replicas_per_shard,
+            members_per_shard,
+            SNAPSHOT_EVERY,
+            Some(peer_transport),
         )
         .await
     }
@@ -210,6 +234,7 @@ impl ShardHosts {
         replicas_per_shard: u32,
         members_per_shard: u32,
         snapshot_every: u64,
+        peer_transport: Option<raft_runtime::PeerTransport>,
     ) -> Result<Self> {
         let mut hosts = HashMap::new();
         for shard in hosted_shards(&cluster, replicas_per_shard) {
@@ -224,14 +249,27 @@ impl ShardHosts {
                 FsyncPolicy::Always,
             )?;
             let sm = KvStateMachine::new(engine.clone(), cluster.clone(), shard);
-            let host = RaftHost::spawn(
-                node_id,
-                membership,
-                peers,
-                store,
-                sm as Arc<dyn RaftStateMachine>,
-                HostConfig::default().with_snapshot(SnapshotPolicy::EveryEntries(snapshot_every)),
-            );
+            let cfg =
+                HostConfig::default().with_snapshot(SnapshotPolicy::EveryEntries(snapshot_every));
+            let host = match &peer_transport {
+                Some(transport) => RaftHost::spawn_with_peer_transport(
+                    node_id,
+                    membership,
+                    peers,
+                    store,
+                    sm as Arc<dyn RaftStateMachine>,
+                    cfg,
+                    transport.clone(),
+                ),
+                None => RaftHost::spawn(
+                    node_id,
+                    membership,
+                    peers,
+                    store,
+                    sm as Arc<dyn RaftStateMachine>,
+                    cfg,
+                ),
+            };
             hosts.insert(shard, Arc::new(host));
         }
         Ok(Self {
