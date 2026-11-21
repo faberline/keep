@@ -352,6 +352,58 @@ fn threat_model_has_required_sections() {
 }
 
 #[test]
+fn threat_model_t4_names_the_peer_port_and_control() {
+    let md = doc("docs/product/threat-model.md");
+    for needle in [
+        "KEEP_PEER_PORT",
+        "7118",
+        "mutual TLS",
+        "NetworkPolicy",
+        "keep-peer-tls",
+    ] {
+        assert!(
+            md.contains(needle),
+            "threat-model.md does not name `{needle}`"
+        );
+    }
+    let t4 = md
+        .lines()
+        .find(|line| line.starts_with("- **T4:"))
+        .expect("threat-model.md has no T4 mitigation line");
+    assert!(
+        t4.contains("mitigated"),
+        "T4 line does not say mitigated: {t4}"
+    );
+    assert!(
+        !t4.starts_with("- **T4: `accepted`.**"),
+        "T4 is still plain accepted: {t4}"
+    );
+}
+
+#[test]
+fn configuration_lists_the_peer_variables() {
+    let md = doc("docs/product/configuration.md");
+    // KEEP_PEER_PORT is already in the flags table (its --peer-port row).
+    assert!(
+        md.contains("KEEP_PEER_PORT"),
+        "configuration.md does not list `KEEP_PEER_PORT`"
+    );
+    // The other four must have their own rows in the env table.
+    for name in [
+        "KEEP_PEER_TLS_CERT",
+        "KEEP_PEER_TLS_KEY",
+        "KEEP_PEER_TLS_CA",
+        "KEEP_PEER_MTLS",
+    ] {
+        let row = format!("| `{name}` |");
+        assert!(
+            md.lines().any(|line| line.starts_with(&row)),
+            "configuration.md has no env table row for `{name}`"
+        );
+    }
+}
+
+#[test]
 fn keep_commands_rejects_unknown_flag() {
     assert!(check("```bash\nkeep --no-such-flag\n```").is_err());
     assert!(check("```bash\nkeep backup --no-such-flag\n```").is_err());
