@@ -610,7 +610,7 @@ fn release_gaps_doc_has_every_gate() {
             );
         }
     }
-    assert_eq!(missing, 4, "release-gaps.md must list 4 missing gates");
+    assert_eq!(missing, 2, "release-gaps.md must list 2 missing gates");
 }
 
 #[test]

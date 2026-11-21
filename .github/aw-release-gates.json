@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "repo": "faberline/keep",
+  "workflows": [
+    {
+      "path": ".github/workflows/release.yml",
+      "id": 425929718,
+      "definition_sha": "58ab62488d299cafa550d26c43b1cb6bdac5b812",
+      "jobs": {
+        "preflight": "policy",
+        "ci / lint: fmt, clippy": "policy",
+        "ci / test: workspace, coverage": "unit",
+        "ci / test: release contract": "unit",
+        "ci / test: cargo deny": "unit",
+        "ci / test: cargo audit": "unit",
+        "ci / test: kubernetes manifests": "unit",
+        "ci / test: quickstart on the image": "functional_e2e",
+        "ci / test: rolling upgrade": "functional_e2e",
+        "ci / gate": "policy",
+        "perf: competitor gate": "performance"
+      }
+    }
+  ]
+}

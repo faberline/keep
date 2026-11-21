@@ -22,6 +22,7 @@ mod quickstart_image;
 mod raft_failover;
 mod raft_membership;
 mod raft_node;
+mod release_files;
 mod rolling_restart;
 mod rolling_upgrade;
 mod security_keep_security_hardening_runtime;
