@@ -12,11 +12,6 @@ tool = "meter"
 meter = "."
 command = "vat run meter-efficiency"
 
-[ec.security]
-tool = "guard"
-dir = "."
-command = "vat run guard-security"
-
 [[workspaces]]
 name = "keep"
 paths = ["crates/**"]
@@ -47,29 +42,20 @@ assertions = [
 ]
 
 [[aw.ec.generated.cases]]
-id = "keep-security-hardening-guard-scan"
+id = "keep-security-hardening-runtime"
 capability_id = "security-hardening"
-claim_id = "guard-static-runtime-evidence"
-contract_id = "keep-guard-security-report"
+claim_id = "runtime-security-evidence"
+contract_id = "keep-runtime-security-report"
 category = "security"
-td_ref = "external-contracts/security-hardening/security/security-evidence.md#keep-security-hardening-guard-scan"
-test_path = "crates/keep/tests/it/security_keep_security_hardening_guard_scan.rs"
-command = "vat run guard-security"
+td_ref = "external-contracts/security-hardening/security/security-evidence.md#keep-security-hardening-runtime"
+test_path = "crates/keep/tests/it/security_keep_security_hardening_runtime.rs"
+command = "vat run security-runtime"
 required_for_production = false
 assertions = [
-    "guard scan over keep reports no untriaged Docker, Kubernetes, or static security findings.",
-    "guard attaches meter evidence for Keep's public HTTP route smoke.",
-    "The security evidence runs inside vat so generated reports and transient files do not mutate the host checkout.",
+    "The runtime security suites (public HTTP route smoke and public API TLS) pass and run a nonzero number of tests.",
+    "The suites run inside vat so generated reports and transient files do not mutate the host checkout.",
+    "No guard scan is required; aw security check is the static security check.",
 ]
-
-[[aw.ec.generated.tool_manifests]]
-id = "keep-guard-security"
-tool = "guard"
-path = "guard-keep-security.toml"
-td_ref = "external-contracts/security-hardening/security/security-evidence.md#keep-guard-security"
-content_digest = "sha256:d36ff48dddb5c6d2b2cc5b8f0389c881cc5d2adf20d821ca9555c4430466a7ac"
-command = "vat run guard-security"
-category = "security"
 
 [[aw.ec.generated.tool_manifests]]
 id = "keep-meter-performance"

@@ -9,7 +9,7 @@ keep = "always"
 
 [[setup]]
 id = "build-aw-tools"
-cmd = ["sh", "-c", "command -v meter >/dev/null && command -v guard >/dev/null || { echo \"install the gate tools: cargo install --locked --git https://github.com/faberline/meter meter-cli; cargo install --locked --git https://github.com/faberline/guard guard-cli\" >&2; exit 1; }"]
+cmd = ["sh", "-c", "command -v meter >/dev/null || { echo \"install the gate tool: cargo install --locked --git https://github.com/faberline/meter meter-cli\" >&2; exit 1; }"]
 
 [[setup]]
 id = "build-keep-ec-tests"
@@ -41,6 +41,11 @@ cmd = [
 ]
 timeout_s = 600
 
+[[runners]]
+id = "security-runtime"
+cmd = ["cargo","test","-p","keep","--test","it","--","https_api::","http_api::","--nocapture"]
+timeout_s = 600
+
 # Competitive ratchet vs pinned Redis/Dragonfly/KeyDB/Garnet containers.
 # Release-only (~20 min); needs Docker. See
 # external-contracts/competitor-performance/efficiency/perf-gate.md.
@@ -53,17 +58,3 @@ cmd = [
 ]
 timeout_s = 3600
 
-[[runners]]
-id = "guard-security"
-cmd = [
-  "guard",
-  "scan",
-  ".",
-  "--profile",
-  "security-lint",
-  "--compact",
-  "--no-persist",
-  "--meter-command",
-  "meter test -- -p keep --test it -- http_api:: --nocapture",
-]
-timeout_s = 600
