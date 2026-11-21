@@ -159,8 +159,7 @@ Use this procedure for a rolling upgrade of the `keep` StatefulSet.
      catch-up step.
 5. What is tested: `crates/keep/tests/it/rolling_restart.rs` restarts one replica at
    a time with the same version and checks that the restarted replica catches up
-   and that no key is lost. A mixed-version rollback is not tested. A rolling
-   upgrade across two versions is not tested.
+   and that no key is lost. `crates/keep/tests/it/rolling_upgrade.rs` upgrades a 3-process group one replica at a time from the previous build (`scripts/previous-keep-sha`) to the current build (`rolling_upgrade_previous_to_current_loses_no_key`) and rolls one replica back (`rolling_back_one_replica_loses_no_key`); both check that no key is lost and that writes continue.
 6. Rollback: `kubectl rollout undo statefulset/keep` only when the release did not
    change the on-disk format (see `docs/product/compatibility.md`). After a format
    change, restore a backup.
