@@ -78,6 +78,15 @@ fn can_record_the_baseline() {
 }
 
 #[test]
+fn takes_the_median_of_seven_trials() {
+    let text = workflow();
+    assert!(
+        text.contains("KEEP_PERF_TRIALS: \"7\""),
+        "the nightly gate must take the median of 7 trials (keep#263)"
+    );
+}
+
+#[test]
 fn gates_one_core_cells_on_the_four_cpu_runner() {
     let text = workflow();
     assert!(
