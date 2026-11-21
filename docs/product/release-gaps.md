@@ -33,15 +33,13 @@ here: they wait for the owner and no issue tracks them yet.
 | release.caller: one job that uses service-release.yml at a 40-hex commit | `.github/workflows/keep-release.yml` `uses: faberline/aw/.github/workflows/service-release.yml@` | present |
 | release.caller-shape: concurrency group does not cancel | `.github/workflows/keep-release.yml` `cancel-in-progress: false` | present |
 | release.pin: commit pinned with the aw version comment | `.github/workflows/keep-release.yml` `# aw 0.` | present |
-| Milestone gate contract | `.github/aw-release.json` absent | missing |
-| Milestone gate policy | `.github/aw-release-gates.json` absent | missing |
+| Milestone gate contract | `.github/aw-release.json` `goal_sha256` | present |
+| Milestone gate policy | `.github/aw-release-gates.json` `definition_sha` | present |
 | release.own-copy: no copy of the shared release scripts | `scripts/release/` still a copy | missing |
 | [release] table in aw.toml replaces apps.sh | `aw.toml` has no `[release]` table | missing |
 
 ## Missing gates
 
-- Milestone gate contract: add `.github/aw-release.json` (the milestone contract; see the aw README "Milestone release gate").
-- Milestone gate policy: add `.github/aw-release-gates.json` (the policy).
 - release.own-copy: no copy of the shared release scripts: delete the copies in `scripts/release/` once aw supplies them (aw says "not started"). Until then, record `[[standards.release.exception]]` in `aw.toml`.
 - [release] table in aw.toml replaces apps.sh: move the app facts from `scripts/release/apps.sh` to a `[release]` table in `aw.toml` when aw's scripts read it.
 

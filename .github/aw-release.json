@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "repo": "faberline/keep",
+  "milestones": {
+    "4": {
+      "version": "0.8.0",
+      "goal_sha256": "cb4340f1c0037a82eb9ebfeeb1c614424756da7310e9ddac7fc99f2cf5d683c6",
+      "acceptance": [
+        {
+          "goal": "Auth and TLS on the public API, and authenticated peer routes",
+          "issues": [65, 66, 235, 236, 251, 252, 253],
+          "checks": ["ci / test: workspace, coverage"]
+        },
+        {
+          "goal": "Backup and restore with a tested restore round trip",
+          "issues": [68, 237],
+          "checks": ["ci / test: workspace, coverage", "ci / test: quickstart on the image"]
+        },
+        {
+          "goal": "GKE end-to-end suite and manifests",
+          "issues": [70, 78, 79, 80, 219, 220],
+          "checks": ["ci / test: kubernetes manifests"]
+        },
+        {
+          "goal": "Fixed 3 replicas with a node-failure test and a tested rolling upgrade",
+          "issues": [69, 71, 233, 234, 249, 250],
+          "checks": ["ci / test: rolling upgrade", "ci / test: kubernetes manifests"]
+        },
+        {
+          "goal": "Reviewed CI and release gates, docs and the performance gate",
+          "issues": [67, 72, 238, 239, 240, 245, 246, 247],
+          "checks": ["preflight", "ci / gate", "perf: competitor gate"]
+        }
+      ],
+      "publication": "github-release"
+    }
+  }
+}
