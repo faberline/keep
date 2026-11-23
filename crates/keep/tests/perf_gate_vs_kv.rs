@@ -1059,6 +1059,36 @@ fn problems_split_fatal_from_report_only() {
     assert_eq!(p.unavailable, vec!["g".to_string()]);
 }
 
+#[test]
+fn trial_order_is_round_robin() {
+    assert_eq!(
+        trial_order(3, 2),
+        vec![(0, 0), (0, 1), (0, 2), (1, 2), (1, 1), (1, 0)]
+    );
+}
+
+#[test]
+fn trial_order_handles_empty_and_single() {
+    assert!(trial_order(0, 7).is_empty());
+    assert!(trial_order(4, 0).is_empty());
+    assert_eq!(trial_order(1, 3), vec![(0, 0), (1, 0), (2, 0)]);
+}
+
+#[test]
+fn trial_order_gives_each_target_every_trial() {
+    let order = trial_order(5, 7);
+    assert_eq!(order.len(), 35);
+    for t in 0..5 {
+        let mut trials: Vec<usize> = order
+            .iter()
+            .filter(|(_, target)| *target == t)
+            .map(|(trial, _)| *trial)
+            .collect();
+        trials.sort_unstable();
+        assert_eq!(trials, (0..7).collect::<Vec<usize>>(), "target {t}");
+    }
+}
+
 // ===========================================================================
 // Live gate (Docker)
 // ===========================================================================
@@ -1358,6 +1388,21 @@ impl Load<'_> {
     }
 }
 
+/// Round-robin order of (trial, target index): every target runs trial 0,
+/// then every target runs trial 1, and so on. Odd trials walk the targets
+/// in reverse, so no target is always measured first in a round.
+fn trial_order(targets: usize, trials: usize) -> Vec<(usize, usize)> {
+    let mut order = Vec::with_capacity(targets * trials);
+    for trial in 0..trials {
+        if trial % 2 == 0 {
+            order.extend((0..targets).map(|t| (trial, t)));
+        } else {
+            order.extend((0..targets).rev().map(|t| (trial, t)));
+        }
+    }
+    order
+}
+
 /// Fatal problems (keep or a ratchet peer cannot be measured) vs report-only
 /// peers that are simply shown UNAVAILABLE.
 #[derive(Default)]
@@ -1508,6 +1553,8 @@ fn competitive_perf_gate() {
                 warmup: ops / 10,
                 concurrency: env_or("KEEP_PERF_CONCURRENCY", 50),
             };
+            // Step A: the usable targets of this tier and core count.
+            let mut plan: Vec<(&String, &String, u16, Vec<String>, bool)> = Vec::new();
             for target in &targets {
                 let Some(image) = images.get(target) else {
                     continue;
@@ -1516,41 +1563,56 @@ fn competitive_perf_gate() {
                     continue;
                 };
                 let gated = role_for(target) == "ratchet" || target == "keep";
-                let server = match Server::start(&net, &server_cpus, image, &args) {
+                plan.push((target, image, port, args, gated));
+            }
+            // Step B: interleave the trials, so every target sees the same
+            // runner speed within each round. A fresh server for each trial.
+            let mut reports: Vec<Vec<Value>> = vec![Vec::new(); plan.len()];
+            let mut dead = vec![false; plan.len()];
+            for (trial, i) in trial_order(plan.len(), trials) {
+                if dead[i] {
+                    continue;
+                }
+                let (target, image, port, args, gated) = &plan[i];
+                let server = match Server::start(&net, &server_cpus, image, args) {
                     Ok(s) => s,
                     Err(e) => {
                         problems.fail(target, format!("{target} {tier} {c}c: {e}"));
+                        dead[i] = true;
+                        reports[i].clear();
                         continue;
                     }
                 };
-                let mut reports = Vec::new();
-                for trial in 0..trials {
-                    let label = format!("{}:{tier}:{c}c:{target}:{trial}", host.class);
-                    let result = load
-                        .run(target, tier, port, &label)
-                        .and_then(|r| check_report(&r, target, tier, gated).map(|()| r));
-                    match result {
-                        Ok(r) => reports.push(r),
-                        Err(e) => {
-                            let logs = Server::logs();
-                            problems.fail(target, format!("{tier} {c}c: {e}\n{logs}"));
-                            reports.clear();
-                            break;
-                        }
+                let label = format!("{}:{tier}:{c}c:{target}:{trial}", host.class);
+                let result = load
+                    .run(target, tier, *port, &label)
+                    .and_then(|r| check_report(&r, target, tier, *gated).map(|()| r));
+                match result {
+                    Ok(r) => reports[i].push(r),
+                    Err(e) => {
+                        let logs = Server::logs();
+                        problems.fail(target, format!("{tier} {c}c: {e}\n{logs}"));
+                        dead[i] = true;
+                        reports[i].clear();
                     }
                 }
                 drop(server);
-                if !reports.is_empty() {
-                    let summary: Vec<String> = PHASES
-                        .iter()
-                        .map(|p| {
-                            let ops = values(&reports, p, Metric::Ops).unwrap_or_default();
-                            format!("{p} {:.0}/s", median(&ops))
-                        })
-                        .collect();
-                    println!("  {tier:<6} {c}c {target:<10} {}", summary.join("  "));
-                    runs.insert((tier.clone(), c, target.clone()), reports);
+            }
+            // Step C: one summary line and one run set per usable target.
+            for (i, (target, ..)) in plan.iter().enumerate() {
+                if dead[i] || reports[i].is_empty() {
+                    continue;
                 }
+                let reports = std::mem::take(&mut reports[i]);
+                let summary: Vec<String> = PHASES
+                    .iter()
+                    .map(|p| {
+                        let ops = values(&reports, p, Metric::Ops).unwrap_or_default();
+                        format!("{p} {:.0}/s", median(&ops))
+                    })
+                    .collect();
+                println!("  {tier:<6} {c}c {target:<10} {}", summary.join("  "));
+                runs.insert((tier.clone(), c, (*target).clone()), reports);
             }
         }
     }
