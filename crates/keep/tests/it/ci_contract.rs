@@ -192,7 +192,7 @@ fn audit_config_has_no_ignores() {
 }
 
 /// Each remaining cargo-deny ignore names its dependency path, and the list
-/// holds exactly the six unmaintained-crate advisories.
+/// holds exactly the six unmaintained-crate advisories and RUSTSEC-2026-0600.
 #[test]
 fn deny_ignores_name_their_path() {
     let text = read("deny.toml");
@@ -203,6 +203,7 @@ fn deny_ignores_name_their_path() {
         "RUSTSEC-2025-0134",
         "RUSTSEC-2024-0449",
         "RUSTSEC-2026-0543",
+        "RUSTSEC-2026-0600",
     ];
     let entries = text
         .lines()
@@ -211,7 +212,7 @@ fn deny_ignores_name_their_path() {
     assert_eq!(
         entries,
         ids.len(),
-        "deny.toml must hold exactly six RUSTSEC ignores"
+        "deny.toml must hold exactly seven RUSTSEC ignores"
     );
     for id in ids {
         let needle = format!("id = \"{id}\"");
@@ -224,6 +225,26 @@ fn deny_ignores_name_their_path() {
             "the deny.toml reason for {id} does not name its dependency path: {line}"
         );
     }
+}
+
+/// The cargo-audit step ignores only RUSTSEC-2026-0600: exactly one
+/// `--ignore` flag, and it names that advisory.
+#[test]
+fn audit_ignores_only_the_reachable_advisory() {
+    let text = ci_workflow();
+    assert!(
+        text.contains("cargo audit --deny unsound --deny yanked"),
+        "ci.yml does not run `cargo audit --deny unsound --deny yanked`"
+    );
+    let ignores = text.matches("--ignore RUSTSEC-").count();
+    assert_eq!(
+        ignores, 1,
+        "ci.yml must pass exactly one `--ignore RUSTSEC-` to cargo audit"
+    );
+    assert!(
+        text.contains("cargo audit --deny unsound --deny yanked --ignore RUSTSEC-2026-0600"),
+        "cargo audit must ignore only RUSTSEC-2026-0600"
+    );
 }
 
 /// The keep security gate runs the runtime security suites in vat and no
