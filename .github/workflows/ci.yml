@@ -127,10 +127,11 @@ jobs:
           shared-key: keep-ci
       - name: Install cargo-audit
         run: cargo install --locked cargo-audit --version 0.23.0
-      # The six unmaintained-crate advisories of deny.toml are reported by
+      # The seven advisories of deny.toml (six unmaintained crates and RUSTSEC-2026-0600, which has its own --ignore below) are reported by
       # cargo audit as warnings, so `--deny warnings` would always fail.
       # Vulnerabilities fail the job by default; also deny unsound and yanked.
-      - run: cargo audit --deny unsound --deny yanked
+      # RUSTSEC-2026-0600: openssl-tls connector, not built here; remove with the deny.toml entry (expires 2027-02-16).
+      - run: cargo audit --deny unsound --deny yanked --ignore RUSTSEC-2026-0600
 
   test-k8s:
     name: "test: kubernetes manifests"

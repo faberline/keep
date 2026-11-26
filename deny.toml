@@ -10,8 +10,10 @@ no-default-features = false
 [advisories]
 db-path = "~/.cargo/advisory-db"
 version = 2
-# Each ignore is an unmaintained-crate advisory (not a vulnerability) with no
-# safe upgrade. The crate comes in through a dependency that cannot move off it.
+# Each ignore is an unmaintained-crate advisory with no safe upgrade, except
+# RUSTSEC-2026-0600: a vulnerability that is not reachable here (see its reason).
+# Ignore no other vulnerability. The crate comes in through a dependency that
+# cannot move off it.
 ignore = [
     { id = "RUSTSEC-2025-0012", reason = "backoff 0.4.0 is unmaintained; no safe upgrade. Path: kube-runtime 0.98.0 -> backoff 0.4.0 (kube-runtime is used through kube by keep-operator and the keep tests)." },
     { id = "RUSTSEC-2024-0384", reason = "instant 0.1.13 is unmaintained; no safe upgrade. Path: kube-runtime 0.98.0 -> backoff 0.4.0 -> instant 0.1.13." },
@@ -19,6 +21,7 @@ ignore = [
     { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile 2.2.0 is unmaintained; no safe upgrade. Path: kube-client 0.98.0 -> rustls-pemfile 2.2.0." },
     { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml 0.2.11 is unmaintained; no safe upgrade. Path: serde_yaml 0.9.34 (deprecated; used by keep, keep-commands, keep-operator and kube-client) -> unsafe-libyaml 0.2.11." },
     { id = "RUSTSEC-2026-0543", reason = "chrono 0.4.44 is unmaintained; no safe upgrade. Path: k8s-openapi 0.24.0 (used by keep-operator) -> chrono 0.4.44; and kube 0.98.0 (used by keep-operator and, as a dev dependency, by keep) -> chrono 0.4.44." },
+    { id = "RUSTSEC-2026-0600", reason = "kube-client 0.98.0 openssl-tls connector; this workspace builds the rustls-tls connector only (no openssl crate in Cargo.lock), so the flaw is not reachable. The fix is kube >= 4.2.1 and needs a core release that moves service-k8s off kube 0.98 (faberline/core#641). Path: kube 0.98.0 (used by keep-operator and, as a dev dependency, by keep) -> kube-client 0.98.0. Expires 2027-02-16." },
 ]
 
 [licenses]
