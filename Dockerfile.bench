@@ -9,7 +9,7 @@
 #
 #   docker build -f Dockerfile.bench -t keep-bench:gate .   # context = repo root
 
-FROM rust:1.92-slim-bookworm AS builder
+FROM rust:1.99.1-slim-bookworm AS builder
 WORKDIR /src
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
