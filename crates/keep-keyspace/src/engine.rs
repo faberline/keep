@@ -79,7 +79,7 @@ impl Shard {
     fn sub_mem(&self, bytes: usize) {
         let _ = self
             .used_memory_bytes
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
                 Some(cur.saturating_sub(bytes))
             });
     }
