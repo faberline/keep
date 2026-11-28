@@ -491,8 +491,8 @@ dependencies = [
 
 [[package]]
 name = "build-stamp"
-version = "0.5.4"
-source = "git+https://github.com/faberline/core?tag=v0.5.4#122783bd2eae609ecebd76e101a4ae4e274e7a71"
+version = "0.5.5"
+source = "git+https://github.com/faberline/core?tag=v0.5.5#383aaa2c78f615554003c03f6deca85e1c742b0a"
 
 [[package]]
 name = "bumpalo"
@@ -590,8 +590,8 @@ dependencies = [
 
 [[package]]
 name = "claim-token"
-version = "0.5.4"
-source = "git+https://github.com/faberline/core?tag=v0.5.4#122783bd2eae609ecebd76e101a4ae4e274e7a71"
+version = "0.5.5"
+source = "git+https://github.com/faberline/core?tag=v0.5.5#383aaa2c78f615554003c03f6deca85e1c742b0a"
 dependencies = [
  "base64 0.22.1",
  "serde",
@@ -642,7 +642,7 @@ checksum = "e0921b3876b3a1df8a1c9f912e7f94342458022c2e84288015893d83c4d62a79"
 [[package]]
 name = "cli-std"
 version = "0.1.0"
-source = "git+https://github.com/faberline/core?tag=v0.5.4#122783bd2eae609ecebd76e101a4ae4e274e7a71"
+source = "git+https://github.com/faberline/core?tag=v0.5.5#383aaa2c78f615554003c03f6deca85e1c742b0a"
 dependencies = [
  "anyhow",
  "flate2",
@@ -2288,7 +2288,7 @@ dependencies = [
 [[package]]
 name = "metrics-prometheus"
 version = "0.1.0"
-source = "git+https://github.com/faberline/core?tag=v0.5.4#122783bd2eae609ecebd76e101a4ae4e274e7a71"
+source = "git+https://github.com/faberline/core?tag=v0.5.5#383aaa2c78f615554003c03f6deca85e1c742b0a"
 
 [[package]]
 name = "mime"
@@ -2446,7 +2446,7 @@ checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
 [[package]]
 name = "openapi-codegen"
 version = "0.5.0"
-source = "git+https://github.com/faberline/core?tag=v0.5.4#122783bd2eae609ecebd76e101a4ae4e274e7a71"
+source = "git+https://github.com/faberline/core?tag=v0.5.5#383aaa2c78f615554003c03f6deca85e1c742b0a"
 dependencies = [
  "anyhow",
  "cli-std",
@@ -2526,7 +2526,7 @@ dependencies = [
 [[package]]
 name = "peer-tls"
 version = "0.1.0"
-source = "git+https://github.com/faberline/core?tag=v0.5.4#122783bd2eae609ecebd76e101a4ae4e274e7a71"
+source = "git+https://github.com/faberline/core?tag=v0.5.5#383aaa2c78f615554003c03f6deca85e1c742b0a"
 dependencies = [
  "anyhow",
  "rustls",
@@ -2797,7 +2797,7 @@ dependencies = [
  "quinn-udp",
  "rustc-hash",
  "rustls",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
@@ -2835,7 +2835,7 @@ dependencies = [
  "cfg_aliases",
  "libc",
  "once_cell",
- "socket2 0.6.5",
+ "socket2 0.5.10",
  "tracing",
  "windows-sys 0.61.2",
 ]
@@ -2863,8 +2863,8 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "raft-core"
-version = "0.5.4"
-source = "git+https://github.com/faberline/core?tag=v0.5.4#122783bd2eae609ecebd76e101a4ae4e274e7a71"
+version = "0.5.5"
+source = "git+https://github.com/faberline/core?tag=v0.5.5#383aaa2c78f615554003c03f6deca85e1c742b0a"
 dependencies = [
  "serde",
 ]
@@ -2872,7 +2872,7 @@ dependencies = [
 [[package]]
 name = "raft-runtime"
 version = "0.1.0"
-source = "git+https://github.com/faberline/core?tag=v0.5.4#122783bd2eae609ecebd76e101a4ae4e274e7a71"
+source = "git+https://github.com/faberline/core?tag=v0.5.5#383aaa2c78f615554003c03f6deca85e1c742b0a"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3563,7 +3563,7 @@ dependencies = [
 [[package]]
 name = "server-http"
 version = "0.1.0"
-source = "git+https://github.com/faberline/core?tag=v0.5.4#122783bd2eae609ecebd76e101a4ae4e274e7a71"
+source = "git+https://github.com/faberline/core?tag=v0.5.5#383aaa2c78f615554003c03f6deca85e1c742b0a"
 dependencies = [
  "axum",
  "rustls",
@@ -3579,7 +3579,7 @@ dependencies = [
 [[package]]
 name = "server-lifecycle"
 version = "0.1.0"
-source = "git+https://github.com/faberline/core?tag=v0.5.4#122783bd2eae609ecebd76e101a4ae4e274e7a71"
+source = "git+https://github.com/faberline/core?tag=v0.5.5#383aaa2c78f615554003c03f6deca85e1c742b0a"
 dependencies = [
  "thiserror 2.0.21",
  "tokio",
@@ -3589,7 +3589,7 @@ dependencies = [
 [[package]]
 name = "server-tcp"
 version = "0.1.0"
-source = "git+https://github.com/faberline/core?tag=v0.5.4#122783bd2eae609ecebd76e101a4ae4e274e7a71"
+source = "git+https://github.com/faberline/core?tag=v0.5.5#383aaa2c78f615554003c03f6deca85e1c742b0a"
 dependencies = [
  "server-lifecycle",
  "socket2 0.6.5",
@@ -3601,7 +3601,7 @@ dependencies = [
 [[package]]
 name = "service-auth"
 version = "0.1.0"
-source = "git+https://github.com/faberline/core?tag=v0.5.4#122783bd2eae609ecebd76e101a4ae4e274e7a71"
+source = "git+https://github.com/faberline/core?tag=v0.5.5#383aaa2c78f615554003c03f6deca85e1c742b0a"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3621,7 +3621,7 @@ dependencies = [
 [[package]]
 name = "service-backup"
 version = "0.1.0"
-source = "git+https://github.com/faberline/core?tag=v0.5.4#122783bd2eae609ecebd76e101a4ae4e274e7a71"
+source = "git+https://github.com/faberline/core?tag=v0.5.5#383aaa2c78f615554003c03f6deca85e1c742b0a"
 dependencies = [
  "anyhow",
  "chrono",
@@ -3640,7 +3640,7 @@ dependencies = [
 [[package]]
 name = "service-http"
 version = "0.1.0"
-source = "git+https://github.com/faberline/core?tag=v0.5.4#122783bd2eae609ecebd76e101a4ae4e274e7a71"
+source = "git+https://github.com/faberline/core?tag=v0.5.5#383aaa2c78f615554003c03f6deca85e1c742b0a"
 dependencies = [
  "anyhow",
  "axum",
@@ -3667,8 +3667,8 @@ dependencies = [
 
 [[package]]
 name = "service-k8s"
-version = "0.1.0"
-source = "git+https://github.com/faberline/core?tag=v0.5.4#122783bd2eae609ecebd76e101a4ae4e274e7a71"
+version = "0.2.0"
+source = "git+https://github.com/faberline/core?tag=v0.5.5#383aaa2c78f615554003c03f6deca85e1c742b0a"
 dependencies = [
  "anyhow",
  "axum",
@@ -3696,7 +3696,7 @@ dependencies = [
 [[package]]
 name = "service-observability"
 version = "0.1.0"
-source = "git+https://github.com/faberline/core?tag=v0.5.4#122783bd2eae609ecebd76e101a4ae4e274e7a71"
+source = "git+https://github.com/faberline/core?tag=v0.5.5#383aaa2c78f615554003c03f6deca85e1c742b0a"
 dependencies = [
  "anyhow",
  "http",
@@ -3851,7 +3851,7 @@ dependencies = [
 [[package]]
 name = "storage-durable"
 version = "0.1.0"
-source = "git+https://github.com/faberline/core?tag=v0.5.4#122783bd2eae609ecebd76e101a4ae4e274e7a71"
+source = "git+https://github.com/faberline/core?tag=v0.5.5#383aaa2c78f615554003c03f6deca85e1c742b0a"
 dependencies = [
  "anyhow",
  "crc32fast",
@@ -3865,7 +3865,7 @@ dependencies = [
 [[package]]
 name = "storage-object"
 version = "0.1.0"
-source = "git+https://github.com/faberline/core?tag=v0.5.4#122783bd2eae609ecebd76e101a4ae4e274e7a71"
+source = "git+https://github.com/faberline/core?tag=v0.5.5#383aaa2c78f615554003c03f6deca85e1c742b0a"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4424,7 +4424,7 @@ dependencies = [
 [[package]]
 name = "transport-h2c"
 version = "0.1.0"
-source = "git+https://github.com/faberline/core?tag=v0.5.4#122783bd2eae609ecebd76e101a4ae4e274e7a71"
+source = "git+https://github.com/faberline/core?tag=v0.5.5#383aaa2c78f615554003c03f6deca85e1c742b0a"
 dependencies = [
  "axum",
  "bytes",
